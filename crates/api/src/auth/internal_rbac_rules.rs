@@ -538,7 +538,7 @@ impl InternalRBACRules {
         );
         x.perm("RedfishBrowse", vec![ForgeAdminCLI]);
         x.perm("UfmBrowse", vec![ForgeAdminCLI]);
-        x.perm("NmxmBrowse", vec![ForgeAdminCLI]);
+        x.perm("NmxcBrowse", vec![ForgeAdminCLI]);
         x.perm("UpdateMachineMetadata", vec![ForgeAdminCLI, SiteAgent]);
         x.perm("UpdateRackMetadata", vec![ForgeAdminCLI, SiteAgent]);
         x.perm("UpdateSwitchMetadata", vec![ForgeAdminCLI, SiteAgent]);
@@ -589,10 +589,10 @@ impl InternalRBACRules {
             "ClearManagedHostQuarantineState",
             vec![ForgeAdminCLI, SiteAgent],
         );
-        x.perm("CreateVpcPeering", vec![ForgeAdminCLI]);
-        x.perm("FindVpcPeeringIds", vec![ForgeAdminCLI]);
-        x.perm("FindVpcPeeringsByIds", vec![ForgeAdminCLI]);
-        x.perm("DeleteVpcPeering", vec![ForgeAdminCLI]);
+        x.perm("CreateVpcPeering", vec![ForgeAdminCLI, SiteAgent]);
+        x.perm("FindVpcPeeringIds", vec![ForgeAdminCLI, SiteAgent]);
+        x.perm("FindVpcPeeringsByIds", vec![ForgeAdminCLI, SiteAgent]);
+        x.perm("DeleteVpcPeering", vec![ForgeAdminCLI, SiteAgent]);
         x.perm("ResetHostReprovisioning", vec![ForgeAdminCLI, Flow]);
         x.perm("CopyBfbToDpuRshim", vec![ForgeAdminCLI]);
         x.perm("GetPowerOptions", vec![ForgeAdminCLI, SiteAgent, Flow]);
@@ -614,6 +614,10 @@ impl InternalRBACRules {
             vec![Agent, Scout, Machineatron, ForgeAdminCLI],
         );
         x.perm("TrimTable", vec![ForgeAdminCLI, MaintenanceJobs]);
+        x.perm("ListNvlinkNmxcEndpoints", vec![ForgeAdminCLI]);
+        x.perm("CreateNvlinkNmxcEndpoint", vec![ForgeAdminCLI]);
+        x.perm("UpdateNvlinkNmxcEndpoint", vec![ForgeAdminCLI]);
+        x.perm("DeleteNvlinkNmxcEndpoint", vec![ForgeAdminCLI]);
         x.perm("CreateRemediation", vec![ForgeAdminCLI]);
         x.perm("ApproveRemediation", vec![ForgeAdminCLI]);
         x.perm("RevokeRemediation", vec![ForgeAdminCLI]);

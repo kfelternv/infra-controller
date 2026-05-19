@@ -24,6 +24,7 @@
 
 use std::collections::HashMap;
 use std::sync::Arc;
+use std::time::Instant;
 
 use rumqttc::{AsyncClient, Event, EventLoop, MqttOptions, Packet, QoS};
 use tokio::sync::{Mutex, RwLock, Semaphore, mpsc};
@@ -208,11 +209,24 @@ impl MqtteaClient {
         let queue_stats_producer = self.queue_stats.clone();
         let registry_clone = self.registry.clone();
         let credentials_provider = self.credentials_provider.clone();
+        let exit_after_persistent_disconnect = self
+            .client_options
+            .as_ref()
+            .and_then(|opts| opts.exit_after_persistent_disconnect);
+        // None while the connection is healthy; Some(t) where t is the
+        // wall-clock instant of the first event loop error in the
+        // current outage. Cleared by any successful poll. Local to this
+        // task — only ever read/written from the event loop body — so no
+        // synchronization is needed.
+        let mut first_error_at: Option<Instant> = None;
         let mut backoff_strategy = SuperBasicBackoff::new();
         tokio::spawn(async move {
             loop {
                 match event_loop.poll().await {
                     Ok(event) => {
+                        // Any successful poll means we're talking to the
+                        // broker again; clear the outage clock.
+                        first_error_at = None;
                         if let Event::Incoming(Packet::Publish(publish)) = event {
                             if let Some(msg) =
                                 ReceivedMessage::from_publish(&publish, registry_clone.clone())
@@ -255,6 +269,24 @@ impl MqtteaClient {
                     Err(e) => {
                         error!("MQTT event loop connection error: {:?}", e);
                         queue_stats_producer.increment_event_loop_errors();
+
+                        // Start (or check) the outage clock. If the
+                        // caller asked us to bail out after a sustained
+                        // disconnect — for example a Kubernetes-deployed
+                        // consumer that needs a process restart to
+                        // re-subscribe — exit so the supervisor brings
+                        // us back up cleanly.
+                        let outage_start = *first_error_at.get_or_insert_with(Instant::now);
+                        if let Some(threshold) = exit_after_persistent_disconnect
+                            && outage_start.elapsed() >= threshold
+                        {
+                            error!(
+                                disconnected_secs = outage_start.elapsed().as_secs(),
+                                threshold_secs = threshold.as_secs(),
+                                "MQTT event loop disconnected past threshold; exiting so the supervisor restarts the process"
+                            );
+                            std::process::exit(1);
+                        }
 
                         // Refresh credentials before reconnection attempt if a provider is configured.
                         // This ensures we use fresh tokens (e.g., OAuth2) for the next connection.

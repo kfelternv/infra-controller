@@ -112,6 +112,16 @@ pub struct MqttConfig {
     /// Messages are dropped when this limit is exceeded.
     pub queue_capacity: usize,
 
+    /// How long the MQTT event loop is allowed to stay disconnected from
+    /// the broker before the service exits, relying on Kubernetes to
+    /// restart the pod with a fresh MQTT session. This is the recovery
+    /// path for the consumer wedge described in NVBug 6191840: the
+    /// underlying client rebuilds TCP but never re-subscribes, so a
+    /// process restart is the only way back to a working subscription.
+    /// Defaults to 30s.
+    #[serde(with = "humantime_serde")]
+    pub reconnect_exit_threshold: Duration,
+
     #[serde(default)]
     pub auth: MqttAuthConfig,
 }
@@ -124,6 +134,7 @@ impl Default for MqttConfig {
             client_id: "carbide-dsx-exchange-consumer".to_string(),
             topic_prefix: "BMS/v1".to_string(),
             queue_capacity: 1024,
+            reconnect_exit_threshold: Duration::from_secs(30),
             auth: MqttAuthConfig::default(),
         }
     }

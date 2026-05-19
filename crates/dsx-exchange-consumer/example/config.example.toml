@@ -11,6 +11,12 @@ client_id = "carbide-dsx-exchange-consumer"
 topic_prefix = "BMS/v1"
 # Maximum number of messages to buffer before dropping (default: 1024)
 queue_capacity = 1024
+# How long the MQTT event loop is allowed to stay disconnected from the
+# broker before the service exits, relying on Kubernetes to restart the
+# pod with a fresh MQTT session (default: 30s). Recovery path for the
+# consumer wedge where TCP reconnects but the MQTT subscription is
+# silently lost.
+reconnect_exit_threshold = "30s"
 
 # ==============================================================================
 # Cache Configuration - TTL settings (uses moka for automatic eviction)

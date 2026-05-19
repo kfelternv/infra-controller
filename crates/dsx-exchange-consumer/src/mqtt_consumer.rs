@@ -46,6 +46,13 @@ pub enum MqttMessage {
 ///
 /// Sets up the MQTT client, registers message handlers, subscribes to topics,
 /// and connects. Returns a receiver that yields messages with drop-on-overflow.
+///
+/// The underlying mqttea event loop is configured to call
+/// `std::process::exit(1)` if it stays continuously disconnected from the
+/// broker for `config.reconnect_exit_threshold` — recovery path for the
+/// consumer wedge described in NVBug 6191840 where TCP reconnects but
+/// the MQTT subscription is silently lost. Kubernetes then restarts the
+/// pod with a fresh session.
 pub async fn connect(
     config: &MqttConfig,
     metrics: ConsumerMetrics,
@@ -56,7 +63,9 @@ pub async fn connect(
     // QoS 0 is the recommended setting for DSX Exchange integrations.
     // BMS will republish all messages periodically to handle missed messages.
     let options = {
-        let defaults = ClientOptions::default().with_qos(QoS::AtMostOnce);
+        let defaults = ClientOptions::default()
+            .with_qos(QoS::AtMostOnce)
+            .with_exit_after_persistent_disconnect(config.reconnect_exit_threshold);
         if let Some(provider) =
             build_credentials_provider(config, credential_reader.clone()).await?
         {

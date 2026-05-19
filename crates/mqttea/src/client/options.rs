@@ -67,6 +67,16 @@ pub struct ClientOptions {
     // processed concurrently. If unset, defaults to 1, which is
     // effectively sequential processing.
     pub max_concurrency: Option<usize>,
+    // exit_after_persistent_disconnect, if set, makes the event loop
+    // call std::process::exit(1) once it has been continuously failing
+    // to poll the broker for longer than this duration. The recovery
+    // path is "let the supervisor (e.g. Kubernetes) restart the
+    // process with a fresh MQTT session" — useful for consumers that
+    // depend on the broker honoring session resumption and cannot
+    // afford to silently stay subscribed-to-nothing. If unset, the
+    // event loop just keeps retrying with backoff (the existing
+    // behavior).
+    pub exit_after_persistent_disconnect: Option<Duration>,
 }
 
 impl ClientOptions {
@@ -103,6 +113,16 @@ impl ClientOptions {
 
     pub fn with_max_concurrency(mut self, max_concurrency: usize) -> Self {
         self.max_concurrency = Some(max_concurrency);
+        self
+    }
+
+    /// Make the event loop call `std::process::exit(1)` once it has been
+    /// continuously failing to poll the broker for `threshold`. Intended
+    /// for binaries that run under a supervisor (Kubernetes, systemd)
+    /// which will restart them, where a stuck MQTT session is worse than
+    /// a process restart.
+    pub fn with_exit_after_persistent_disconnect(mut self, threshold: Duration) -> Self {
+        self.exit_after_persistent_disconnect = Some(threshold);
         self
     }
 

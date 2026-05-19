@@ -83,7 +83,13 @@ pub async fn run_service(config: Config) -> Result<(), DsxConsumerError> {
     .await
     .map_err(|e| DsxConsumerError::Secrets(e.to_string()))?;
 
-    // Connect to MQTT and get message receiver
+    // Connect to MQTT and get message receiver. The mqttea event loop
+    // is configured via `mqtt.reconnect_exit_threshold` to exit the
+    // process if it stays continuously disconnected from the broker
+    // past that duration; Kubernetes then restarts the pod with a
+    // fresh MQTT session. This is the recovery path for the consumer
+    // wedge described in NVBug 6191840 where TCP reconnects but the
+    // subscription is silently lost.
     let rx = mqtt_consumer::connect(
         &config.mqtt,
         consumer_metrics.clone(),

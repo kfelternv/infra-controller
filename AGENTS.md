@@ -120,46 +120,25 @@ cargo make format-nightly      # Also sort imports
 > `carbide-lints`. The stable toolchain pinned in `rust-toolchain.toml` is used
 > for everything else.
 
-### Top-level Makefile (unified entrypoint)
+### Top-level Makefile (rest-api entrypoint)
 
-A top-level [`Makefile`](Makefile) at the repo root provides a single
-discoverable entrypoint that delegates to the native build tool for each
-component (Go `make` for the `rest-api/` Go services, `cargo` and
-`cargo make` for the Rust workspace).
+A top-level [`Makefile`](Makefile) at the repo root provides a thin
+discoverable entrypoint for the `rest-api/` Go services. It just
+delegates to `rest-api/Makefile`.
 
 ```bash
-make help            # default goal: list all targets grouped by component
-
-# Combined (rest + core):
-make build           # rest binaries + cargo build
-make test            # rest unit tests + cargo test
-make lint            # rest lint + clippy
-make fmt             # go fmt + cargo fmt --all
-make clean           # rest clean (cargo target/ preserved)
-
-# Rest aliases (delegate to rest-api/Makefile):
-make rest-build
-make rest-test
-make rest-lint
-make rest-fmt
-make rest-helm-lint
+make help                # default goal: list rest-* targets
+make rest-build          # build rest-api Go binaries
+make rest-test           # run rest-api unit tests
+make rest-lint           # lint rest-api
+make rest-fmt            # go fmt check on rest-api
+make rest-helm-lint      # helm lint rest charts
 make rest-docker-build-local
-
-# Pattern-rule passthrough for any rest-api Makefile target:
-make rest-api/test-api
-make rest-api/kind-reset
-make rest-api/generate-sdk
-
-# Core (Rust) aliases:
-make core-build      # cargo build
-make core-test       # cargo test
-make core-lint       # cargo make clippy
-make core-fmt        # cargo fmt --all
-make core-verify     # cargo make pre-commit-verify
+make rest-api/<target>   # pass any target through to rest-api/Makefile
 ```
 
-The root Makefile is an additive convenience layer; `rest-api/Makefile`
-and the existing `cargo make` task tree continue to work directly.
+Core (Rust) tasks are not in this Makefile; use cargo and `cargo make`
+directly as documented above.
 
 ## Coding Conventions
 

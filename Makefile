@@ -43,7 +43,8 @@ help: ## Show this help and exit (default goal)
 # =============================================================================
 
 .PHONY: rest-build rest-test rest-lint rest-fmt rest-clean \
-        rest-docker-build rest-docker-build-local rest-helm-lint
+        rest-docker-build rest-docker-build-local rest-helm-lint \
+        rest-kind-reset
 
 rest-build: ## Build all rest-api Go binaries into rest-api/build/binaries/
 	$(MAKE) -C rest-api build
@@ -68,6 +69,9 @@ rest-docker-build-local: ## Build local-dev docker images for rest services
 
 rest-helm-lint: ## helm lint the rest umbrella and site-agent charts
 	$(MAKE) -C rest-api helm-lint
+
+rest-kind-reset: ## Spin up the local kind dev cluster: cluster + cert-manager + postgres + temporal + keycloak + helm app deploy (~10 min)
+	$(MAKE) -C rest-api kind-reset
 
 # Pattern-rule escape hatch: pass ANY target through to rest-api/Makefile.
 # Usage:

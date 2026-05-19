@@ -134,6 +134,7 @@ make rest-lint           # lint rest-api
 make rest-fmt            # go fmt check on rest-api
 make rest-helm-lint      # helm lint rest charts
 make rest-docker-build-local
+make rest-kind-reset     # spin up the local kind dev cluster (~10 min)
 make rest-api/<target>   # pass any target through to rest-api/Makefile
 ```
 

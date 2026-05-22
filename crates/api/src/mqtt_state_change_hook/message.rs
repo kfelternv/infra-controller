@@ -30,6 +30,8 @@ use serde::Serialize;
 pub struct ManagedHostStateChangeMessage<'a> {
     /// Unique identifier for the managed host machine.
     pub machine_id: &'a MachineId,
+    /// BMC MAC address for correlating with external inventory systems.
+    pub bmc_mac_address: Option<&'a str>,
     /// ISO 8601 timestamp of the state change.
     pub timestamp: DateTime<Utc>,
     /// The managed host state.
@@ -49,6 +51,8 @@ mod tests {
 
     use super::*;
 
+    const TEST_BMC_MAC_ADDRESS: &str = "00:11:22:33:44:55";
+
     #[allow(deprecated)]
     fn test_machine_id() -> MachineId {
         MachineId::default()
@@ -62,6 +66,7 @@ mod tests {
 
         let message = ManagedHostStateChangeMessage {
             machine_id: &machine_id,
+            bmc_mac_address: Some(TEST_BMC_MAC_ADDRESS),
             managed_host_state: &state,
             timestamp,
         };
@@ -71,6 +76,7 @@ mod tests {
         let state_obj = parsed.get("managed_host_state").unwrap();
         assert_eq!(state_obj.get("state").unwrap(), "ready");
         assert!(parsed.get("machine_id").is_some());
+        assert_eq!(parsed.get("bmc_mac_address").unwrap(), TEST_BMC_MAC_ADDRESS);
         assert!(parsed.get("timestamp").is_some());
     }
 
@@ -84,6 +90,7 @@ mod tests {
 
         let message = ManagedHostStateChangeMessage {
             machine_id: &machine_id,
+            bmc_mac_address: Some(TEST_BMC_MAC_ADDRESS),
             managed_host_state: &state,
             timestamp,
         };
@@ -103,6 +110,7 @@ mod tests {
 
         let message = ManagedHostStateChangeMessage {
             machine_id: &machine_id,
+            bmc_mac_address: Some(TEST_BMC_MAC_ADDRESS),
             managed_host_state: &state,
             timestamp,
         };

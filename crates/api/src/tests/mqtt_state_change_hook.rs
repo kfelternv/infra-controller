@@ -26,6 +26,8 @@ use model::machine::ManagedHostState;
 
 use crate::mqtt_state_change_hook::message::ManagedHostStateChangeMessage;
 
+const TEST_BMC_MAC_ADDRESS: &str = "00:11:22:33:44:55";
+
 fn test_machine_id() -> MachineId {
     MachineId::new(
         MachineIdSource::ProductBoardChassisSerial,
@@ -43,6 +45,7 @@ fn test_message_json_structure() {
 
     let message = ManagedHostStateChangeMessage {
         machine_id: &machine_id,
+        bmc_mac_address: Some(TEST_BMC_MAC_ADDRESS),
         managed_host_state: &state,
         timestamp,
     };
@@ -53,6 +56,7 @@ fn test_message_json_structure() {
 
     // Required fields
     assert!(parsed.get("machine_id").is_some());
+    assert_eq!(parsed.get("bmc_mac_address").unwrap(), TEST_BMC_MAC_ADDRESS);
     assert!(parsed.get("managed_host_state").is_some());
     assert!(parsed.get("timestamp").is_some());
 
@@ -74,6 +78,7 @@ fn test_complex_state_has_nested_fields() {
 
     let message = ManagedHostStateChangeMessage {
         machine_id: &machine_id,
+        bmc_mac_address: Some(TEST_BMC_MAC_ADDRESS),
         managed_host_state: &state,
         timestamp,
     };
@@ -94,6 +99,7 @@ fn test_timestamp_format() {
 
     let message = ManagedHostStateChangeMessage {
         machine_id: &machine_id,
+        bmc_mac_address: Some(TEST_BMC_MAC_ADDRESS),
         managed_host_state: &state,
         timestamp,
     };

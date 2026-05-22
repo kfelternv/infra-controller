@@ -28,8 +28,8 @@ use model::machine::machine_search_config::MachineSearchConfig;
 use model::machine::slas::MachineSlaConfig;
 use model::machine::{
     self, AttestationMode, DpuDiscoveringState, DpuInitState, HostHealthConfig,
-    MachineValidatingState, ManagedHostState, ManagedHostStateSnapshot, MeasuringState,
-    SpdmMeasuringState, ValidationState,
+    MachineInterfaceSnapshot, MachineValidatingState, ManagedHostState, ManagedHostStateSnapshot,
+    MeasuringState, SpdmMeasuringState, ValidationState,
 };
 use model::machine_interface::InterfaceType;
 use sqlx::PgConnection;
@@ -123,13 +123,7 @@ impl StateControllerIO for MachineStateControllerIO {
 
     fn state_change_attributes(&self, state: &Self::State) -> BTreeMap<String, String> {
         let mut attributes = BTreeMap::new();
-        if let Some(bmc_mac_address) = state
-            .host_snapshot
-            .interfaces
-            .iter()
-            .find(|interface| interface.interface_type == InterfaceType::Bmc)
-            .map(|interface| interface.mac_address.to_string())
-        {
+        if let Some(bmc_mac_address) = bmc_mac_address(&state.host_snapshot.interfaces) {
             attributes.insert("bmc_mac_address".to_string(), bmc_mac_address);
         }
         attributes
@@ -371,5 +365,53 @@ impl StateControllerIO for MachineStateControllerIO {
             &object_state.aggregate_health,
             &self.sla_config,
         )
+    }
+}
+
+/// Returns the MAC address of the BMC interface, if one exists on the machine.
+fn bmc_mac_address(interfaces: &[MachineInterfaceSnapshot]) -> Option<String> {
+    interfaces
+        .iter()
+        .find(|interface| interface.interface_type == InterfaceType::Bmc)
+        .map(|interface| interface.mac_address.to_string())
+}
+
+#[cfg(test)]
+mod tests {
+    use std::str::FromStr;
+
+    use mac_address::MacAddress;
+
+    use super::*;
+
+    fn interface(mac: &str, interface_type: InterfaceType) -> MachineInterfaceSnapshot {
+        MachineInterfaceSnapshot {
+            interface_type,
+            ..MachineInterfaceSnapshot::mock_with_mac(MacAddress::from_str(mac).unwrap())
+        }
+    }
+
+    #[test]
+    fn bmc_mac_address_returns_none_when_no_interfaces() {
+        assert_eq!(bmc_mac_address(&[]), None);
+    }
+
+    #[test]
+    fn bmc_mac_address_returns_none_when_no_bmc_interface() {
+        let interfaces = vec![interface("00:11:22:33:44:01", InterfaceType::Data)];
+        assert_eq!(bmc_mac_address(&interfaces), None);
+    }
+
+    #[test]
+    fn bmc_mac_address_returns_bmc_mac_when_present() {
+        let interfaces = vec![
+            interface("00:11:22:33:44:01", InterfaceType::Data),
+            interface("00:11:22:33:44:02", InterfaceType::Bmc),
+            interface("00:11:22:33:44:03", InterfaceType::Data),
+        ];
+        assert_eq!(
+            bmc_mac_address(&interfaces),
+            Some("00:11:22:33:44:02".to_string())
+        );
     }
 }

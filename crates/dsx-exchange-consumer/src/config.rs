@@ -114,11 +114,10 @@ pub struct MqttConfig {
 
     /// How long the MQTT event loop is allowed to stay disconnected from
     /// the broker before the service exits, relying on Kubernetes to
-    /// restart the pod with a fresh MQTT session. This is the recovery
-    /// path for the consumer wedge described in NVBug 6191840: the
-    /// underlying client rebuilds TCP but never re-subscribes, so a
-    /// process restart is the only way back to a working subscription.
-    /// Defaults to 30s.
+    /// restart the pod with a fresh MQTT session. Backstop for the
+    /// consumer stall described in NVBug 6191840 where the client stops
+    /// receiving messages even though the library is still attempting
+    /// to reconnect. Defaults to 30s.
     #[serde(with = "humantime_serde")]
     pub reconnect_exit_threshold: Duration,
 

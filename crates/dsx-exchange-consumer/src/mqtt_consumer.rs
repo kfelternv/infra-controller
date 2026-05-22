@@ -49,10 +49,10 @@ pub enum MqttMessage {
 ///
 /// The underlying mqttea event loop is configured to call
 /// `std::process::exit(1)` if it stays continuously disconnected from the
-/// broker for `config.reconnect_exit_threshold` — recovery path for the
-/// consumer wedge described in NVBug 6191840 where TCP reconnects but
-/// the MQTT subscription is silently lost. Kubernetes then restarts the
-/// pod with a fresh session.
+/// broker for `config.reconnect_exit_threshold` — backstop for the
+/// consumer stall described in NVBug 6191840 where the client stops
+/// receiving messages even though the library is still attempting to
+/// reconnect. Kubernetes then restarts the pod with a fresh session.
 pub async fn connect(
     config: &MqttConfig,
     metrics: ConsumerMetrics,

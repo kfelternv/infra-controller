@@ -87,9 +87,9 @@ pub async fn run_service(config: Config) -> Result<(), DsxConsumerError> {
     // is configured via `mqtt.reconnect_exit_threshold` to exit the
     // process if it stays continuously disconnected from the broker
     // past that duration; Kubernetes then restarts the pod with a
-    // fresh MQTT session. This is the recovery path for the consumer
-    // wedge described in NVBug 6191840 where TCP reconnects but the
-    // subscription is silently lost.
+    // fresh MQTT session. This is the backstop for the consumer stall
+    // described in NVBug 6191840 where the client stops receiving
+    // messages even though the library is still attempting to reconnect.
     let rx = mqtt_consumer::connect(
         &config.mqtt,
         consumer_metrics.clone(),

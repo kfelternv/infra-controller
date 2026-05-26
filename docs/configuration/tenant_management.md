@@ -453,7 +453,7 @@ Verify the VPC reaches `Ready` status:
 nicocli vpc list --output table
 ```
 
-> **Routing profiles** govern which VPCs can exchange routes with which others. The REST API accepts `external`, `internal`, and `privileged-internal`; the underlying gRPC API supports any profile defined under `fnn.routing_profiles` in the API server config. For details, see [VPC Routing Profiles](vpc/vpc_routing_profiles.md). For the full networking architecture (VRFs, VNI pools, BGP, deny prefixes), see [VPC Network Virtualization](vpc/vpc_network_virtualization.md).
+> **Routing profiles** govern which VPCs can exchange routes with which others. The REST API accepts `external`, `internal`, and `privileged-internal`; the underlying gRPC API supports any profile defined under `fnn.routing_profiles` in the API server config. For details, see [VPC Routing Profiles](../manuals/vpc/vpc_routing_profiles.md). For the full networking architecture (VRFs, VNI pools, BGP, deny prefixes), see [VPC Network Virtualization](../manuals/vpc/vpc_network_virtualization.md).
 
 ### Subnet Creation
 
@@ -618,57 +618,6 @@ nicocli instance batch-create \
 
 For batches where each instance needs a different machine ID, OS, or interface set, call `instance create` in a loop instead -- batch-create only handles the homogeneous case.
 
-## Tenant Isolation Model
-
-NICo enforces separation between tenants across all network planes. This isolation is established automatically during instance provisioning -- operators do not need to configure isolation manually.
-
-### Ethernet (North-South)
-
-BlueField DPUs running HBN (Host-Based Networking with Containerized Cumulus) enforce L3 VXLAN/EVPN boundaries. Each VPC gets its own VRF (Virtual Routing and Forwarding instance) on every DPU that hosts an instance in that VPC. Traffic between VPCs is isolated at the network layer without requiring any leaf switch configuration changes.
-
-Key properties:
-- Per-VPC VRF with dedicated VNI (VXLAN Network Identifier) from the site's VNI pool
-- Route targets control which VRFs can exchange routes
-- `deny_prefixes` ACLs block tenant traffic from reaching management networks
-- Network Security Groups provide per-subnet firewall rules
-
-For the full networking architecture, see [VPC Network Virtualization](vpc/vpc_network_virtualization.md).
-
-### InfiniBand (East-West)
-
-UFM assigns P_Key partitions to each tenant's IB ports. Only hosts sharing a P_Key partition can communicate over InfiniBand, enforcing tenant isolation on the high-performance fabric.
-
-View IB partition assignments:
-
-```
-nicocli tui
-> infiniband-partition list
-> infiniband-partition get
-```
-
-### NVLink
-
-NMX-M APIs configure NVLink partition assignments, ensuring that NVLink domains are dedicated to a single tenant. For GB200 NVL72 systems, NICo gates instance allocation on NVLink cluster readiness -- if the fabric is not healthy, provisioning is blocked.
-
-View NVLink partition state:
-
-```
-nicocli tui
-> nvlink-logical-partition list
-> nvlink-logical-partition get
-```
-
-### What a Tenant Can and Cannot Access
-
-| Resource | Tenant Can Access | Tenant Cannot Access |
-|----------|------------------|---------------------|
-| Instances | Own instances in own VPCs | Other tenants' instances |
-| Network | Traffic within own VPCs and subnets | Management networks, other tenants' VPCs (unless peered) |
-| Storage | NVMe on assigned machines | Storage on unassigned machines |
-| InfiniBand | P_Key partitions assigned to their instances | Other tenants' IB partitions |
-| NVLink | NVLink domains allocated to their instances | Other tenants' NVLink domains |
-| BMC/UEFI | No access (managed by NICo) | All BMC and UEFI interfaces |
-
 ## Instance Power Management
 
 NICo provides instance-level power management through the REST API. These operations send commands to the underlying BMC via Redfish.
@@ -746,78 +695,6 @@ carbide-admin-cli -c <core-api-url> machine force-delete --machine="<machine-id>
 ```
 
 See the [Machine Reboot](../playbooks/machine_reboot.md) and [Force Delete](../playbooks/force_delete.md) playbooks in the core documentation for detailed procedures.
-
-## Users and Roles
-
-### How User Management Works
-
-NICo does not maintain its own user directory. Identity, org membership, and role assignments are all managed in the upstream identity provider. The REST API reads role claims from the authentication token on every request. Adding or removing a user is done in the identity provider, not through nicocli.
-
-NICo accepts tokens from any OIDC-compatible IdP. The bundled dev Keycloak (deployed by `setup.sh` and documented in the [Quick Start Guide](../getting-started/quick-start.md)) is the recommended starting point and the reference implementation for IdP wiring -- you can use it as-is for evaluation, or model your production IdP setup after it. Configure additional or replacement IdPs via the `issuers` block in `carbide-rest-api`'s config; see the [Reference Installation](../getting-started/installation-options/reference-install.md) guide for the configuration surface and the claim mappings NICo expects (org name, display name, role claim).
-
-### Adding a User to a Tenant
-
-1. Add the user to the IdP organization (or group) that maps to the tenant.
-2. Assign the `TENANT_ADMIN` role at the org level.
-3. Have the user authenticate with nicocli and verify: `nicocli user get`
-
-The exact steps depend on your IdP. For the bundled dev Keycloak, this is realm administration in the Keycloak admin console -- create the user, add them to the realm group that maps to the tenant org, and assign the role. See the [Quick Start Guide](../getting-started/quick-start.md) for the realm layout.
-
-### Adding a Provider Admin
-
-1. Add the user to the infrastructure provider's IdP organization.
-2. Assign the `PROVIDER_ADMIN` role.
-3. Verify: `nicocli user get`
-
-Same caveat as above -- this is an IdP admin task, not a nicocli operation.
-
-### Verifying Your Identity
-
-```
-nicocli user get
-```
-
-Example response for a human user:
-
-```json
-{
-  "id": "<user-uuid>",
-  "email": "alex@acme-corp.com",
-  "firstName": "Alex",
-  "lastName": "Chen",
-  "created": "2026-04-23T00:54:27.452525Z",
-  "updated": "2026-05-15T17:25:23.884166Z"
-}
-```
-
-Service accounts have empty `email`/`firstName`/`lastName`. Human users have those populated from the IdP.
-
-This endpoint does not return role information directly -- roles are in the token and validated server-side. Confirm which roles you hold by attempting role-gated operations: `nicocli allocation list` requires Provider Admin; `nicocli tenant get-current-tenant` requires Tenant Admin.
-
-If your deployment is configured for service-account auth, use `nicocli service-account get` to retrieve the current org's service-account status, including the auto-created provider and tenant IDs.
-
-### Listing Tenant Members
-
-NICo does not expose a "list users in this tenant" endpoint. Use the IdP's admin console or API to view members and roles.
-
-For audit purposes, NICo's audit log records which user performed each operation:
-
-```
-nicocli tui
-> audit list
-```
-
-### Removing a User
-
-Remove the role assignment (or org membership) in the identity provider. The change takes effect on the user's next authentication attempt.
-
-### Day One User Setup Checklist
-
-1. Create the IdP organization (or group) for the tenant.
-2. Invite at least one user with `TENANT_ADMIN` so they can provision the tenant.
-3. Invite additional team members with appropriate roles.
-4. Verify from the tenant side: `nicocli user get` and `nicocli tenant get-current-tenant`.
-5. On the provider side, ensure at least one user holds `PROVIDER_ADMIN`.
 
 ## Tenant Lifecycle Operations
 
@@ -1052,11 +929,13 @@ Flag-first ordering -- always put flags before positional args.
 
 ## Related Documentation
 
+- [Network Isolation](network-isolation.md) -- Per-plane tenant isolation (Ethernet, InfiniBand, NVLink)
+- [Organization & Permissions](org-permissions.md) -- IdP-managed roles and user setup
 - [Quick Start Guide](../getting-started/quick-start.md) -- NICo deployment and Day Zero walkthrough
-- [VPC Routing Profiles](vpc/vpc_routing_profiles.md) -- Profile configuration and behavior
-- [VPC Network Virtualization](vpc/vpc_network_virtualization.md) -- Full networking architecture
-- [VPC Peering](vpc/vpc_peering_management.md) -- Connecting VPCs (gRPC only)
-- [NVLink Partitioning](nvlink_partitioning.md) -- NVLink domain management
+- [VPC Routing Profiles](../manuals/vpc/vpc_routing_profiles.md) -- Profile configuration and behavior
+- [VPC Network Virtualization](../manuals/vpc/vpc_network_virtualization.md) -- Full networking architecture
+- [VPC Peering](../manuals/vpc/vpc_peering_management.md) -- Connecting VPCs (gRPC only)
+- [NVLink Partitioning](../manuals/nvlink_partitioning.md) -- NVLink domain management
 - [Machine Reboot Playbook](../playbooks/machine_reboot.md) -- Emergency BMC reboot procedures
 - [Force Delete Playbook](../playbooks/force_delete.md) -- Removing stuck machines
 - [Day 0/1/2 Lifecycle](../overview/lifecycle.md) -- NICo lifecycle model overview

@@ -107,7 +107,10 @@ Where `expected-machines.json` is a JSON array of `ExpectedMachineCreateRequest`
 ]
 ```
 
-For sites with more than 100 machines, send multiple `batch-create` calls.
+Two constraints apply to every batch request, both enforced at the API gateway:
+
+- **Maximum 100 machines per request.** For sites with more than 100 machines, send multiple `batch-create` calls.
+- **All machines in one request must share the same `siteId`.** You cannot mix sites within a single batch.
 
 ## What Happens After Approval: Ingestion to Ready
 

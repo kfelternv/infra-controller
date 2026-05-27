@@ -15,7 +15,10 @@
 
 # Workflow 1 of 2 for Fern doc previews.
 #
-# Collects fern/, docs/, and PR metadata and uploads an artifact.
+# Collects fern/, docs/, rest-api/openapi/, and PR metadata and uploads an
+# artifact. fern/generators.yml references ../rest-api/openapi/spec.yaml,
+# so the OpenAPI spec must travel with the artifact for the companion
+# workflow's `fern generate` to resolve the API definition.
 #
 # The companion workflow (fern-docs-preview-comment.yml) runs after this one;
 # it skips cleanly when no artifact exists (e.g. skipped fork pull_request).
@@ -27,6 +30,7 @@ on:
     paths:
       - 'fern/**'
       - 'docs/**'
+      - 'rest-api/openapi/**'
       - '.github/workflows/fern-docs-preview-build.yml'
   push:
     branches:
@@ -34,6 +38,7 @@ on:
     paths:
       - 'fern/**'
       - 'docs/**'
+      - 'rest-api/openapi/**'
       - '.github/workflows/fern-docs-preview-build.yml'
 
 permissions:
@@ -76,5 +81,6 @@ jobs:
           path: |
             fern/
             docs/
+            rest-api/openapi/
             preview-metadata/
           retention-days: 1

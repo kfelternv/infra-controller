@@ -3532,6 +3532,9 @@ message Machine {
   optional PlacementInRack placement_in_rack = 46;
 
   optional MachineSpxStatusObservation spx_status_observation = 47;
+
+  // Build version of forge-scout last observed during machine discovery registration.
+  optional string last_scout_observed_version = 48;
 }
 
 message InstanceNetworkRestrictions {
@@ -4706,12 +4709,20 @@ message ForgeAgentControlResponse {
   }
 }
 
+enum MachineDiscoveryReporter {
+  MACHINE_DISCOVERY_REPORTER_UNSPECIFIED = 0;
+  MACHINE_DISCOVERY_REPORTER_SCOUT = 1;
+  MACHINE_DISCOVERY_REPORTER_DPU_AGENT = 2;
+}
+
 message MachineDiscoveryInfo {
   common.MachineInterfaceId machine_interface_id = 1;
   oneof discovery_data {
     machine_discovery.DiscoveryInfo info = 2;
   }
   bool create_machine = 3;
+  MachineDiscoveryReporter discovery_reporter = 4;
+  optional string discovery_reporter_version = 5;
 }
 
 message MachineDiscoveryCompletedRequest {

@@ -1716,6 +1716,7 @@ async fn test_disable_machine_creation_outside_site_explorer(
             machine_interface_id: response.machine_interface_id,
             discovery_data: Some(DiscoveryData::Info(discovery_info)),
             create_machine: true,
+            ..Default::default()
         }))
         .await;
 

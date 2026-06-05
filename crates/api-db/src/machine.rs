@@ -691,6 +691,21 @@ pub async fn update_scout_contact_time(
     Ok(())
 }
 
+pub async fn update_last_scout_observed_version(
+    machine_id: &MachineId,
+    scout_version: &str,
+    txn: &mut PgConnection,
+) -> Result<(), DatabaseError> {
+    let query = "UPDATE machines SET last_scout_observed_version=$2 WHERE id=$1 RETURNING id";
+    let _id = sqlx::query_as::<_, MachineId>(query)
+        .bind(machine_id)
+        .bind(scout_version)
+        .fetch_one(txn)
+        .await
+        .map_err(|e| DatabaseError::query(query, e))?;
+    Ok(())
+}
+
 pub async fn find_host_by_dpu_machine_id(
     txn: &mut PgConnection,
     dpu_machine_id: &MachineId,

@@ -14,6 +14,7 @@ navigation:
 
     - page: Home
       path: index.md
+      icon: home
 
     - section: Overview
       contents:
@@ -123,6 +124,14 @@ navigation:
 
     - section: Operations
       contents:
+        - page: Tenant Lifecycle Cleanup
+          path: operations/tenant-lifecycle-cleanup.md
+        - page: Network Isolation
+          path: manuals/network_isolation.md
+        - page: Network Security Groups
+          path: manuals/networking/network_security_groups.md
+        - page: InfiniBand Partitioning
+          path: manuals/networking/infiniband_partitioning.md
         - page: nicocli Reference
           path: manuals/nicocli-reference.md
         - page: NVLink Partitioning
@@ -153,12 +162,16 @@ navigation:
               path: manuals/vpc/vpc_peering_management.md
             - page: VPC Network Virtualization
               path: manuals/vpc/vpc_network_virtualization.md
+            - page: Flat VPCs and Zero-DPU Hosts
+              path: manuals/vpc/flat_vpcs_zero_dpu.md
             - page: VNI Resource Pools
               path: manuals/vpc/vni_resource_pools.md
-        - section: Metrics
+        - section: Observability
           contents:
             - page: Core Metrics
-              path: manuals/metrics/core_metrics.md
+              path: observability/core_metrics.md
+            - page: Traces
+              path: observability/tracing.md
 
     - section: Playbooks
       contents:
@@ -227,4 +240,8 @@ navigation:
 
   - tab: api
     layout:
+    - page: Getting Started
+      path: openapi/getting_started.md
+      icon: flower
     - api: API Reference
+      tag-description-pages: true

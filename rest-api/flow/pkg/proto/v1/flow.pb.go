@@ -10,14 +10,15 @@
 package v1
 
 import (
+	reflect "reflect"
+	sync "sync"
+	unsafe "unsafe"
+
 	protoreflect "google.golang.org/protobuf/reflect/protoreflect"
 	protoimpl "google.golang.org/protobuf/runtime/protoimpl"
 	emptypb "google.golang.org/protobuf/types/known/emptypb"
 	fieldmaskpb "google.golang.org/protobuf/types/known/fieldmaskpb"
 	timestamppb "google.golang.org/protobuf/types/known/timestamppb"
-	reflect "reflect"
-	sync "sync"
-	unsafe "unsafe"
 )
 
 const (
@@ -1772,12 +1773,13 @@ func (*ComponentTarget_Id) isComponentTarget_Identifier() {}
 func (*ComponentTarget_External) isComponentTarget_Identifier() {}
 
 // ExternalRef identifies a component by its external system ID.
-// The component type determines which external system to query
-// (e.g., COMPUTE -> NICo, POWERSHELF -> PSM)
+// All component types are routed through Core (NICo); the ID is the
+// identifier expected by NICo for that component type (e.g. machine_id
+// for compute, PMC MAC for power shelf).
 type ExternalRef struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
 	Type          ComponentType          `protobuf:"varint,1,opt,name=type,proto3,enum=v1.ComponentType" json:"type,omitempty"` // Component type determines the source system
-	Id            string                 `protobuf:"bytes,2,opt,name=id,proto3" json:"id,omitempty"`                            // ID in that system (e.g., NICo machine_id, PSM PMC MAC)
+	Id            string                 `protobuf:"bytes,2,opt,name=id,proto3" json:"id,omitempty"`                            // ID expected by NICo for this component type
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -3325,9 +3327,17 @@ type UpgradeFirmwareRequest struct {
 	// Names are lowercase. Empty or omitted means update everything in the
 	// bundle (current default behavior). Unknown names are rejected by the
 	// downstream component manager.
-	SubTargets    []string `protobuf:"bytes,8,rep,name=sub_targets,json=subTargets,proto3" json:"sub_targets,omitempty"`
-	unknownFields protoimpl.UnknownFields
-	sizeCache     protoimpl.SizeCache
+	SubTargets []string `protobuf:"bytes,8,rep,name=sub_targets,json=subTargets,proto3" json:"sub_targets,omitempty"`
+	// When true, proceed with the firmware update even if one or more
+	// target hosts (or, for rack-scoped components, any host on the
+	// owning rack) are still in the Assigned/* lifecycle state. The flag
+	// is intended for operator-supervised maintenance windows where the
+	// tenant impact has been acknowledged out-of-band; setting it bypasses
+	// the safety gate that would otherwise block disruptive operations
+	// against tenanted hardware. The bypass is recorded in the server log.
+	OverrideAssignmentCheck bool `protobuf:"varint,9,opt,name=override_assignment_check,json=overrideAssignmentCheck,proto3" json:"override_assignment_check,omitempty"`
+	unknownFields           protoimpl.UnknownFields
+	sizeCache               protoimpl.SizeCache
 }
 
 func (x *UpgradeFirmwareRequest) Reset() {
@@ -3414,6 +3424,13 @@ func (x *UpgradeFirmwareRequest) GetSubTargets() []string {
 		return x.SubTargets
 	}
 	return nil
+}
+
+func (x *UpgradeFirmwareRequest) GetOverrideAssignmentCheck() bool {
+	if x != nil {
+		return x.OverrideAssignmentCheck
+	}
+	return false
 }
 
 // GetComponents - retrieves components from local database
@@ -4482,13 +4499,19 @@ func (x *QueueOptions) GetQueueTimeoutSeconds() int32 {
 }
 
 type PowerOnRackRequest struct {
-	state         protoimpl.MessageState `protogen:"open.v1"`
-	TargetSpec    *OperationTargetSpec   `protobuf:"bytes,1,opt,name=target_spec,json=targetSpec,proto3" json:"target_spec,omitempty"` // Flexible targeting: rack(s) with optional type filter, or specific components
-	Description   string                 `protobuf:"bytes,2,opt,name=description,proto3" json:"description,omitempty"`                 // optional task description
-	QueueOptions  *QueueOptions          `protobuf:"bytes,3,opt,name=queue_options,json=queueOptions,proto3,oneof" json:"queue_options,omitempty"`
-	RuleId        *UUID                  `protobuf:"bytes,4,opt,name=rule_id,json=ruleId,proto3,oneof" json:"rule_id,omitempty"` // optional: override rule resolution with a specific rule
-	unknownFields protoimpl.UnknownFields
-	sizeCache     protoimpl.SizeCache
+	state        protoimpl.MessageState `protogen:"open.v1"`
+	TargetSpec   *OperationTargetSpec   `protobuf:"bytes,1,opt,name=target_spec,json=targetSpec,proto3" json:"target_spec,omitempty"` // Flexible targeting: rack(s) with optional type filter, or specific components
+	Description  string                 `protobuf:"bytes,2,opt,name=description,proto3" json:"description,omitempty"`                 // optional task description
+	QueueOptions *QueueOptions          `protobuf:"bytes,3,opt,name=queue_options,json=queueOptions,proto3,oneof" json:"queue_options,omitempty"`
+	RuleId       *UUID                  `protobuf:"bytes,4,opt,name=rule_id,json=ruleId,proto3,oneof" json:"rule_id,omitempty"` // optional: override rule resolution with a specific rule
+	// When true, proceed with the power-on even if one or more target
+	// hosts (or, for rack-scoped components, any host on the owning rack)
+	// are still in the Assigned/* lifecycle state. Intended for operator-
+	// supervised maintenance where tenant impact has been acknowledged
+	// out-of-band; the bypass is recorded in the server log.
+	OverrideAssignmentCheck bool `protobuf:"varint,5,opt,name=override_assignment_check,json=overrideAssignmentCheck,proto3" json:"override_assignment_check,omitempty"`
+	unknownFields           protoimpl.UnknownFields
+	sizeCache               protoimpl.SizeCache
 }
 
 func (x *PowerOnRackRequest) Reset() {
@@ -4549,15 +4572,28 @@ func (x *PowerOnRackRequest) GetRuleId() *UUID {
 	return nil
 }
 
+func (x *PowerOnRackRequest) GetOverrideAssignmentCheck() bool {
+	if x != nil {
+		return x.OverrideAssignmentCheck
+	}
+	return false
+}
+
 type PowerOffRackRequest struct {
-	state         protoimpl.MessageState `protogen:"open.v1"`
-	TargetSpec    *OperationTargetSpec   `protobuf:"bytes,1,opt,name=target_spec,json=targetSpec,proto3" json:"target_spec,omitempty"` // Flexible targeting: rack(s) with optional type filter, or specific components
-	Forced        bool                   `protobuf:"varint,2,opt,name=forced,proto3" json:"forced,omitempty"`
-	Description   string                 `protobuf:"bytes,3,opt,name=description,proto3" json:"description,omitempty"` // optional task description
-	QueueOptions  *QueueOptions          `protobuf:"bytes,4,opt,name=queue_options,json=queueOptions,proto3,oneof" json:"queue_options,omitempty"`
-	RuleId        *UUID                  `protobuf:"bytes,5,opt,name=rule_id,json=ruleId,proto3,oneof" json:"rule_id,omitempty"` // optional: override rule resolution with a specific rule
-	unknownFields protoimpl.UnknownFields
-	sizeCache     protoimpl.SizeCache
+	state        protoimpl.MessageState `protogen:"open.v1"`
+	TargetSpec   *OperationTargetSpec   `protobuf:"bytes,1,opt,name=target_spec,json=targetSpec,proto3" json:"target_spec,omitempty"` // Flexible targeting: rack(s) with optional type filter, or specific components
+	Forced       bool                   `protobuf:"varint,2,opt,name=forced,proto3" json:"forced,omitempty"`
+	Description  string                 `protobuf:"bytes,3,opt,name=description,proto3" json:"description,omitempty"` // optional task description
+	QueueOptions *QueueOptions          `protobuf:"bytes,4,opt,name=queue_options,json=queueOptions,proto3,oneof" json:"queue_options,omitempty"`
+	RuleId       *UUID                  `protobuf:"bytes,5,opt,name=rule_id,json=ruleId,proto3,oneof" json:"rule_id,omitempty"` // optional: override rule resolution with a specific rule
+	// When true, proceed with the power-off even if one or more target
+	// hosts (or, for rack-scoped components, any host on the owning rack)
+	// are still in the Assigned/* lifecycle state. Intended for operator-
+	// supervised maintenance where tenant impact has been acknowledged
+	// out-of-band; the bypass is recorded in the server log.
+	OverrideAssignmentCheck bool `protobuf:"varint,6,opt,name=override_assignment_check,json=overrideAssignmentCheck,proto3" json:"override_assignment_check,omitempty"`
+	unknownFields           protoimpl.UnknownFields
+	sizeCache               protoimpl.SizeCache
 }
 
 func (x *PowerOffRackRequest) Reset() {
@@ -4625,15 +4661,28 @@ func (x *PowerOffRackRequest) GetRuleId() *UUID {
 	return nil
 }
 
+func (x *PowerOffRackRequest) GetOverrideAssignmentCheck() bool {
+	if x != nil {
+		return x.OverrideAssignmentCheck
+	}
+	return false
+}
+
 type PowerResetRackRequest struct {
-	state         protoimpl.MessageState `protogen:"open.v1"`
-	TargetSpec    *OperationTargetSpec   `protobuf:"bytes,1,opt,name=target_spec,json=targetSpec,proto3" json:"target_spec,omitempty"` // Flexible targeting: rack(s) with optional type filter, or specific components
-	Forced        bool                   `protobuf:"varint,2,opt,name=forced,proto3" json:"forced,omitempty"`
-	Description   string                 `protobuf:"bytes,3,opt,name=description,proto3" json:"description,omitempty"` // optional task description
-	QueueOptions  *QueueOptions          `protobuf:"bytes,4,opt,name=queue_options,json=queueOptions,proto3,oneof" json:"queue_options,omitempty"`
-	RuleId        *UUID                  `protobuf:"bytes,5,opt,name=rule_id,json=ruleId,proto3,oneof" json:"rule_id,omitempty"` // optional: override rule resolution with a specific rule
-	unknownFields protoimpl.UnknownFields
-	sizeCache     protoimpl.SizeCache
+	state        protoimpl.MessageState `protogen:"open.v1"`
+	TargetSpec   *OperationTargetSpec   `protobuf:"bytes,1,opt,name=target_spec,json=targetSpec,proto3" json:"target_spec,omitempty"` // Flexible targeting: rack(s) with optional type filter, or specific components
+	Forced       bool                   `protobuf:"varint,2,opt,name=forced,proto3" json:"forced,omitempty"`
+	Description  string                 `protobuf:"bytes,3,opt,name=description,proto3" json:"description,omitempty"` // optional task description
+	QueueOptions *QueueOptions          `protobuf:"bytes,4,opt,name=queue_options,json=queueOptions,proto3,oneof" json:"queue_options,omitempty"`
+	RuleId       *UUID                  `protobuf:"bytes,5,opt,name=rule_id,json=ruleId,proto3,oneof" json:"rule_id,omitempty"` // optional: override rule resolution with a specific rule
+	// When true, proceed with the reset even if one or more target hosts
+	// (or, for rack-scoped components, any host on the owning rack) are
+	// still in the Assigned/* lifecycle state. Intended for operator-
+	// supervised maintenance where tenant impact has been acknowledged
+	// out-of-band; the bypass is recorded in the server log.
+	OverrideAssignmentCheck bool `protobuf:"varint,6,opt,name=override_assignment_check,json=overrideAssignmentCheck,proto3" json:"override_assignment_check,omitempty"`
+	unknownFields           protoimpl.UnknownFields
+	sizeCache               protoimpl.SizeCache
 }
 
 func (x *PowerResetRackRequest) Reset() {
@@ -4701,13 +4750,26 @@ func (x *PowerResetRackRequest) GetRuleId() *UUID {
 	return nil
 }
 
+func (x *PowerResetRackRequest) GetOverrideAssignmentCheck() bool {
+	if x != nil {
+		return x.OverrideAssignmentCheck
+	}
+	return false
+}
+
 type BringUpRackRequest struct {
-	state         protoimpl.MessageState `protogen:"open.v1"`
-	TargetSpec    *OperationTargetSpec   `protobuf:"bytes,1,opt,name=target_spec,json=targetSpec,proto3" json:"target_spec,omitempty"` // Target racks for bring-up
-	Description   string                 `protobuf:"bytes,2,opt,name=description,proto3" json:"description,omitempty"`                 // optional task description
-	RuleId        *UUID                  `protobuf:"bytes,3,opt,name=rule_id,json=ruleId,proto3,oneof" json:"rule_id,omitempty"`       // optional: override rule resolution with a specific rule
-	unknownFields protoimpl.UnknownFields
-	sizeCache     protoimpl.SizeCache
+	state       protoimpl.MessageState `protogen:"open.v1"`
+	TargetSpec  *OperationTargetSpec   `protobuf:"bytes,1,opt,name=target_spec,json=targetSpec,proto3" json:"target_spec,omitempty"` // Target racks for bring-up
+	Description string                 `protobuf:"bytes,2,opt,name=description,proto3" json:"description,omitempty"`                 // optional task description
+	RuleId      *UUID                  `protobuf:"bytes,3,opt,name=rule_id,json=ruleId,proto3,oneof" json:"rule_id,omitempty"`       // optional: override rule resolution with a specific rule
+	// When true, allow the bring-up sequence (which may power-cycle hosts
+	// and reset rack-scoped components) to proceed even if any host in
+	// scope is still in the Assigned/* lifecycle state. Intended for
+	// operator-supervised maintenance where tenant impact has been
+	// acknowledged out-of-band; the bypass is recorded in the server log.
+	OverrideAssignmentCheck bool `protobuf:"varint,4,opt,name=override_assignment_check,json=overrideAssignmentCheck,proto3" json:"override_assignment_check,omitempty"`
+	unknownFields           protoimpl.UnknownFields
+	sizeCache               protoimpl.SizeCache
 }
 
 func (x *BringUpRackRequest) Reset() {
@@ -4759,6 +4821,13 @@ func (x *BringUpRackRequest) GetRuleId() *UUID {
 		return x.RuleId
 	}
 	return nil
+}
+
+func (x *BringUpRackRequest) GetOverrideAssignmentCheck() bool {
+	if x != nil {
+		return x.OverrideAssignmentCheck
+	}
+	return false
 }
 
 type IngestRackRequest struct {
@@ -7872,7 +7941,7 @@ const file_flow_proto_rawDesc = "" +
 	"\x1bGetRacksForNVLDomainRequest\x12B\n" +
 	"\x15nvl_domain_identifier\x18\x01 \x01(\v2\x0e.v1.IdentifierR\x13nvlDomainIdentifier\">\n" +
 	"\x1cGetRacksForNVLDomainResponse\x12\x1e\n" +
-	"\x05racks\x18\x01 \x03(\v2\b.v1.RackR\x05racks\"\xee\x03\n" +
+	"\x05racks\x18\x01 \x03(\v2\b.v1.RackR\x05racks\"\xaa\x04\n" +
 	"\x16UpgradeFirmwareRequest\x128\n" +
 	"\vtarget_spec\x18\x01 \x01(\v2\x17.v1.OperationTargetSpecR\n" +
 	"targetSpec\x12*\n" +
@@ -7884,7 +7953,8 @@ const file_flow_proto_rawDesc = "" +
 	"\rqueue_options\x18\x06 \x01(\v2\x10.v1.QueueOptionsH\x03R\fqueueOptions\x88\x01\x01\x12&\n" +
 	"\arule_id\x18\a \x01(\v2\b.v1.UUIDH\x04R\x06ruleId\x88\x01\x01\x12\x1f\n" +
 	"\vsub_targets\x18\b \x03(\tR\n" +
-	"subTargetsB\x11\n" +
+	"subTargets\x12:\n" +
+	"\x19override_assignment_check\x18\t \x01(\bR\x17overrideAssignmentCheckB\x11\n" +
 	"\x0f_target_versionB\r\n" +
 	"\v_start_timeB\v\n" +
 	"\t_end_timeB\x10\n" +
@@ -7976,41 +8046,45 @@ const file_flow_proto_rawDesc = "" +
 	"\btask_ids\x18\x01 \x03(\v2\b.v1.UUIDR\ataskIds\"\x85\x01\n" +
 	"\fQueueOptions\x12A\n" +
 	"\x11conflict_strategy\x18\x01 \x01(\x0e2\x14.v1.ConflictStrategyR\x10conflictStrategy\x122\n" +
-	"\x15queue_timeout_seconds\x18\x02 \x01(\x05R\x13queueTimeoutSeconds\"\xf2\x01\n" +
+	"\x15queue_timeout_seconds\x18\x02 \x01(\x05R\x13queueTimeoutSeconds\"\xae\x02\n" +
 	"\x12PowerOnRackRequest\x128\n" +
 	"\vtarget_spec\x18\x01 \x01(\v2\x17.v1.OperationTargetSpecR\n" +
 	"targetSpec\x12 \n" +
 	"\vdescription\x18\x02 \x01(\tR\vdescription\x12:\n" +
 	"\rqueue_options\x18\x03 \x01(\v2\x10.v1.QueueOptionsH\x00R\fqueueOptions\x88\x01\x01\x12&\n" +
-	"\arule_id\x18\x04 \x01(\v2\b.v1.UUIDH\x01R\x06ruleId\x88\x01\x01B\x10\n" +
+	"\arule_id\x18\x04 \x01(\v2\b.v1.UUIDH\x01R\x06ruleId\x88\x01\x01\x12:\n" +
+	"\x19override_assignment_check\x18\x05 \x01(\bR\x17overrideAssignmentCheckB\x10\n" +
 	"\x0e_queue_optionsB\n" +
 	"\n" +
-	"\b_rule_id\"\x8b\x02\n" +
+	"\b_rule_id\"\xc7\x02\n" +
 	"\x13PowerOffRackRequest\x128\n" +
 	"\vtarget_spec\x18\x01 \x01(\v2\x17.v1.OperationTargetSpecR\n" +
 	"targetSpec\x12\x16\n" +
 	"\x06forced\x18\x02 \x01(\bR\x06forced\x12 \n" +
 	"\vdescription\x18\x03 \x01(\tR\vdescription\x12:\n" +
 	"\rqueue_options\x18\x04 \x01(\v2\x10.v1.QueueOptionsH\x00R\fqueueOptions\x88\x01\x01\x12&\n" +
-	"\arule_id\x18\x05 \x01(\v2\b.v1.UUIDH\x01R\x06ruleId\x88\x01\x01B\x10\n" +
+	"\arule_id\x18\x05 \x01(\v2\b.v1.UUIDH\x01R\x06ruleId\x88\x01\x01\x12:\n" +
+	"\x19override_assignment_check\x18\x06 \x01(\bR\x17overrideAssignmentCheckB\x10\n" +
 	"\x0e_queue_optionsB\n" +
 	"\n" +
-	"\b_rule_id\"\x8d\x02\n" +
+	"\b_rule_id\"\xc9\x02\n" +
 	"\x15PowerResetRackRequest\x128\n" +
 	"\vtarget_spec\x18\x01 \x01(\v2\x17.v1.OperationTargetSpecR\n" +
 	"targetSpec\x12\x16\n" +
 	"\x06forced\x18\x02 \x01(\bR\x06forced\x12 \n" +
 	"\vdescription\x18\x03 \x01(\tR\vdescription\x12:\n" +
 	"\rqueue_options\x18\x04 \x01(\v2\x10.v1.QueueOptionsH\x00R\fqueueOptions\x88\x01\x01\x12&\n" +
-	"\arule_id\x18\x05 \x01(\v2\b.v1.UUIDH\x01R\x06ruleId\x88\x01\x01B\x10\n" +
+	"\arule_id\x18\x05 \x01(\v2\b.v1.UUIDH\x01R\x06ruleId\x88\x01\x01\x12:\n" +
+	"\x19override_assignment_check\x18\x06 \x01(\bR\x17overrideAssignmentCheckB\x10\n" +
 	"\x0e_queue_optionsB\n" +
 	"\n" +
-	"\b_rule_id\"\xa4\x01\n" +
+	"\b_rule_id\"\xe0\x01\n" +
 	"\x12BringUpRackRequest\x128\n" +
 	"\vtarget_spec\x18\x01 \x01(\v2\x17.v1.OperationTargetSpecR\n" +
 	"targetSpec\x12 \n" +
 	"\vdescription\x18\x02 \x01(\tR\vdescription\x12&\n" +
-	"\arule_id\x18\x03 \x01(\v2\b.v1.UUIDH\x00R\x06ruleId\x88\x01\x01B\n" +
+	"\arule_id\x18\x03 \x01(\v2\b.v1.UUIDH\x00R\x06ruleId\x88\x01\x01\x12:\n" +
+	"\x19override_assignment_check\x18\x04 \x01(\bR\x17overrideAssignmentCheckB\n" +
 	"\n" +
 	"\b_rule_id\"\xc9\x01\n" +
 	"\x11IngestRackRequest\x128\n" +
@@ -8371,7 +8445,7 @@ const file_flow_proto_rawDesc = "" +
 	"\x15AssociateRuleWithRack\x12 .v1.AssociateRuleWithRackRequest\x1a\x16.google.protobuf.Empty\x12W\n" +
 	"\x18DisassociateRuleFromRack\x12#.v1.DisassociateRuleFromRackRequest\x1a\x16.google.protobuf.Empty\x12_\n" +
 	"\x16GetRackRuleAssociation\x12!.v1.GetRackRuleAssociationRequest\x1a\".v1.GetRackRuleAssociationResponse\x12e\n" +
-	"\x18ListRackRuleAssociations\x12#.v1.ListRackRuleAssociationsRequest\x1a$.v1.ListRackRuleAssociationsResponseB;Z9github.com/NVIDIA/infra-controller-rest/flow/pkg/proto/v1b\x06proto3"
+	"\x18ListRackRuleAssociations\x12#.v1.ListRackRuleAssociationsRequest\x1a$.v1.ListRackRuleAssociationsResponseB;Z9github.com/NVIDIA/infra-controller/rest-api/flow/pkg/proto/v1b\x06proto3"
 
 var (
 	file_flow_proto_rawDescOnce sync.Once

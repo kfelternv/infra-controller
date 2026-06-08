@@ -11,6 +11,7 @@ initial_dpu_agent_upgrade_policy = "off"
 machine_update_run_interval = 60
 dpu_ipmi_tool_impl = "fake"
 dpu_ipmi_reboot_attempts = 1
+bmc_session_lockout_threshold = 4
 max_find_by_ids = 75
 vpc_peering_policy = "exclusive"
 vpc_peering_policy_on_existing = "mixed"
@@ -106,6 +107,13 @@ network_segment_drain_time = "44s"
 iteration_time = "8m"
 max_object_handling_time = "88s"
 max_concurrency = 888
+
+[vpc_prefix_state_controller]
+vpc_prefix_drain_time = "43s"
+[vpc_prefix_state_controller.controller]
+iteration_time = "6m"
+max_object_handling_time = "66s"
+max_concurrency = 666
 
 [ib_partition_state_controller.controller]
 iteration_time = "7m"

@@ -200,6 +200,23 @@ pub struct CarbideConfig {
     /// DPU reboot.
     pub dpu_ipmi_reboot_attempts: Option<u32>,
 
+    /// Number of consecutive HTTP 401/403 responses from a BMC before the
+    /// session-token path stops attempting to log in to that BMC, to avoid
+    /// exhausting the BMC root account's retry budget.
+    /// Default is 3.
+    #[serde(default = "default_bmc_session_lockout_threshold")]
+    pub bmc_session_lockout_threshold: u32,
+
+    /// When `true`, `GetBmcCredentials` may return
+    /// `UsernamePassword` credentials for BMCs whose Redfish ServiceRoot
+    /// does not expose `SessionService`. When `false` (the default), such
+    /// BMCs surface a `NoSessionService` error to the caller and no
+    /// basic-auth fallback is performed. See the "Basic-auth fallback"
+    /// section of `crates/api/src/credentials/bmc_session_manager.rs` for
+    /// the full semantics.
+    #[serde(default)]
+    pub allow_bmc_basic_auth_fallback: bool,
+
     /// Infiniband fabrics managed by the site
     /// Note: At the moment, only a single fabric is supported
     #[serde(default)]
@@ -258,6 +275,10 @@ pub struct CarbideConfig {
     /// NetworkSegmentController related configuration parameter
     #[serde(default)]
     pub network_segment_state_controller: NetworkSegmentStateControllerConfig,
+
+    /// VpcPrefixStateController related configuration parameter
+    #[serde(default)]
+    pub vpc_prefix_state_controller: VpcPrefixStateControllerConfig,
 
     /// IbPartitionStateController related configuration parameter
     #[serde(default)]
@@ -767,6 +788,12 @@ pub struct DpfConfig {
     /// DPU provisioning.
     #[serde(default = "default_dpf_bfb_url")]
     pub bfb_url: String,
+    /// Optional override for the Kubernetes `imagePullSecrets` entry used to pull the
+    /// docker images of the mandatory services. When set, it is applied to every
+    /// mandatory service except `dts` and `doca_hbn`. This also overrides if
+    /// docker_image_pull_secret is set in services sections as well.
+    #[serde(default)]
+    pub docker_image_pull_secret: Option<String>,
     /// Additional Helm services to deploy alongside DPF.
     #[serde(default)]
     pub services: Box<DpfMandatoryServicesConfig>,
@@ -780,8 +807,25 @@ impl Default for DpfConfig {
             flavor_name: default_dpf_flavor_name(),
             node_label_key: default_dpf_node_label_key(),
             bfb_url: String::new(),
+            docker_image_pull_secret: None,
             services: Box::default(),
         }
+    }
+}
+
+impl DpfConfig {
+    /// Returns the mandatory services with the optional [`Self::docker_image_pull_secret`]
+    /// override applied. The override affects every mandatory service except `dts` and
+    /// `doca_hbn`, which keep their own configured pull secret.
+    pub fn resolved_mandatory_services(&self) -> DpfMandatoryServicesConfig {
+        let mut services = (*self.services).clone();
+        if let Some(secret) = &self.docker_image_pull_secret {
+            services.dpu_agent.docker_image_pull_secret = secret.clone();
+            services.dhcp_server.docker_image_pull_secret = secret.clone();
+            services.fmds.docker_image_pull_secret = secret.clone();
+            services.otel.docker_image_pull_secret = secret.clone();
+        }
+        services
     }
 }
 
@@ -881,7 +925,7 @@ pub struct MachineIdentityConfig {
     /// Optional HTTP proxy for token endpoint calls (SSRF mitigation).
     #[serde(default)]
     pub token_endpoint_http_proxy: Option<String>,
-    /// Key-id for encryption/decryption of signing keys (selects from secrets `machine_identity.encryption_keys`).
+    /// Key-id for encrypting new tenant identity ciphertext (selects from secrets `machine_identity.encryption_keys`).
     #[serde(default)]
     pub current_encryption_key_id: Option<String>,
     /// Trust domains allowed for tenant JWT `iss` (normalized host). Empty = allow any.
@@ -1388,6 +1432,43 @@ impl Default for NetworkSegmentStateControllerConfig {
     }
 }
 
+/// VpcPrefixStateController related config.
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
+pub struct VpcPrefixStateControllerConfig {
+    /// Common state controller configs
+    #[serde(default = "StateControllerConfig::default")]
+    pub controller: StateControllerConfig,
+    /// The time for which VPC prefixes must have 0 referencing network prefixes,
+    /// before they are actually released.
+    /// This should be set to a duration long enough that ensures no pending
+    /// RPC calls might still use the VPC prefix to avoid race conditions.
+    #[serde(
+        default = "VpcPrefixStateControllerConfig::vpc_prefix_drain_time_default",
+        deserialize_with = "deserialize_duration_chrono",
+        serialize_with = "as_duration"
+    )]
+    pub vpc_prefix_drain_time: chrono::Duration,
+}
+
+impl VpcPrefixStateControllerConfig {
+    /// Returns the default VPC prefix drain time.
+    pub fn vpc_prefix_drain_time_default() -> Duration {
+        // Match the network segment drain default for hierarchical cleanup.
+        Duration::minutes(5)
+    }
+}
+
+impl Default for VpcPrefixStateControllerConfig {
+    /// Builds the default VPC prefix state controller configuration.
+    fn default() -> Self {
+        // Use framework defaults plus the VPC prefix drain grace period.
+        Self {
+            controller: StateControllerConfig::default(),
+            vpc_prefix_drain_time: Self::vpc_prefix_drain_time_default(),
+        }
+    }
+}
+
 /// IbPartitionStateController related config
 #[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq)]
 pub struct IbPartitionStateControllerConfig {
@@ -1506,6 +1587,10 @@ fn default_listen() -> SocketAddr {
 
 fn default_max_database_connections() -> u32 {
     1000
+}
+
+pub const fn default_bmc_session_lockout_threshold() -> u32 {
+    3
 }
 
 /// DpuConfig related internal configuration
@@ -2118,13 +2203,11 @@ pub struct TrafficInterceptBridging {
     /// within the DPU.
     pub internal_bridge_routing_prefix: Ipv4Network,
 
-    /// The name of the bridge (aka br-host) that sits between host PF and br-hbn
-    /// It will be connected to br-hbn or the hbn pod via a patch_point or
-    /// patch port of some kind.
-    #[serde(default = "default_host_intercept_bridge_name")]
-    pub host_intercept_bridge_name: String,
+    /// The HBN/SFC bridge that intercept patch ports attach to during provisioning.
+    #[serde(default = "default_hbn_bridge")]
+    pub hbn_bridge: String,
 
-    /// The name of the bridge that sits between VFs and br-hbn.
+    /// The name of the bridge that sits between VFs and br-hbn _**for VM-owned VFs**_.
     /// This bridge will be assigned an address from <internal_bridge_routing_prefix>
     /// so that we can route traffic to a /32 bound to it and used as a VTEP for
     /// an additional GENEVE VPN.
@@ -2132,21 +2215,55 @@ pub struct TrafficInterceptBridging {
     pub vf_intercept_bridge_name: String,
 
     /// The <vf_intercept_bridge_name> side of the SF representor that connects the HBN pod to br-hbn.
-    /// This will be the side owned by the <vf_intercept_bridge_name> bridge
+    /// This will be the side owned by the <vf_intercept_bridge_name> bridge _**for VM-owned VFs**_
     #[serde(default = "default_vf_intercept_bridge_port")]
     pub vf_intercept_bridge_port: String,
 
-    /// The <host_intercept_bridge_name> side of the SF representor that connects the HBN pod to br-hbn.
-    /// This will be the side owned by the <host_intercept_bridge_name> bridge.
-    #[serde(default = "default_host_intercept_bridge_port")]
-    pub host_intercept_bridge_port: String,
-
     /// The SF used for internal routing of VF traffic.
     pub vf_intercept_bridge_sf: String,
+
+    /// The layout of host-owned representors that will have intermediary bridges.
+    /// E.g., [{"pf0hpf" => {bridge: "br-host", patch_port: "brh"}}]
+    #[serde(default)]
+    pub host_representor_intercept_bridging: HashMap<String, HostInterceptBridging>,
 }
 
-pub fn default_host_intercept_bridge_name() -> String {
-    "br-host".to_string()
+#[derive(Debug, Clone, PartialEq, Deserialize, Serialize)]
+pub struct HostInterceptBridging {
+    /// The name of the bridge (e.g., br-host) that will sit between host PF/VF and br-hbn.
+    /// It will be connected to br-hbn or br-sfc.
+    pub bridge: String,
+
+    /// The patch port on this bridge that connects it toward HBN or SFC.
+    pub patch_port: String,
+
+    /// Control whether this bridging should be created during DPU (re)provisioning or not.
+    /// By default, we expect to create these bridges.
+    #[serde(default)]
+    pub skip_create: bool,
+}
+
+impl TrafficInterceptBridging {
+    /// Formats host-owned representor bridge config for BlueField provisioning.
+    pub fn host_representor_intercept_bridging_provisioning_config(&self) -> Option<String> {
+        // Keep bf.cfg input stable and omit entries that should not be provisioned.
+        let config = self
+            .host_representor_intercept_bridging
+            .iter()
+            .filter(|(_, bridge)| !bridge.skip_create)
+            .sorted_by(|(left, _), (right, _)| left.cmp(right))
+            .map(|(representor, bridge)| {
+                format!("{representor}:{}:{}", bridge.bridge, bridge.patch_port)
+            })
+            .join(",");
+
+        // An empty map, or one with only skipped entries, means no provisioning config.
+        (!config.is_empty()).then_some(config)
+    }
+}
+
+pub fn default_hbn_bridge() -> String {
+    "br-hbn".to_string()
 }
 
 pub fn default_vf_intercept_bridge_name() -> String {
@@ -2155,10 +2272,6 @@ pub fn default_vf_intercept_bridge_name() -> String {
 
 pub fn default_vf_intercept_bridge_port() -> String {
     "patch-br-dpu-to-hbn".to_string()
-}
-
-pub fn default_host_intercept_bridge_port() -> String {
-    "patch-br-host-to-hbn".to_string()
 }
 
 #[cfg(test)]
@@ -2422,6 +2535,15 @@ mod tests {
         assert!(config.pools.is_none());
         assert!(config.ib_config.is_none());
         assert!(config.ib_fabrics.is_empty());
+        assert_eq!(
+            config.bmc_session_lockout_threshold,
+            default_bmc_session_lockout_threshold()
+        );
+        assert!(
+            !config.allow_bmc_basic_auth_fallback,
+            "allow_bmc_basic_auth_fallback must default to false to preserve \
+             the session-token-only contract for existing deployments"
+        );
         assert!(config.vpc_peering_policy.is_none());
         assert!(config.site_explorer.enabled.load(AtomicOrdering::Relaxed));
         // `enable_admin_ui` is unset in the minimal config, so it should default to true.
@@ -2440,6 +2562,10 @@ mod tests {
         assert_eq!(
             config.network_segment_state_controller,
             NetworkSegmentStateControllerConfig::default()
+        );
+        assert_eq!(
+            config.vpc_prefix_state_controller,
+            VpcPrefixStateControllerConfig::default()
         );
         assert_eq!(
             config.ib_partition_state_controller,
@@ -2472,6 +2598,7 @@ mod tests {
         assert_eq!(config.asn, 777);
         assert_eq!(config.dhcp_servers, vec!["99.101.102.103".to_string()]);
         assert!(config.route_servers.is_empty());
+        assert_eq!(config.bmc_session_lockout_threshold, 5);
         assert_eq!(config.vpc_peering_policy, Some(VpcPeeringPolicy::Exclusive));
         assert_eq!(config.vpc_peering_policy_on_existing, None);
         assert_eq!(
@@ -2581,6 +2708,21 @@ mod tests {
             }
         );
         assert_eq!(
+            config.vpc_prefix_state_controller,
+            VpcPrefixStateControllerConfig {
+                vpc_prefix_drain_time: Duration::seconds(46),
+                controller: StateControllerConfig {
+                    iteration_time: std::time::Duration::from_secs(19 * 60),
+                    max_object_handling_time: std::time::Duration::from_secs(199),
+                    max_concurrency: 1999,
+                    processor_dispatch_interval: std::time::Duration::from_secs(2),
+                    processor_log_interval: std::time::Duration::from_secs(60),
+                    metric_emission_interval: std::time::Duration::from_secs(60),
+                    metric_hold_time: std::time::Duration::from_secs(5 * 60),
+                },
+            }
+        );
+        assert_eq!(
             config.ib_partition_state_controller,
             IbPartitionStateControllerConfig {
                 controller: StateControllerConfig {
@@ -2612,6 +2754,7 @@ mod tests {
         assert_eq!(config.database_url, "postgres://a:b@postgresql".to_string());
         assert_eq!(config.max_database_connections, 1222);
         assert_eq!(config.asn, 123);
+        assert_eq!(config.bmc_session_lockout_threshold, 4);
         assert_eq!(
             config.dhcp_servers,
             vec!["1.2.3.4".to_string(), "5.6.7.8".to_string()]
@@ -2759,6 +2902,21 @@ mod tests {
                     iteration_time: std::time::Duration::from_secs(8 * 60),
                     max_object_handling_time: std::time::Duration::from_secs(88),
                     max_concurrency: 888,
+                    processor_dispatch_interval: std::time::Duration::from_secs(2),
+                    processor_log_interval: std::time::Duration::from_secs(60),
+                    metric_emission_interval: std::time::Duration::from_secs(60),
+                    metric_hold_time: std::time::Duration::from_secs(5 * 60),
+                },
+            }
+        );
+        assert_eq!(
+            config.vpc_prefix_state_controller,
+            VpcPrefixStateControllerConfig {
+                vpc_prefix_drain_time: Duration::seconds(43),
+                controller: StateControllerConfig {
+                    iteration_time: std::time::Duration::from_secs(6 * 60),
+                    max_object_handling_time: std::time::Duration::from_secs(66),
+                    max_concurrency: 666,
                     processor_dispatch_interval: std::time::Duration::from_secs(2),
                     processor_log_interval: std::time::Duration::from_secs(60),
                     metric_emission_interval: std::time::Duration::from_secs(60),
@@ -2927,6 +3085,7 @@ mod tests {
         assert_eq!(config.database_url, "postgres://a:b@postgresql".to_string());
         assert_eq!(config.max_database_connections, 1333);
         assert_eq!(config.asn, 777);
+        assert_eq!(config.bmc_session_lockout_threshold, 5);
         assert_eq!(config.dhcp_servers, vec!["99.101.102.103".to_string()]);
         assert_eq!(config.route_servers, vec!["9.10.11.12".to_string()]);
         assert_eq!(
@@ -3069,6 +3228,21 @@ mod tests {
                     iteration_time: std::time::Duration::from_secs(18 * 60),
                     max_object_handling_time: std::time::Duration::from_secs(188),
                     max_concurrency: 1888,
+                    processor_dispatch_interval: std::time::Duration::from_secs(2),
+                    processor_log_interval: std::time::Duration::from_secs(60),
+                    metric_emission_interval: std::time::Duration::from_secs(60),
+                    metric_hold_time: std::time::Duration::from_secs(5 * 60),
+                },
+            }
+        );
+        assert_eq!(
+            config.vpc_prefix_state_controller,
+            VpcPrefixStateControllerConfig {
+                vpc_prefix_drain_time: Duration::seconds(46),
+                controller: StateControllerConfig {
+                    iteration_time: std::time::Duration::from_secs(19 * 60),
+                    max_object_handling_time: std::time::Duration::from_secs(199),
+                    max_concurrency: 1999,
                     processor_dispatch_interval: std::time::Duration::from_secs(2),
                     processor_log_interval: std::time::Duration::from_secs(60),
                     metric_emission_interval: std::time::Duration::from_secs(60),
@@ -3541,6 +3715,60 @@ firmware_url = "https://firmware.example.com/fw-b.bin"
                 pool_type: resource_pool::ResourcePoolType::Integer,
                 delegate_prefix_len: None,
             }
+        );
+    }
+
+    #[test]
+    fn dpf_docker_image_pull_secret_overrides_non_excluded_services() {
+        let cfg = DpfConfig {
+            docker_image_pull_secret: Some("my-custom-secret".to_string()),
+            ..DpfConfig::default()
+        };
+
+        let services = cfg.resolved_mandatory_services();
+
+        // Override applies to every mandatory service ...
+        assert_eq!(
+            services.dpu_agent.docker_image_pull_secret,
+            "my-custom-secret"
+        );
+        assert_eq!(
+            services.dhcp_server.docker_image_pull_secret,
+            "my-custom-secret"
+        );
+        assert_eq!(services.fmds.docker_image_pull_secret, "my-custom-secret");
+        assert_eq!(services.otel.docker_image_pull_secret, "my-custom-secret");
+
+        // ... except dts and doca_hbn, which keep the default.
+        assert_eq!(
+            services.dts.docker_image_pull_secret,
+            DEFAULT_DPF_IMAGE_PULL_SECRET
+        );
+        assert_eq!(
+            services.doca_hbn.docker_image_pull_secret,
+            DEFAULT_DPF_IMAGE_PULL_SECRET
+        );
+    }
+
+    #[test]
+    fn dpf_docker_image_pull_secret_unset_keeps_per_service_secrets() {
+        // No global override -> services keep their own configured secret.
+        let cfg = DpfConfig::default();
+        assert!(cfg.docker_image_pull_secret.is_none());
+
+        let services = cfg.resolved_mandatory_services();
+
+        assert_eq!(
+            services.dpu_agent.docker_image_pull_secret,
+            DEFAULT_DPF_IMAGE_PULL_SECRET
+        );
+        assert_eq!(
+            services.dts.docker_image_pull_secret,
+            DEFAULT_DPF_IMAGE_PULL_SECRET
+        );
+        assert_eq!(
+            services.doca_hbn.docker_image_pull_secret,
+            DEFAULT_DPF_IMAGE_PULL_SECRET
         );
     }
 }

@@ -4,6 +4,7 @@ rapid_iterations = true
 max_database_connections = 1333
 max_find_by_ids = 50
 dpu_network_monitor_pinger_type = "OobNetBind"
+bmc_session_lockout_threshold = 5
 vpc_peering_policy = "exclusive"
 
 
@@ -51,6 +52,13 @@ network_segment_drain_time = "45s"
 iteration_time = "18m"
 max_object_handling_time = "188s"
 max_concurrency = 1888
+
+[vpc_prefix_state_controller]
+vpc_prefix_drain_time = "46s"
+[vpc_prefix_state_controller.controller]
+iteration_time = "19m"
+max_object_handling_time = "199s"
+max_concurrency = 1999
 
 [ib_partition_state_controller.controller]
 iteration_time = "17m"

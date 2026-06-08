@@ -613,27 +613,6 @@ fn should_replay_subscriptions(has_connected_before: bool, session_present: bool
     has_connected_before && !session_present
 }
 
-#[cfg(test)]
-mod tests {
-    use super::should_replay_subscriptions;
-
-    #[test]
-    fn does_not_replay_on_initial_connect() {
-        assert!(!should_replay_subscriptions(false, false));
-        assert!(!should_replay_subscriptions(false, true));
-    }
-
-    #[test]
-    fn replays_on_reconnect_when_broker_has_fresh_session() {
-        assert!(should_replay_subscriptions(true, false));
-    }
-
-    #[test]
-    fn does_not_replay_on_reconnect_when_broker_resumed_session() {
-        assert!(!should_replay_subscriptions(true, true));
-    }
-}
-
 // SuperBasicBackoff is a basic backoff I'm implementing
 // to back off if there are errors during event loop
 // processing. Right now it's just hard-coded to start
@@ -665,5 +644,26 @@ impl SuperBasicBackoff {
 
     fn reset(&mut self) {
         self.current = std::time::Duration::from_millis(100);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::should_replay_subscriptions;
+
+    #[test]
+    fn does_not_replay_on_initial_connect() {
+        assert!(!should_replay_subscriptions(false, false));
+        assert!(!should_replay_subscriptions(false, true));
+    }
+
+    #[test]
+    fn replays_on_reconnect_when_broker_has_fresh_session() {
+        assert!(should_replay_subscriptions(true, false));
+    }
+
+    #[test]
+    fn does_not_replay_on_reconnect_when_broker_resumed_session() {
+        assert!(!should_replay_subscriptions(true, true));
     }
 }

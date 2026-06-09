@@ -201,12 +201,20 @@ build:
 	cd db && CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -ldflags "-extldflags '-static'" -o ../$(BUILD_DIR)/migrations ./cmd/migrations
 	cd cert-manager && CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -ldflags "-extldflags '-static'" -o ../$(BUILD_DIR)/credsmgr ./cmd/credsmgr
 	cd cli && CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -ldflags "-extldflags '-static'" -o ../$(BUILD_DIR)/nicocli ./cmd/cli
+	cd mcp && CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -ldflags "-extldflags '-static'" -o ../$(BUILD_DIR)/nico-mcp ./cmd/nico-mcp
 
 INSTALL_DIR ?= $(shell go env GOPATH)/bin
 
 nico-cli:
 	go build -o $(INSTALL_DIR)/nicocli ./cli/cmd/cli
 	@echo "Installed nicocli to $(INSTALL_DIR)/nicocli"
+
+# Install the standalone MCP server binary. `nicocli mcp serve` discovers it
+# next to nicocli or on PATH, so installing both to INSTALL_DIR makes the CLI
+# launcher work out of the box.
+nico-mcp:
+	go build -o $(INSTALL_DIR)/nico-mcp ./mcp/cmd/nico-mcp
+	@echo "Installed nico-mcp to $(INSTALL_DIR)/nico-mcp"
 
 docker-build:
 	docker build -t $(IMAGE_REGISTRY)/nico-rest-api:$(IMAGE_TAG) -f $(DOCKERFILE_DIR)/Dockerfile.nico-rest-api .
@@ -218,6 +226,7 @@ docker-build:
 	docker build -t $(IMAGE_REGISTRY)/nico-flow:$(IMAGE_TAG) -f $(DOCKERFILE_DIR)/Dockerfile.nico-flow .
 	docker build -t $(IMAGE_REGISTRY)/nico-psm:$(IMAGE_TAG) -f $(DOCKERFILE_DIR)/Dockerfile.nico-psm .
 	docker build -t $(IMAGE_REGISTRY)/nico-nsm:$(IMAGE_TAG) -f $(DOCKERFILE_DIR)/Dockerfile.nico-nsm .
+	docker build -t $(IMAGE_REGISTRY)/nico-mcp:$(IMAGE_TAG) -f $(DOCKERFILE_DIR)/Dockerfile.nico-mcp .
 
 core-proto: core-proto-fetch core-proto-fmt core-protogen
 
@@ -282,6 +291,7 @@ docker-build-local:
 	docker build -t $(IMAGE_REGISTRY)/nico-rest-mock-core:$(IMAGE_TAG) -f $(LOCAL_DOCKERFILE_DIR)/Dockerfile.nico-rest-mock-core .
 	docker build -t $(IMAGE_REGISTRY)/nico-rest-db:$(IMAGE_TAG) -f $(LOCAL_DOCKERFILE_DIR)/Dockerfile.nico-rest-db .
 	docker build -t $(IMAGE_REGISTRY)/nico-rest-cert-manager:$(IMAGE_TAG) -f $(LOCAL_DOCKERFILE_DIR)/Dockerfile.nico-rest-cert-manager .
+	docker build -t $(IMAGE_REGISTRY)/nico-mcp:$(IMAGE_TAG) -f $(LOCAL_DOCKERFILE_DIR)/Dockerfile.nico-mcp .
 
 # Create kind cluster with port mappings
 kind-up:

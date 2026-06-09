@@ -17,62 +17,72 @@ import (
 	urfave "github.com/urfave/cli/v2"
 )
 
-// Command returns the "mcp" urfave/cli command tree for nicocli. Wire
-// it into the binary's command list from cmd/cli/main.go alongside the
-// dynamically-generated commands the rest of the CLI ships with.
-//
-// specData is the OpenAPI YAML the rest of the CLI is built from; the
-// command's "serve" action passes it to BuildServer so the MCP tool
-// catalogue stays in lockstep with every nicocli build.
-func Command(specData []byte) *urfave.Command {
-	return &urfave.Command{
-		Name:  "mcp",
-		Usage: "Run an MCP server that exposes the NICo REST read surface over streamable-HTTP",
-		Subcommands: []*urfave.Command{
-			serveCommand(specData),
+// ServeFlags returns the full flag set for the standalone nico-mcp server
+// binary. The server-specific flags (listen, path, shutdown-timeout) sit
+// alongside the connection flags (base-url, org, api-name, token,
+// token-command, debug). The dynamically-generated CLI exposes the latter as
+// root-level flags, but nico-mcp is a single-purpose binary with no parent
+// command to inherit from, so it declares all of them itself. Each flag also
+// reads its NICO_* environment variable.
+func ServeFlags() []urfave.Flag {
+	return []urfave.Flag{
+		&urfave.StringFlag{
+			Name:    "listen",
+			Usage:   "address:port to listen on",
+			EnvVars: []string{"NICO_MCP_LISTEN"},
+			Value:   ":8080",
+		},
+		&urfave.StringFlag{
+			Name:    "path",
+			Usage:   "HTTP path the MCP handler is mounted at",
+			EnvVars: []string{"NICO_MCP_PATH"},
+			Value:   "/mcp",
+		},
+		&urfave.DurationFlag{
+			Name:    "shutdown-timeout",
+			Usage:   "graceful shutdown timeout when SIGINT/SIGTERM arrives",
+			EnvVars: []string{"NICO_MCP_SHUTDOWN_TIMEOUT"},
+			Value:   10 * time.Second,
+		},
+		&urfave.StringFlag{
+			Name:    "base-url",
+			Usage:   "default NICo REST base URL (a per-call base_url argument overrides this)",
+			EnvVars: []string{"NICO_BASE_URL"},
+		},
+		&urfave.StringFlag{
+			Name:    "org",
+			Usage:   "default org used in /v2/org/<org>/... paths (a per-call org argument overrides this)",
+			EnvVars: []string{"NICO_ORG"},
+		},
+		&urfave.StringFlag{
+			Name:    "api-name",
+			Usage:   "API path segment used in /v2/org/<org>/<name>/... routes",
+			EnvVars: []string{"NICO_API_NAME"},
+			Value:   "nico",
+		},
+		&urfave.StringFlag{
+			Name:    "token",
+			Usage:   "default bearer token (a per-call token argument or inbound Authorization header overrides this)",
+			EnvVars: []string{"NICO_TOKEN"},
+		},
+		&urfave.StringFlag{
+			Name:    "token-command",
+			Aliases: []string{"auth-script"},
+			Usage:   "shell command/script that prints a bearer token, used as a 401-refresh hook",
+			EnvVars: []string{"NICO_TOKEN_COMMAND", "NICO_AUTH_SCRIPT"},
+		},
+		&urfave.BoolFlag{
+			Name:  "debug",
+			Usage: "enable debug logging (full HTTP request/response)",
 		},
 	}
 }
 
-func serveCommand(specData []byte) *urfave.Command {
-	return &urfave.Command{
-		Name:  "serve",
-		Usage: "Start the streamable-HTTP MCP server",
-		Description: "Serves the NICo REST read surface as MCP tools at /mcp on the\n" +
-			"configured listen address. The server is stateless and never emits\n" +
-			"text/event-stream responses; every tool/call returns a single JSON\n" +
-			"body. In production, place an MCP-aware gateway in front and rely on\n" +
-			"the inbound Authorization header for per-call authentication.",
-		Flags: []urfave.Flag{
-			&urfave.StringFlag{
-				Name:    "listen",
-				Usage:   "address:port to listen on",
-				EnvVars: []string{"NICO_MCP_LISTEN"},
-				Value:   ":8080",
-			},
-			&urfave.StringFlag{
-				Name:    "path",
-				Usage:   "HTTP path the MCP handler is mounted at",
-				EnvVars: []string{"NICO_MCP_PATH"},
-				Value:   "/mcp",
-			},
-			&urfave.DurationFlag{
-				Name:    "shutdown-timeout",
-				Usage:   "graceful shutdown timeout when SIGINT/SIGTERM arrives",
-				EnvVars: []string{"NICO_MCP_SHUTDOWN_TIMEOUT"},
-				Value:   10 * time.Second,
-			},
-		},
-		Action: func(c *urfave.Context) error {
-			return runServe(c, specData)
-		},
-	}
-}
-
-// runServe wires the urfave context into Options, builds the MCP server,
-// and runs an http.Server until SIGINT/SIGTERM. It is split out from the
-// urfave Action closure so tests can drive it directly.
-func runServe(c *urfave.Context, specData []byte) error {
+// Run wires the urfave context into Options, builds the MCP server, and runs
+// an http.Server until SIGINT/SIGTERM. It is the action backing the standalone
+// nico-mcp binary, exported so the binary's main stays a thin wrapper and so
+// tests can drive it directly.
+func Run(c *urfave.Context, specData []byte) error {
 	opts := buildServeOptions(c)
 
 	server, err := BuildServer(specData, opts)

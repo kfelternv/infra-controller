@@ -7,7 +7,6 @@ import (
 	"fmt"
 	"os"
 
-	"github.com/NVIDIA/infra-controller/rest-api/cli/mcp"
 	appcli "github.com/NVIDIA/infra-controller/rest-api/cli/pkg"
 	"github.com/NVIDIA/infra-controller/rest-api/cli/tui"
 	"github.com/NVIDIA/infra-controller/rest-api/openapi"
@@ -20,7 +19,7 @@ func main() {
 		fmt.Fprintf(os.Stderr, "fatal: %v\n", err)
 		os.Exit(1)
 	}
-	app.Commands = append(app.Commands, mcp.Command(openapi.Spec))
+	app.Commands = append(app.Commands, appcli.MCPCommand())
 	app.Commands = append(app.Commands, &cli.Command{
 		Name:    "tui",
 		Aliases: []string{"i"},

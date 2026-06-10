@@ -39,6 +39,10 @@ type Config struct {
 
 	// ComponentManagerRegistry is the registry containing initialized component managers.
 	ComponentManagerRegistry *componentmanager.Registry
+
+	// CoreInvoker backs the NICo Core gRPC passthrough activity. May be nil, in
+	// which case passthrough activity calls return an error at invocation time.
+	CoreInvoker activity.CoreInvoker
 }
 
 // Validate checks that the configuration is complete and consistent.
@@ -100,7 +104,7 @@ func (c *Config) Build(
 
 	// Bind dependencies into an Activities instance so each manager has its
 	// own isolated copy — no shared mutable globals between managers.
-	acts := activity.New(updater, reportUpdater, c.ComponentManagerRegistry)
+	acts := activity.New(updater, reportUpdater, c.ComponentManagerRegistry, c.CoreInvoker)
 
 	publisherClient, err := temporal.New(c.ClientConf)
 	if err != nil {

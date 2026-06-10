@@ -17,6 +17,7 @@ type Activities struct {
 	updater       task.TaskStatusUpdater
 	reportUpdater task.TaskReportUpdater
 	registry      *componentmanager.Registry
+	coreInvoker   CoreInvoker
 }
 
 // New creates an Activities instance. Any argument may be nil; activity
@@ -25,11 +26,13 @@ func New(
 	updater task.TaskStatusUpdater,
 	reportUpdater task.TaskReportUpdater,
 	registry *componentmanager.Registry,
+	coreInvoker CoreInvoker,
 ) *Activities {
 	return &Activities{
 		updater:       updater,
 		reportUpdater: reportUpdater,
 		registry:      registry,
+		coreInvoker:   coreInvoker,
 	}
 }
 
@@ -49,5 +52,6 @@ func (a *Activities) All() map[string]any {
 		NameBringUpControl:            a.BringUpControl,
 		NameGetBringUpStatus:          a.GetBringUpStatus,
 		NameVerifyFirmwareConsistency: a.VerifyFirmwareConsistency,
+		NameInvokeCorePassthrough:     a.InvokeCorePassthrough,
 	}
 }

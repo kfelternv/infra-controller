@@ -313,6 +313,85 @@ tags:
       - `rackLevelAdministration` capability attribute was deprecated in favor of `flow` and was removed on May 13th, 2026 0:00 UTC. Please use `flow` instead.
       - `isRackLevelAdministrationEnabled` query parameter was deprecated in favor of `isFlowEnabled` and was removed on May 13th, 2026 0:00 UTC. Please use `isFlowEnabled` instead.
 paths:
+  '/v2/org/{org}/nico/core/passthrough':
+    parameters:
+      - schema:
+          type: string
+        name: org
+        in: path
+        required: true
+        description: Name of the Org
+    post:
+      summary: Invoke a NICo Core gRPC method (Provider Admin)
+      tags:
+        - NICo Core Passthrough
+      parameters:
+        - schema:
+            type: string
+            format: uuid
+          name: siteId
+          in: query
+          required: true
+          description: ID of the Site whose Flow worker proxies to NICo Core
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/NICoCorePassthroughRequest'
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/NICoCorePassthroughResponse'
+        '403':
+          $ref: '#/components/responses/ForbiddenError'
+      operationId: invoke-nico-core-passthrough
+      description: |-
+        Invoke any NICo Core (forge.Forge) unary gRPC method by name with a
+        protojson-encoded request, proxied through the Site's Flow worker.
+
+        User must have authorization role with `PROVIDER_ADMIN` suffix. Methods
+        classified as mutations (anything other than Find/Get/List/Search/Lookup/Identify/Determine/Version/Echo)
+        additionally require `allowMutation: true`.
+  '/v2/org/{org}/nico/core/methods':
+    parameters:
+      - schema:
+          type: string
+        name: org
+        in: path
+        required: true
+        description: Name of the Org
+    get:
+      summary: List invocable NICo Core gRPC methods (Provider Admin)
+      tags:
+        - NICo Core Passthrough
+      parameters:
+        - schema:
+            type: string
+            format: uuid
+          name: siteId
+          in: query
+          required: true
+          description: ID of the Site whose Flow worker proxies to NICo Core
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/NICoCoreMethodsResponse'
+        '403':
+          $ref: '#/components/responses/ForbiddenError'
+      operationId: list-nico-core-methods
+      description: |-
+        Return the catalog of invocable NICo Core (forge.Forge) unary methods,
+        each with its request/response protobuf message types and read/mutation
+        classification.
+
+        User must have authorization role with `PROVIDER_ADMIN` suffix.
   '/v2/org/{org}/nico/service-account/current':
     parameters:
       - schema:
@@ -12744,6 +12823,65 @@ paths:
           $ref: '#/components/responses/GenericHttpError'
 components:
   schemas:
+    NICoCorePassthroughRequest:
+      type: object
+      title: NICoCorePassthroughRequest
+      description: A NICo Core gRPC passthrough invocation.
+      required:
+        - method
+      properties:
+        method:
+          type: string
+          description: 'NICo Core gRPC method, bare ("FindMachineIds") or fully qualified ("/forge.Forge/FindMachineIds").'
+        request:
+          type: object
+          additionalProperties: true
+          description: protojson-encoded request message for the method. Omit for methods with an empty request.
+        allowMutation:
+          type: boolean
+          default: false
+          description: Must be true to invoke a method classified as a write/destructive operation.
+    NICoCorePassthroughResponse:
+      type: object
+      title: NICoCorePassthroughResponse
+      description: Result of a NICo Core gRPC passthrough invocation.
+      properties:
+        method:
+          type: string
+          description: The bare method that was invoked.
+        response:
+          type: object
+          additionalProperties: true
+          description: protojson-encoded response message from NICo Core.
+    NICoCoreMethodsResponse:
+      type: object
+      title: NICoCoreMethodsResponse
+      description: Catalog of invocable NICo Core gRPC methods.
+      properties:
+        service:
+          type: string
+          description: Fully qualified gRPC service name.
+        methods:
+          type: array
+          items:
+            $ref: '#/components/schemas/NICoCoreMethod'
+    NICoCoreMethod:
+      type: object
+      title: NICoCoreMethod
+      description: A single invocable NICo Core gRPC method.
+      properties:
+        method:
+          type: string
+        fullMethod:
+          type: string
+        inputType:
+          type: string
+        outputType:
+          type: string
+        mutation:
+          type: boolean
+        deprecated:
+          type: boolean
     InfrastructureProvider:
       description: Infrastructure providers own and manage datacenters
       type: object

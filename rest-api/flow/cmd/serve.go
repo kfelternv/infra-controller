@@ -233,6 +233,15 @@ func doServe() {
 		ComponentManagerRegistry: cmRegistry,
 	}
 
+	// Wire the optional NICo Core gRPC passthrough. It dials Core with the same
+	// URL and certificates as the typed client; when those are absent the
+	// passthrough activity is still registered but returns an error if invoked.
+	if passthrough, err := nicoapi.NewPassthrough(time.Minute); err != nil {
+		log.Warn().Err(err).Msg("NICo Core gRPC passthrough disabled")
+	} else {
+		temporalManagerConf.CoreInvoker = passthrough
+	}
+
 	if os.Getenv("REPORT_NICO_API_VERSION") != "" {
 		// Do some basic nico-api requests, mainly for early testing; this code can be removed when we're doing actual communication
 		go func() {

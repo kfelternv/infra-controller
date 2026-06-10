@@ -29,6 +29,20 @@ func NewAPIRoutes(dbSession *cdb.Session, tc tClient.Client, tnc tClient.Namespa
 			Method:  http.MethodGet,
 			Handler: apiHandler.NewMetadataHandler(),
 		},
+		// NICo Core gRPC passthrough endpoints (Provider Admin only).
+		// Proxy any forge.Forge gRPC method to the site's Flow worker, which
+		// holds the direct connection to Core. Reads are open to Provider
+		// Admins; mutations require allowMutation=true.
+		{
+			Path:    apiPathPrefix + "/core/passthrough",
+			Method:  http.MethodPost,
+			Handler: apiHandler.NewInvokeNICoCorePassthroughHandler(dbSession, scp, cfg),
+		},
+		{
+			Path:    apiPathPrefix + "/core/methods",
+			Method:  http.MethodGet,
+			Handler: apiHandler.NewListNICoCorePassthroughMethodsHandler(dbSession, scp, cfg),
+		},
 		// User endpoint
 		{
 			Path:    apiPathPrefix + "/user/current",

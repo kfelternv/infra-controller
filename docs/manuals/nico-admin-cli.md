@@ -314,7 +314,7 @@ With this configuration, a client certificate with subject
 
 
 You can see an example of a complete nico-api configuration file 
-[here](https://github.com/NVIDIA/ncx-infra-controller-core/blob/main/crates/api/src/cfg/test_data/full_config.toml)
+[here](https://github.com/NVIDIA/infra-controller/blob/main/crates/api-core/src/cfg/test_data/full_config.toml)
 
 ### Permissive mode
 

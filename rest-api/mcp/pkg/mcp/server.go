@@ -58,13 +58,13 @@ func BuildServer(specData []byte, opts Options) (*mcp.Server, error) {
 //     and rejects server->client requests. initialize is a no-op.
 //   - JSONResponse: true -- every tool/call response uses
 //     Content-Type: application/json; the SDK never opens an SSE
-//     stream. The data-hall deployment behind the Latinum Agent
-//     Gateway Shard Proxy (NATS) requires this.
+//     stream, so clients and intermediaries that do not speak
+//     text/event-stream still receive a single JSON body.
 //
 // DNS-rebinding (localhost) protection and cross-origin protection are
 // deliberately left at the SDK's secure defaults (go-sdk v1.4.1+):
 // browser cross-origin requests and localhost DNS-rebinding attempts are
-// rejected, while non-browser MCP/gateway clients -- which send no Origin
+// rejected, while non-browser MCP clients -- which send no Origin
 // or Sec-Fetch-Site header -- pass through unaffected. Do not set
 // DisableLocalhostProtection or a permissive CrossOriginProtection here
 // without understanding the security trade-off.

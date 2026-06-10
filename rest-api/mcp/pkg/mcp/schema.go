@@ -22,7 +22,7 @@ var commonConfigDescriptions = []struct {
 	{"org", "Org used in /v2/org/<org>/... paths for this call. Overrides the server startup flag/env default when set."},
 	{"base_url", "NICo REST base URL for this call. Overrides the server startup flag/env default when set; useful when one MCP server fronts multiple NICo REST deployments."},
 	{"api_name", "Override the API path segment used in /v2/org/<org>/<name>/... (api.name; default \"nico\")."},
-	{"token", "Bearer token for this call. Overrides the inbound Authorization header. Omit in production behind agentgateway; the gateway-injected JWT is passed through automatically."},
+	{"token", "Bearer token for this call. Overrides the inbound Authorization header. Omit it when an upstream proxy injects the Authorization header, which is passed through to NICo REST unchanged."},
 }
 
 // buildInputSchema produces a JSON Schema describing a tool's input:

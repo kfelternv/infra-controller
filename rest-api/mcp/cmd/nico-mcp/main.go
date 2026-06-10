@@ -16,11 +16,12 @@ func main() {
 	app := &cli.App{
 		Name:  "nico-mcp",
 		Usage: "Serve the NICo REST read surface as MCP tools over streamable-HTTP",
-		Description: "Serves the NICo REST read surface as MCP tools at /mcp on the\n" +
-			"configured listen address. The server is stateless and never emits\n" +
+		Description: "Serves the NICo REST read surface as MCP tools at the configured\n" +
+			"path and listen address. The server is stateless and never emits\n" +
 			"text/event-stream responses; every tool/call returns a single JSON\n" +
-			"body. In production, place an MCP-aware gateway in front and rely on\n" +
-			"the inbound Authorization header for per-call authentication.",
+			"body. Authentication is per-call: a token argument or the inbound\n" +
+			"Authorization header is forwarded to NICo REST, which makes the\n" +
+			"authorization decision.",
 		Flags: mcp.ServeFlags(),
 		Action: func(c *cli.Context) error {
 			return mcp.Run(c, openapi.Spec)

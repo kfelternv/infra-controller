@@ -36,9 +36,10 @@ use model::machine::{LoadSnapshotOptions, Machine, ManagedHostStateSnapshot};
 use model::metadata::Metadata;
 use model::site_explorer::{
     Chassis, ComputerSystem, EndpointExplorationError, EndpointExplorationReport, EndpointType,
-    ExploredDpu, ExploredEndpoint, ExploredManagedHost, UefiDevicePath,
+    ExploredDpu, ExploredEndpoint, ExploredManagedHost, PreingestionState, UefiDevicePath,
 };
 use model::switch::SwitchSearchFilter;
+use model::test_support::{DpuConfig, ManagedHostConfig};
 use rpc::forge::GetSiteExplorationRequest;
 use rpc::forge::forge_server::Forge;
 use rpc::site_explorer::{
@@ -49,11 +50,12 @@ use sqlx::PgPool;
 use tonic::Request;
 
 use crate::sqlx_test;
+use crate::test_support::fixture_config::{
+    DpuConfigExt as _, FixtureDefault as _, ManagedHostConfigExt as _,
+};
 use crate::tests::common;
 use crate::tests::common::api_fixtures;
 use crate::tests::common::api_fixtures::TestEnvOverrides;
-use crate::tests::common::api_fixtures::dpu::DpuConfig;
-use crate::tests::common::api_fixtures::managed_host::ManagedHostConfig;
 use crate::tests::common::api_fixtures::network_segment::{
     FIXTURE_ADMIN_NETWORK_SEGMENT_GATEWAY, FIXTURE_HOST_INBAND_NETWORK_SEGMENT_GATEWAY,
     create_host_inband_network_segment,
@@ -94,7 +96,7 @@ impl FakeMachine {
     fn as_mock_dpu(&self) -> DpuConfig {
         DpuConfig {
             bmc_mac_address: self.mac,
-            ..Default::default()
+            ..DpuConfig::default()
         }
     }
 
@@ -102,7 +104,7 @@ impl FakeMachine {
         ManagedHostConfig {
             bmc_mac_address: self.mac,
             dpus,
-            ..Default::default()
+            ..ManagedHostConfig::default()
         }
     }
 }
@@ -1276,7 +1278,7 @@ async fn test_site_explorer_clear_last_known_error(
 
     let mut dpu_report1: EndpointExplorationReport = DpuConfig {
         last_exploration_error: last_error.clone(),
-        ..Default::default()
+        ..DpuConfig::default()
     }
     .into();
     dpu_report1.generate_machine_id(false)?;
@@ -1302,6 +1304,52 @@ async fn test_site_explorer_clear_last_known_error(
     assert_eq!(nodes.len(), 1);
     let node = nodes.first();
     assert_eq!(node.unwrap().report.last_exploration_error, None);
+
+    Ok(())
+}
+
+/// Clearing the site exploration error should also lift a terminal preingestion
+/// `Failed` state back to `Initial`, so an operator can retry preingestion
+/// without force-deleting and rediscovering the endpoint.
+#[sqlx_test]
+async fn test_clear_error_resets_failed_preingestion(
+    pool: PgPool,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let env = common::api_fixtures::create_test_env(pool).await;
+    let mut txn = db::Transaction::begin(&env.pool).await?;
+    let ip_address = "192.168.1.2";
+    let bmc_ip: IpAddr = IpAddr::from_str(ip_address)?;
+
+    let mut report: EndpointExplorationReport = DpuConfig::default().into();
+    report.generate_machine_id(false)?;
+    db::explored_endpoints::insert(bmc_ip, &report, false, &mut txn).await?;
+
+    // Put the endpoint in the terminal Failed preingestion state, as a failed
+    // BMC time sync would.
+    db::explored_endpoints::set_preingestion_failed(
+        bmc_ip,
+        "BMC time synchronization failed after 3 reset attempts. Time difference exceeds 5 minutes threshold.".to_string(),
+        &mut txn,
+    )
+    .await?;
+    txn.commit().await?;
+
+    env.api
+        .clear_site_exploration_error(Request::new(rpc::forge::ClearSiteExplorationErrorRequest {
+            ip_address: ip_address.to_string(),
+        }))
+        .await
+        .unwrap()
+        .into_inner();
+
+    let mut txn = db::Transaction::begin(&env.pool).await?;
+    let nodes = db::explored_endpoints::find_all_by_ip(bmc_ip, &mut txn).await?;
+    assert_eq!(nodes.len(), 1);
+    assert_eq!(
+        nodes.first().unwrap().preingestion_state,
+        PreingestionState::Initial,
+        "clearing the error should reset a Failed preingestion to Initial"
+    );
 
     Ok(())
 }
@@ -1386,11 +1434,11 @@ async fn test_fallback_dpu_serial(pool: PgPool) -> Result<(), Box<dyn std::error
     let host1_dpu_report = DpuConfig {
         serial: HOST1_DPU_SERIAL_NUMBER.to_string(),
         bmc_mac_address: HOST1_DPU_BMC_MAC.parse()?,
-        ..Default::default()
+        ..DpuConfig::default()
     };
     let host1_report = ManagedHostConfig {
         bmc_mac_address: HOST1_BMC_MAC.parse()?,
-        ..Default::default()
+        ..ManagedHostConfig::default()
     };
     endpoint_explorer.insert_endpoint_results(vec![
         (
@@ -1547,7 +1595,7 @@ async fn test_fallback_dpu_serial(pool: PgPool) -> Result<(), Box<dyn std::error
         assert!(
             <Vec<Machine> as AsRef<Vec<Machine>>>::as_ref(&machines)
                 .iter()
-                .any(|x| { x.bmc_info.ip.clone().unwrap_or_default() == bmc_ip })
+                .any(|x| { x.bmc_info.ip.is_some_and(|ip| ip.to_string() == bmc_ip) })
         );
     }
     Ok(())
@@ -1872,7 +1920,7 @@ async fn test_site_explorer_fixtures_multidpu(
 
     let mock_host = ManagedHostConfig {
         dpus: vec![DpuConfig::default(), DpuConfig::default()],
-        ..Default::default()
+        ..ManagedHostConfig::default()
     };
     api_fixtures::site_explorer::register_expected_machine(&env, &mock_host, None).await;
     let mock_explored_host = MockExploredHost::new(&env, mock_host);
@@ -1969,7 +2017,7 @@ async fn test_site_explorer_fixtures_zerodpu_site_explorer_before_host_dhcp(
 
     let mock_host = ManagedHostConfig {
         dpus: vec![],
-        ..Default::default()
+        ..ManagedHostConfig::default()
     };
     api_fixtures::site_explorer::register_expected_machine(&env, &mock_host, None).await;
     let mock_explored_host = MockExploredHost::new(&env, mock_host);
@@ -2058,7 +2106,7 @@ async fn test_site_explorer_fixtures_zerodpu_dhcp_before_site_explorer(
 
     let mock_host = ManagedHostConfig {
         dpus: vec![],
-        ..Default::default()
+        ..ManagedHostConfig::default()
     };
     api_fixtures::site_explorer::register_expected_machine(&env, &mock_host, None).await;
     let mock_explored_host = MockExploredHost::new(&env, mock_host);
@@ -2269,12 +2317,10 @@ async fn test_delete_explored_endpoint(pool: PgPool) -> Result<(), Box<dyn std::
 
     // Verify both endpoints still exist
     let mut txn = env.pool.begin().await?;
-    let host_endpoints =
-        db::explored_endpoints::find_all_by_ip(IpAddr::from_str(host_ip)?, &mut txn).await?;
+    let host_endpoints = db::explored_endpoints::find_all_by_ip(*host_ip, &mut txn).await?;
     assert_eq!(host_endpoints.len(), 1);
 
-    let dpu_endpoints =
-        db::explored_endpoints::find_all_by_ip(IpAddr::from_str(dpu_ip)?, &mut txn).await?;
+    let dpu_endpoints = db::explored_endpoints::find_all_by_ip(*dpu_ip, &mut txn).await?;
     assert_eq!(dpu_endpoints.len(), 1);
     txn.commit().await?;
 
@@ -2303,11 +2349,11 @@ async fn test_machine_creation_with_sku(pool: PgPool) -> Result<(), Box<dyn std:
     let host1_dpu_report = DpuConfig {
         serial: HOST1_DPU_SERIAL_NUMBER.to_string(),
         bmc_mac_address: HOST1_DPU_BMC_MAC.parse()?,
-        ..Default::default()
+        ..DpuConfig::default()
     };
     let host1_report = ManagedHostConfig {
         bmc_mac_address: HOST1_BMC_MAC.parse()?,
-        ..Default::default()
+        ..ManagedHostConfig::default()
     };
     endpoint_explorer.insert_endpoint_results(vec![
         (
@@ -2671,12 +2717,11 @@ async fn test_site_explorer_auto_corrects_nic_mode_per_expected_machine(
     // DPU hardware reports DPU mode (so it looks like a "properly
     // configured" DPU to the BF3-DPU heuristic) -- the operator-declared
     // override is what forces the correction to NIC mode.
-    let dpu_config = common::api_fixtures::dpu::DpuConfig {
+    let dpu_config = DpuConfig {
         nic_mode: Some(NicMode::Dpu),
-        ..Default::default()
+        ..DpuConfig::default()
     };
-    let mock_host =
-        common::api_fixtures::managed_host::ManagedHostConfig::with_dpus(vec![dpu_config.clone()]);
+    let mock_host = model::test_support::ManagedHostConfig::with_dpus(vec![dpu_config.clone()]);
     let host_bmc_mac = mock_host.bmc_mac_address;
 
     // Seed an ExpectedMachine with `dpu_mode: NicMode` that matches the
@@ -2726,6 +2771,92 @@ async fn test_site_explorer_auto_corrects_nic_mode_per_expected_machine(
     assert!(
         calls.iter().any(|(_, mode)| *mode == NicMode::Nic),
         "expected at least one set_nic_mode(Nic) call triggered by the operator's NicMode declaration; calls so far: {calls:?}"
+    );
+
+    Ok(())
+}
+
+/// A queued `set_nic_mode` only takes effect after a host power cycle, and
+/// site-explorer drives that power cycle itself for every vendor -- the
+/// Redfish `ComputerSystem.Reset` action is standard across BMCs. This is
+/// the non-Dell guard for that behavior: a Lenovo host whose DPU needs the
+/// mode correction gets an automatic `PowerCycle` on its host BMC in the
+/// same pass that issued `set_nic_mode`, rather than parking on a manual
+/// power cycle.
+#[sqlx_test]
+async fn test_site_explorer_power_cycles_non_dell_host_to_apply_nic_mode(
+    pool: PgPool,
+) -> Result<(), Box<dyn std::error::Error>> {
+    use model::expected_machine::{DpuMode, ExpectedMachine, ExpectedMachineData};
+    use model::site_explorer::NicMode;
+
+    let env = common::api_fixtures::create_test_env(pool).await;
+
+    // DPU hardware reports DPU mode; the operator-declared NicMode override
+    // is what forces the correction (and therefore the power cycle).
+    let dpu_config = DpuConfig {
+        nic_mode: Some(NicMode::Dpu),
+        ..DpuConfig::default()
+    };
+    let mock_host = ManagedHostConfig {
+        dpus: vec![dpu_config],
+        vendor: Some(bmc_vendor::BMCVendor::Lenovo),
+        ..ManagedHostConfig::default()
+    };
+    let host_bmc_mac = mock_host.bmc_mac_address;
+
+    let mut txn = env.pool.begin().await?;
+    db::expected_machine::create(
+        &mut txn,
+        ExpectedMachine {
+            id: None,
+            bmc_mac_address: host_bmc_mac,
+            data: ExpectedMachineData {
+                bmc_username: "ADMIN".to_string(),
+                bmc_password: "PASS".to_string(),
+                serial_number: "EM-866-NIC-POWERCYCLE".to_string(),
+                metadata: model::metadata::Metadata::new_with_default_name(),
+                dpu_mode: DpuMode::NicMode,
+                ..Default::default()
+            },
+        },
+    )
+    .await?;
+    txn.commit().await?;
+
+    common::api_fixtures::site_explorer::MockExploredHost::new(&env, mock_host)
+        .discover_dhcp_host_bmc(|_, _| Ok(()))
+        .await?
+        .discover_dhcp_dpu_bmc(0, |_, _| Ok(()))
+        .await?
+        .insert_site_exploration_results()?
+        // First iteration: initial endpoint exploration.
+        .run_site_explorer_iteration()
+        .await
+        .mark_preingestion_complete()
+        .await?
+        // Second iteration: the matching loop issues `set_nic_mode` and,
+        // with the DPU now needing reconfiguration, power-cycles the host
+        // so the queued mode change applies.
+        .run_site_explorer_iteration()
+        .await;
+
+    let nic_mode_calls = env.endpoint_explorer.set_nic_mode_calls.lock().unwrap();
+    assert!(
+        nic_mode_calls.iter().any(|(_, mode)| *mode == NicMode::Nic),
+        "expected set_nic_mode(Nic) before the power cycle; calls so far: {nic_mode_calls:?}"
+    );
+
+    let power_calls = env
+        .endpoint_explorer
+        .redfish_power_control_calls
+        .lock()
+        .unwrap();
+    assert!(
+        power_calls
+            .iter()
+            .any(|(_, action)| matches!(action, libredfish::SystemPowerControl::PowerCycle)),
+        "expected an automatic host PowerCycle on the non-Dell (Lenovo) host to apply the queued NIC mode change; power calls so far: {power_calls:?}"
     );
 
     Ok(())
@@ -2809,7 +2940,7 @@ async fn test_site_explorer_records_boot_interface_id_onto_non_dpu_nic(
         ManagedHostConfig {
             dpus: vec![],
             non_dpu_macs: vec![non_dpu_mac],
-            ..Default::default()
+            ..ManagedHostConfig::default()
         },
     )
     .await;

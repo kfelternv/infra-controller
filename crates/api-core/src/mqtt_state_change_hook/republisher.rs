@@ -66,30 +66,30 @@ pub struct ManagedHostStateRepublisher<P: MqttPublisher> {
     metrics: MqttHookMetrics,
 }
 
+/// Constructor parameters for [`ManagedHostStateRepublisher`].
+pub struct ManagedHostStateRepublisherParams {
+    pub db_pool: sqlx::PgPool,
+    pub topic_prefix: String,
+    pub publish_timeout: Duration,
+    pub config: PeriodicStateRepublishConfig,
+    pub host_health_config: HostHealthConfig,
+}
+
 impl<P: MqttPublisher> ManagedHostStateRepublisher<P> {
     /// Create a new republisher.
     ///
     /// Reuses the change-hook publish metrics (`carbide_dsx_event_bus_publish_count`)
     /// under the `managed_host_republish` component so periodic publishes can be
     /// told apart from change-driven ones on dashboards.
-    #[allow(clippy::too_many_arguments)]
-    pub fn new(
-        publisher: P,
-        db_pool: sqlx::PgPool,
-        topic_prefix: String,
-        publish_timeout: Duration,
-        config: PeriodicStateRepublishConfig,
-        host_health_config: HostHealthConfig,
-        meter: &Meter,
-    ) -> Self {
+    pub fn new(publisher: P, params: ManagedHostStateRepublisherParams, meter: &Meter) -> Self {
         let metrics = MqttHookMetrics::without_queue_depth(meter, "managed_host_republish");
         Self {
             publisher,
-            db_pool,
-            topic_prefix,
-            publish_timeout,
-            config,
-            host_health_config,
+            db_pool: params.db_pool,
+            topic_prefix: params.topic_prefix,
+            publish_timeout: params.publish_timeout,
+            config: params.config,
+            host_health_config: params.host_health_config,
             metrics,
         }
     }

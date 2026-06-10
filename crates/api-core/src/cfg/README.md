@@ -349,7 +349,7 @@ Extends `StateControllerConfig` with:
 | `publish_timeout` | `Duration` | `1s` | Timeout for MQTT publish operations. |
 | `queue_capacity` | `usize` | `1024` | Event buffer size for DSX publish work (events dropped when full). |
 | `auth` | `MqttAuthConfig` | *(none)* | MQTT authentication settings. |
-| `periodic_state_republish` | `PeriodicStateRepublishConfig` | *(disabled)* | Periodically re-publish current managed-host state so consumers that miss change events can reconcile (see [PeriodicStateRepublishConfig](#periodicstaterepublishconfig)). |
+| `periodic_state_republish` | `PeriodicStateRepublishConfig` | *(enabled)* | Periodically re-publish current managed-host state so consumers that miss change events can reconcile (see [PeriodicStateRepublishConfig](#periodicstaterepublishconfig)). |
 
 ### `PeriodicStateRepublishConfig`
 
@@ -360,7 +360,7 @@ events, so consumers handle them identically.
 
 | Field | Type | Default | Description |
 |-------|------|---------|-------------|
-| `enabled` | `bool` | `false` | Enable periodic republishing. Change-driven publishing is unaffected by this setting. |
+| `enabled` | `bool` | `true` | Enable periodic republishing (on by default whenever the DSX Exchange Event Bus is enabled). Change-driven publishing is unaffected by this setting. |
 | `interval` | `Duration` | `5m` | How often a republish sweep runs. |
 | `scope` | `RepublishScope` | `all` | Which managed hosts to publish each sweep (see [RepublishScope](#republishscope)). |
 | `healthy_republish_every` | `u32` | `1` | When `scope = all`, publish healthy hosts only every Nth sweep; hosts with an active health alert are always published every sweep. `0` is treated as `1`. Ignored when `scope = unhealthy_only`. |

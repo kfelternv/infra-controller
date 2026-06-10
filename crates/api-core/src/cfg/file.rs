@@ -2203,9 +2203,10 @@ pub enum RepublishScope {
 /// change-driven events, so consumers handle them identically.
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq)]
 pub struct PeriodicStateRepublishConfig {
-    /// Enable periodic republishing. Disabled by default. Change-driven
-    /// publishing is unaffected by this setting.
-    #[serde(default)]
+    /// Enable periodic republishing. Enabled by default whenever the DSX
+    /// Exchange Event Bus itself is enabled. Change-driven publishing is
+    /// unaffected by this setting.
+    #[serde(default = "PeriodicStateRepublishConfig::default_enabled")]
     pub enabled: bool,
 
     /// How often a republish sweep runs. Defaults to 5 minutes.
@@ -2237,7 +2238,7 @@ pub struct PeriodicStateRepublishConfig {
 impl Default for PeriodicStateRepublishConfig {
     fn default() -> Self {
         Self {
-            enabled: false,
+            enabled: Self::default_enabled(),
             interval: Self::default_interval(),
             scope: RepublishScope::default(),
             healthy_republish_every: Self::default_healthy_republish_every(),
@@ -2247,6 +2248,19 @@ impl Default for PeriodicStateRepublishConfig {
 }
 
 impl PeriodicStateRepublishConfig {
+    pub const fn default_enabled() -> bool {
+        true
+    }
+
+    pub fn validate(&self) -> eyre::Result<()> {
+        if self.enabled && self.interval.is_zero() {
+            return Err(eyre::eyre!(
+                "dsx_exchange_event_bus.periodic_state_republish.interval must be > 0s"
+            ));
+        }
+        Ok(())
+    }
+
     pub const fn default_interval() -> std::time::Duration {
         std::time::Duration::from_secs(300)
     }
@@ -2591,6 +2605,28 @@ mod tests {
             url: BAD_URL.to_string(),
         }];
         assert!(config.validate_web_ui_sidebar_tools().is_err());
+    }
+
+    #[test]
+    fn periodic_state_republish_defaults_enabled() {
+        let config = PeriodicStateRepublishConfig::default();
+
+        assert!(config.enabled);
+    }
+
+    #[test]
+    fn periodic_state_republish_rejects_zero_interval_when_enabled() {
+        let config = PeriodicStateRepublishConfig {
+            interval: std::time::Duration::ZERO,
+            ..Default::default()
+        };
+
+        let err = config.validate().expect_err("zero interval must error");
+        assert!(
+            err.to_string()
+                .contains("dsx_exchange_event_bus.periodic_state_republish.interval must be > 0s"),
+            "unexpected error: {err}"
+        );
     }
 
     #[test]

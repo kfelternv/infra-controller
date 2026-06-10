@@ -2222,13 +2222,15 @@ func cmdVPCPrefixCreate(s *Session, _ []string) error {
 		return err
 	}
 
+	// ipBlockID is already trimmed by promptVPCPrefixIPBlockID (picker IDs are
+	// clean; the manual-entry path trims), so no extra TrimSpace here.
 	body := map[string]interface{}{
 		"name":         name,
 		"vpcId":        vpc.ID,
-		"ipBlockId":    strings.TrimSpace(ipBlockID),
+		"ipBlockId":    ipBlockID,
 		"prefixLength": prefixLen,
 	}
-	LogCmd(s, "vpc-prefix", "create", "--name", name, "--vpc-id", vpc.ID, "--ip-block-id", strings.TrimSpace(ipBlockID), "--prefix-length", prefixLenText)
+	LogCmd(s, "vpc-prefix", "create", "--name", name, "--vpc-id", vpc.ID, "--ip-block-id", ipBlockID, "--prefix-length", prefixLenText)
 	bodyJSON, _ := json.Marshal(body)
 	resp, _, err := s.Client.Do("POST", apiPath(s, "vpc-prefix"), nil, nil, bodyJSON)
 	if err != nil {

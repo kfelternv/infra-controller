@@ -111,9 +111,12 @@ func TestOperationAction(t *testing.T) {
 		{"get-instance-status-history", "status-history"},
 		{"get-machine-status-history", "status-history"},
 		// get-current-<resource> singletons resolve to `current`; their
-		// -stats endpoints resolve to `stats` (distinct actions, no collision)
+		// -stats endpoints resolve to `stats` (distinct actions, no collision).
+		// service-account has no -stats endpoint in the spec today, but the
+		// suffix mapping is resource-independent, so it is asserted here too.
 		{"get-current-infrastructure-provider-stats", "stats"},
 		{"get-current-tenant-stats", "stats"},
+		{"get-current-service-account-stats", "stats"},
 		{"batch-create-instance", "batch-create"},
 		{"batch-create-expected-machines", "batch-create"},
 		{"batch-update-expected-machines", "batch-update"},
@@ -675,6 +678,12 @@ func TestIsActionModifier(t *testing.T) {
 // short alias non-deterministically points at one of the two operations
 // depending on map iteration order, so the same binary exposes a different
 // command surface depending on whether the config file was loaded.
+//
+// NOTE: this exercises the collision resolver with synthetic ops (action
+// "get" injected on both). In the embedded spec these two operations now map
+// to distinct `current` / `stats` actions, so this exact collision no longer
+// arises there; the live singleton-surface guard is
+// TestNewApp_CurrentSingletonCommandSurface.
 func TestBuildTagSubcommands_AliasCollisionExpandsAllNames(t *testing.T) {
 	infraProviderGet := &Operation{
 		OperationID: "get-current-infrastructure-provider",
@@ -705,14 +714,16 @@ func TestBuildTagSubcommands_AliasCollisionExpandsAllNames(t *testing.T) {
 
 // TestBuildTagSubcommands_NonCollidingActionKeepsShortAlias is the negative
 // counterpart to the collision test above: when there is exactly one
-// operation per short action, the short alias is preserved.
+// operation per short action, the short alias is preserved. Uses a plain
+// get-<resource> op (a genuine `get` action) so the fixture is self-consistent
+// -- get-current-* singletons now map to `current`, not `get`.
 func TestBuildTagSubcommands_NonCollidingActionKeepsShortAlias(t *testing.T) {
 	op := &Operation{
-		OperationID: "get-current-infrastructure-provider",
-		Tags:        []string{"Infrastructure Provider"},
+		OperationID: "get-site",
+		Tags:        []string{"Site"},
 	}
 	ops := []resolvedOp{
-		{tag: "Infrastructure Provider", action: "get", method: "GET", path: "/p1", op: op},
+		{tag: "Site", action: "get", method: "GET", path: "/p1", op: op},
 	}
 
 	cmds := buildTagSubcommands(&Spec{}, ops)
@@ -727,6 +738,9 @@ func TestBuildTagSubcommands_NonCollidingActionKeepsShortAlias(t *testing.T) {
 // running the resolver against both possible orderings of the colliding
 // operations. The resulting command tree must be identical, so the binary's
 // command surface no longer depends on Go map iteration order.
+//
+// NOTE: synthetic action "get" is injected on both ops to force the collision;
+// in the embedded spec these resolve to distinct `current` / `stats` actions.
 func TestBuildTagSubcommands_AliasCollisionIsOrderIndependent(t *testing.T) {
 	infraProviderGet := &Operation{
 		OperationID: "get-current-infrastructure-provider",

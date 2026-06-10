@@ -158,14 +158,19 @@ func buildTagSubcommands(spec *Spec, ops []resolvedOp) []*cli.Command {
 	}
 
 	// Resolve action-name collisions symmetrically: when two or more
-	// operations under the same tag collapse to the same short action (e.g.
-	// `get-current-infrastructure-provider` and
-	// `get-current-infrastructure-provider-stats` both -> `get`), expand ALL
-	// of them to their full OperationID. The previous "first one wins" pass
-	// produced a different command surface depending on the order of map
+	// operations under the same tag collapse to the same short action, expand
+	// ALL of them to their full OperationID. The previous "first one wins"
+	// pass produced a different command surface depending on the order of map
 	// iteration in collectOperations, which depended on whether the user's
 	// config file had been loaded -- the same binary exposed different
 	// commands in the two states.
+	//
+	// The formerly motivating case -- `get-current-infrastructure-provider`
+	// and `get-current-infrastructure-provider-stats` both collapsing to
+	// `get` -- no longer collides: get-current-* singletons now map to
+	// distinct `current` / `stats` actions in operationAction. This guard
+	// stays for any future tag whose operations still collide on a short
+	// action.
 	actionCounts := make(map[string]int)
 	for _, op := range primaryOps {
 		actionCounts[op.action]++

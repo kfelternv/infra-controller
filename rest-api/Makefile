@@ -24,6 +24,7 @@ POSTGRES_IMAGE := postgres:14.4-alpine
 # Helm chart configuration (for kind-reset-helm / helm-* targets)
 UMBRELLA_CHART := helm/charts/nico-rest
 SITE_AGENT_CHART := helm/charts/nico-rest-site-agent
+MCP_CHART := helm/charts/nico-mcp
 
 HELM_SET := --set global.image.repository=$(IMAGE_REGISTRY) \
 	--set global.image.tag=$(IMAGE_TAG) \
@@ -272,7 +273,7 @@ flow-protogen:
 
 .PHONY: kind-up kind-down kind-deploy kind-load kind-apply kind-redeploy kind-status kind-logs kind-reset kind-reset-infra kind-reset-kustomize kind-reset-helm kind-verify setup-site-agent test-simple-sdk-example
 .PHONY: deploy-overlay-api deploy-overlay-cert-manager deploy-overlay-site-manager deploy-overlay-workflow
-.PHONY: helm-lint helm-template helm-deploy helm-deploy-site-agent helm-deploy-all helm-redeploy helm-verify helm-verify-site-agent helm-uninstall
+.PHONY: helm-lint helm-template helm-deploy helm-deploy-site-agent helm-deploy-mcp helm-deploy-all helm-redeploy helm-verify helm-verify-site-agent helm-uninstall
 
 # Kind cluster configuration
 KIND_CLUSTER_NAME := nico-rest-local
@@ -315,6 +316,7 @@ kind-load:
 	kind load docker-image $(IMAGE_REGISTRY)/nico-rest-mock-core:$(IMAGE_TAG) --name $(KIND_CLUSTER_NAME)
 	kind load docker-image $(IMAGE_REGISTRY)/nico-rest-db:$(IMAGE_TAG) --name $(KIND_CLUSTER_NAME)
 	kind load docker-image $(IMAGE_REGISTRY)/nico-rest-cert-manager:$(IMAGE_TAG) --name $(KIND_CLUSTER_NAME)
+	kind load docker-image $(IMAGE_REGISTRY)/nico-mcp:$(IMAGE_TAG) --name $(KIND_CLUSTER_NAME)
 
 # Apply kustomize manifests and wait for readiness
 kind-apply:
@@ -519,6 +521,7 @@ kind-reset-helm: kind-reset-infra
 	@echo "Deploying app services via Helm charts..."
 	$(MAKE) helm-deploy
 	$(MAKE) helm-deploy-site-agent
+	$(MAKE) helm-deploy-mcp
 	@echo ""
 	@echo "================================================================================"
 	@echo "Deployment complete! (Helm)"
@@ -538,12 +541,15 @@ kind-reset: kind-reset-helm
 helm-lint:
 	helm lint $(UMBRELLA_CHART)/ $(HELM_SET) $(HELM_SET_KEYCLOAK)
 	helm lint $(SITE_AGENT_CHART)/ $(HELM_SET)
+	helm lint $(MCP_CHART)/ $(HELM_SET)
 
 helm-template:
 	@echo "--- nico-rest (umbrella) ---"
 	helm template nico-rest $(UMBRELLA_CHART)/ $(HELM_SET) $(HELM_SET_KEYCLOAK) --namespace nico-rest
 	@echo "--- nico-rest-site-agent ---"
 	helm template nico-rest-site-agent $(SITE_AGENT_CHART)/ $(HELM_SET) --namespace nico-rest
+	@echo "--- nico-mcp ---"
+	helm template nico-mcp $(MCP_CHART)/ $(HELM_SET) --namespace nico-rest
 
 # Deploy umbrella chart (api + workflow + site-manager + db)
 # Note: images must be loaded into kind before calling this (kind-load or kind-reset-infra)
@@ -569,8 +575,18 @@ helm-deploy-site-agent:
 	@echo "Waiting for site-agent to stabilize..."
 	kubectl -n nico-rest rollout status statefulset/nico-rest-site-agent --timeout=120s
 
-# Deploy everything (umbrella + site-agent)
-helm-deploy-all: helm-deploy helm-deploy-site-agent
+# Deploy the standalone MCP server chart. The server is parameter-driven; for
+# local dev we point its default base URL at the in-cluster API so a tool call
+# only needs to supply org + token (a per-call base_url still overrides this).
+helm-deploy-mcp:
+	helm upgrade --install nico-mcp $(MCP_CHART)/ \
+		--namespace nico-rest --create-namespace $(HELM_SET) \
+		--set config.baseURL=http://nico-rest-api:8388 \
+		--set config.apiName=nico \
+		--wait --timeout 2m
+
+# Deploy everything (umbrella + site-agent + mcp)
+helm-deploy-all: helm-deploy helm-deploy-site-agent helm-deploy-mcp
 
 # Rebuild images and redeploy umbrella chart via Helm (excludes site-agent; use helm-deploy-site-agent separately)
 helm-redeploy: docker-build-local kind-load helm-deploy
@@ -593,6 +609,7 @@ helm-verify-site-agent:
 	kubectl -n nico-rest rollout status statefulset/nico-rest-site-agent --timeout=120s
 
 helm-uninstall:
+	-helm uninstall nico-mcp --namespace nico-rest
 	-helm uninstall nico-rest-site-agent --namespace nico-rest
 	-helm uninstall nico-rest --namespace nico-rest
 

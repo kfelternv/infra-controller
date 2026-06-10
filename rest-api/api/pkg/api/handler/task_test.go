@@ -14,13 +14,6 @@ import (
 	"net/url"
 	"testing"
 
-	"github.com/NVIDIA/infra-controller/rest-api/api/pkg/api/handler/util/common"
-	"github.com/NVIDIA/infra-controller/rest-api/api/pkg/api/model"
-	sc "github.com/NVIDIA/infra-controller/rest-api/api/pkg/client/site"
-	authz "github.com/NVIDIA/infra-controller/rest-api/auth/pkg/authorization"
-	"github.com/NVIDIA/infra-controller/rest-api/common/pkg/otelecho"
-	cdbm "github.com/NVIDIA/infra-controller/rest-api/db/pkg/db/model"
-	flowv1 "github.com/NVIDIA/infra-controller/rest-api/workflow-schema/flow/protobuf/v1"
 	"github.com/google/uuid"
 	"github.com/labstack/echo/v4"
 	"github.com/stretchr/testify/assert"
@@ -28,6 +21,14 @@ import (
 	"github.com/stretchr/testify/require"
 	oteltrace "go.opentelemetry.io/otel/trace"
 	tmocks "go.temporal.io/sdk/mocks"
+
+	"github.com/NVIDIA/infra-controller/rest-api/api/pkg/api/handler/util/common"
+	"github.com/NVIDIA/infra-controller/rest-api/api/pkg/api/model"
+	sc "github.com/NVIDIA/infra-controller/rest-api/api/pkg/client/site"
+	authz "github.com/NVIDIA/infra-controller/rest-api/auth/pkg/authorization"
+	"github.com/NVIDIA/infra-controller/rest-api/common/pkg/otelecho"
+	cdbm "github.com/NVIDIA/infra-controller/rest-api/db/pkg/db/model"
+	flowv1 "github.com/NVIDIA/infra-controller/rest-api/workflow-schema/flow/protobuf/v1"
 )
 
 func TestGetTaskHandler_Handle(t *testing.T) {
@@ -188,7 +189,7 @@ func TestGetTaskHandler_Handle(t *testing.T) {
 				return
 			}
 
-			var apiTask model.APIRackTask
+			var apiTask model.APITask
 			err = json.Unmarshal(rec.Body.Bytes(), &apiTask)
 			assert.NoError(t, err)
 			assert.Equal(t, taskUUID, apiTask.ID)
@@ -263,7 +264,7 @@ func ExecuteGetTasksHandlerTestCases(t *testing.T, pathFmt string, handle func(e
 			if tt.expectedStatus != http.StatusOK {
 				return
 			}
-			var tasks []model.APIRackTask
+			var tasks []model.APITask
 			require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &tasks))
 			require.Len(t, tasks, len(tt.mockTasks))
 			require.NotEmpty(t, rec.Header().Get("X-Pagination"), "X-Pagination")
@@ -579,7 +580,7 @@ func TestCancelTaskHandler_Handle(t *testing.T) {
 				return
 			}
 
-			var apiTask model.APIRackTask
+			var apiTask model.APITask
 			err = json.Unmarshal(rec.Body.Bytes(), &apiTask)
 			assert.NoError(t, err)
 			assert.Equal(t, taskUUID, apiTask.ID)

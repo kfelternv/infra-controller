@@ -16,9 +16,7 @@
  */
 use std::borrow::Cow;
 use std::collections::{HashMap, HashSet};
-use std::net::IpAddr;
 use std::path::{Path, PathBuf};
-use std::str::FromStr;
 use std::sync::Arc;
 
 use arc_swap::ArcSwap;
@@ -60,6 +58,9 @@ use carbide_switch_controller::context::SwitchStateHandlerServices;
 use carbide_switch_controller::handler::SwitchStateHandler;
 use carbide_switch_controller::io::SwitchStateControllerIO;
 use carbide_utils::HostPortPair;
+use carbide_vpc_prefix_controller::context::VpcPrefixStateHandlerServices;
+use carbide_vpc_prefix_controller::handler::VpcPrefixStateHandler;
+use carbide_vpc_prefix_controller::io::VpcPrefixStateControllerIO;
 use db::machine::update_dpu_asns;
 use db::resource_pool::DefineResourcePoolError;
 use db::{Transaction, work_lock_manager};
@@ -94,7 +95,6 @@ use crate::api::metrics::ApiMetricsEmitter;
 use crate::cfg::file::{CarbideConfig, InitialObjectsConfig, ListenMode};
 use crate::dpa::handler::start_dpa_handler;
 use crate::dynamic_settings::DynamicSettings;
-use crate::errors::CarbideError;
 use crate::handlers::machine_validation::apply_config_on_startup;
 use crate::listener::{AdminUiRoutesBuilder, ApiListenMode};
 use crate::logging::log_limiter::LogLimiter;
@@ -556,14 +556,12 @@ pub async fn start_api(
         // buggy -- otherwise).
         //
         // These are of course set with RouteServerSourceType::ConfigFile.
-        let route_servers: Vec<IpAddr> = carbide_config
-            .route_servers
-            .iter()
-            .map(|rs| IpAddr::from_str(rs))
-            .collect::<Result<Vec<IpAddr>, _>>()
-            .map_err(CarbideError::AddressParseError)?;
-        db::route_servers::replace(&mut txn, &route_servers, RouteServerSourceType::ConfigFile)
-            .await?;
+        db::route_servers::replace(
+            &mut txn,
+            &carbide_config.route_servers,
+            RouteServerSourceType::ConfigFile,
+        )
+        .await?;
 
         txn.commit().await?;
     };
@@ -602,7 +600,11 @@ pub async fn start_api(
 
     let eth_data = ethernet_virtualization::EthVirtData {
         asn: carbide_config.asn,
-        dhcp_servers: carbide_config.dhcp_servers.clone(),
+        dhcp_servers: carbide_config
+            .dhcp_servers
+            .iter()
+            .map(|addr| addr.to_string())
+            .collect(),
         deny_prefixes: carbide_config.deny_prefixes.clone(),
         site_fabric_prefixes,
     };
@@ -836,6 +838,7 @@ pub async fn initialize_and_start_controllers<'a>(
         redfish_pool: shared_redfish_pool,
         work_lock_manager_handle,
         rms_client,
+        component_manager,
         dpf_sdk,
         credential_manager,
         ..
@@ -1176,6 +1179,25 @@ pub async fn initialize_and_start_controllers<'a>(
         .build_and_spawn(join_set, cancel_token.clone())
         .expect("Unable to build NetworkSegmentController");
 
+    StateController::<VpcPrefixStateControllerIO>::builder()
+        .database(db_pool.clone(), work_lock_manager_handle.clone())
+        .meter("carbide_vpc_prefixes", meter.clone())
+        .processor_id(state_controller_id.clone())
+        .services(
+            VpcPrefixStateHandlerServices {
+                db_pool: db_pool.clone(),
+            }
+            .into(),
+        )
+        .iteration_config((&carbide_config.vpc_prefix_state_controller.controller).into())
+        .state_handler(Arc::new(VpcPrefixStateHandler::new(
+            carbide_config
+                .vpc_prefix_state_controller
+                .vpc_prefix_drain_time,
+        )))
+        .build_and_spawn(join_set, cancel_token.clone())
+        .expect("Unable to build VpcPrefixStateController");
+
     if carbide_config.spdm.enabled {
         let Some(nras_config) = carbide_config.spdm.nras_config.clone() else {
             return Err(eyre::eyre!(
@@ -1229,7 +1251,7 @@ pub async fn initialize_and_start_controllers<'a>(
         .services(
             PowerShelfStateHandlerServices {
                 db_pool: db_pool.clone(),
-                rms_client: rms_client.clone(),
+                component_manager: component_manager.clone().map(Arc::new),
                 credential_manager: credential_manager.clone(),
             }
             .into(),
@@ -1269,7 +1291,7 @@ pub async fn initialize_and_start_controllers<'a>(
         .services(
             SwitchStateHandlerServices {
                 db_pool: db_pool.clone(),
-                rms_client: rms_client.clone(),
+                component_manager: component_manager.clone().map(Arc::new),
                 credential_manager: credential_manager.clone(),
             }
             .into(),

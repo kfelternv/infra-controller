@@ -335,8 +335,8 @@ func TestHandler_TokenCommandRefreshIsPerCall(t *testing.T) {
 	}
 
 	count := countLines(t, counterPath)
-	require.GreaterOrEqual(t, count, 2,
-		"token_command must run at least once per tool call (got %d invocations)", count)
+	require.Equal(t, 2, count,
+		"token_command must run exactly once per tool call (got %d invocations)", count)
 }
 
 // --- helpers below ---

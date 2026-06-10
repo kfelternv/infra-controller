@@ -24,6 +24,9 @@ func TestToolName(t *testing.T) {
 		{"get-current-tenant", "nico_get_current_tenant"},
 		{"validate-rack", "nico_validate_rack"},
 		{"validate-trays", "nico_validate_trays"},
+		{"getFooStatus", "nico_get_foo_status"},
+		{"GetAllSite", "nico_get_all_site"},
+		{"get_already_snake", "nico_get_already_snake"},
 	}
 	for _, c := range cases {
 		t.Run(c.operationID, func(t *testing.T) {

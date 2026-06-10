@@ -14,6 +14,7 @@ import (
 	"net/http"
 	"sort"
 	"strings"
+	"unicode"
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 
@@ -126,11 +127,38 @@ func registerGET(server *mcp.Server, spec *appcli.Spec, path string, item appcli
 	})
 }
 
-// toolName converts an operationId like get-all-site to the SDD's
-// canonical MCP tool name nico_get_all_site by replacing hyphens with
-// underscores and prefixing with nico_.
+// toolName converts an operationId to the SDD's canonical MCP tool name
+// nico_<snake_case(operationId)>. It handles kebab-case (get-all-site ->
+// nico_get_all_site) and camelCase (getFooStatus -> nico_get_foo_status)
+// equally: any non-alphanumeric run becomes a single underscore, an
+// underscore is inserted at lower/digit -> upper transitions, and the
+// result is lowercased and trimmed of leading/trailing underscores.
 func toolName(operationID string) string {
-	return "nico_" + strings.ReplaceAll(operationID, "-", "_")
+	return "nico_" + toSnakeCase(operationID)
+}
+
+func toSnakeCase(s string) string {
+	var b strings.Builder
+	var prev rune
+	for i, r := range s {
+		switch {
+		case unicode.IsUpper(r):
+			if i > 0 && (unicode.IsLower(prev) || unicode.IsDigit(prev)) {
+				b.WriteByte('_')
+			}
+			b.WriteRune(unicode.ToLower(r))
+		case unicode.IsLetter(r) || unicode.IsDigit(r):
+			b.WriteRune(r)
+		default:
+			b.WriteByte('_')
+		}
+		prev = r
+	}
+	out := b.String()
+	for strings.Contains(out, "__") {
+		out = strings.ReplaceAll(out, "__", "_")
+	}
+	return strings.Trim(out, "_")
 }
 
 func toolDescription(op *appcli.Operation) string {

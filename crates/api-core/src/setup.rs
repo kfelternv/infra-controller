@@ -104,6 +104,7 @@ use crate::logging::service_health_metrics::{
 use crate::machine_update_manager::MachineUpdateManager;
 use crate::measured_boot::metrics_collector::MeasuredBootMetricsCollector;
 use crate::mqtt_state_change_hook::hook::MqttStateChangeHook;
+use crate::mqtt_state_change_hook::republisher::ManagedHostStateRepublisher;
 use crate::scout_stream::ConnectionRegistry;
 use crate::{attestation, db_init, ethernet_virtualization, listener};
 
@@ -1035,6 +1036,19 @@ pub async fn initialize_and_start_controllers<'a>(
                 .bms_client
                 .set(bms_client)
                 .map_err(|_| eyre::eyre!("BMS DSX Exchange handle already initialized"))?;
+
+            // Periodically re-publish current managed host state so consumers
+            // that miss change events can reconcile. A no-op unless enabled.
+            ManagedHostStateRepublisher::new(
+                client.clone(),
+                db_pool.clone(),
+                config.topic_prefix.clone(),
+                config.publish_timeout,
+                config.periodic_state_republish.clone(),
+                carbide_config.host_health,
+                &meter,
+            )
+            .start(join_set, cancel_token.clone())?;
 
             emitter_builder = emitter_builder.hook(Box::new(MqttStateChangeHook::new(
                 client,

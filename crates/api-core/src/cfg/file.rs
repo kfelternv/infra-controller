@@ -2158,6 +2158,12 @@ pub struct DsxExchangeEventBusConfig {
 
     #[serde(default)]
     pub auth: MqttAuthConfig,
+
+    /// Periodically re-publish current `ManagedHostState` in addition to
+    /// publishing on every state change. Lets integrators that cannot poll the
+    /// NICo API reconcile transitions they missed off the event bus.
+    #[serde(default)]
+    pub periodic_state_republish: PeriodicStateRepublishConfig,
 }
 
 impl DsxExchangeEventBusConfig {
@@ -2171,6 +2177,82 @@ impl DsxExchangeEventBusConfig {
 
     pub fn default_topic_prefix() -> String {
         "NICO/v1/machine".to_string()
+    }
+}
+
+/// Which managed hosts a periodic republish sweep publishes.
+#[derive(Clone, Copy, Debug, Default, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum RepublishScope {
+    /// Republish every managed host on each sweep. Healthy hosts can still be
+    /// published less often than unhealthy ones via `healthy_republish_every`.
+    #[default]
+    All,
+    /// Republish only managed hosts that currently have a health alert. Use
+    /// this to keep the event bus quiet and only re-advertise hosts that need
+    /// attention.
+    UnhealthyOnly,
+}
+
+/// Periodic republishing of `ManagedHostState` on the DSX Exchange Event Bus.
+///
+/// NICo publishes state on every transition, but integrators that cannot poll
+/// the NICo API (e.g. network-restricted consumers) can miss a transition and
+/// never reconcile. Re-sending current state on a timer lets those consumers
+/// self-heal. Republished messages reuse the same topic and JSON payload as
+/// change-driven events, so consumers handle them identically.
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq)]
+pub struct PeriodicStateRepublishConfig {
+    /// Enable periodic republishing. Disabled by default. Change-driven
+    /// publishing is unaffected by this setting.
+    #[serde(default)]
+    pub enabled: bool,
+
+    /// How often a republish sweep runs. Defaults to 5 minutes.
+    #[serde(
+        default = "PeriodicStateRepublishConfig::default_interval",
+        deserialize_with = "deserialize_duration",
+        serialize_with = "as_std_duration"
+    )]
+    pub interval: std::time::Duration,
+
+    /// Which managed hosts to publish on each sweep.
+    #[serde(default)]
+    pub scope: RepublishScope,
+
+    /// When `scope = all`, publish healthy hosts only every Nth sweep to reduce
+    /// broker noise; hosts with an active health alert are always published on
+    /// every sweep. `1` (default) publishes healthy hosts every sweep. `0` is
+    /// treated as `1`. Ignored when `scope = unhealthy_only`.
+    #[serde(default = "PeriodicStateRepublishConfig::default_healthy_republish_every")]
+    pub healthy_republish_every: u32,
+
+    /// Upper bound on publishes per second within a single sweep, to avoid
+    /// bursting the broker on large sites. `0` (default) disables pacing and
+    /// publishes as fast as the broker accepts.
+    #[serde(default)]
+    pub max_publishes_per_second: u32,
+}
+
+impl Default for PeriodicStateRepublishConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            interval: Self::default_interval(),
+            scope: RepublishScope::default(),
+            healthy_republish_every: Self::default_healthy_republish_every(),
+            max_publishes_per_second: 0,
+        }
+    }
+}
+
+impl PeriodicStateRepublishConfig {
+    pub const fn default_interval() -> std::time::Duration {
+        std::time::Duration::from_secs(300)
+    }
+
+    pub const fn default_healthy_republish_every() -> u32 {
+        1
     }
 }
 

@@ -604,11 +604,7 @@ pub async fn start_api(
 
     let eth_data = ethernet_virtualization::EthVirtData {
         asn: carbide_config.asn,
-        dhcp_servers: carbide_config
-            .dhcp_servers
-            .iter()
-            .map(|addr| addr.to_string())
-            .collect(),
+        dhcp_servers: carbide_config.dhcp_servers.clone(),
         deny_prefixes: carbide_config.deny_prefixes.clone(),
         site_fabric_prefixes,
     };
@@ -690,6 +686,7 @@ pub async fn start_api(
             flavor_name: carbide_config.dpf.flavor_name.clone(),
             deployment_name: carbide_config.dpf.deployment_name.clone(),
             services: dpf_mandatory_services,
+            proxy: carbide_config.dpf.proxy.clone(),
         };
 
         let sdk = carbide_dpf::DpfSdkBuilder::new(repo, carbide_dpf::NAMESPACE, provider)

@@ -8,9 +8,8 @@ import (
 	"net/http"
 	"testing"
 
+	"github.com/getkin/kin-openapi/openapi3"
 	"github.com/stretchr/testify/require"
-
-	appcli "github.com/NVIDIA/infra-controller/rest-api/cli/pkg"
 )
 
 func TestToolName(t *testing.T) {
@@ -37,7 +36,7 @@ func TestToolName(t *testing.T) {
 
 func TestToolDescription(t *testing.T) {
 	t.Run("summary and description", func(t *testing.T) {
-		op := &appcli.Operation{
+		op := &openapi3.Operation{
 			OperationID: "get-foo",
 			Summary:     "Retrieve Foo",
 			Description: "More detail on Foo.",
@@ -45,17 +44,17 @@ func TestToolDescription(t *testing.T) {
 		require.Equal(t, "Retrieve Foo\n\nMore detail on Foo.", toolDescription(op))
 	})
 	t.Run("summary only", func(t *testing.T) {
-		op := &appcli.Operation{OperationID: "get-foo", Summary: "Retrieve Foo"}
+		op := &openapi3.Operation{OperationID: "get-foo", Summary: "Retrieve Foo"}
 		require.Equal(t, "Retrieve Foo", toolDescription(op))
 	})
 	t.Run("operationID fallback", func(t *testing.T) {
-		op := &appcli.Operation{OperationID: "get-foo"}
+		op := &openapi3.Operation{OperationID: "get-foo"}
 		require.Equal(t, "get-foo", toolDescription(op))
 	})
 }
 
 func TestSplitArgs(t *testing.T) {
-	params := []appcli.Parameter{
+	params := []*openapi3.Parameter{
 		{Name: "org", In: "path"},
 		{Name: "siteId", In: "path"},
 		{Name: "pageNumber", In: "query"},
@@ -77,7 +76,7 @@ func TestSplitArgs(t *testing.T) {
 }
 
 func TestSplitArgs_UnsupportedType(t *testing.T) {
-	params := []appcli.Parameter{
+	params := []*openapi3.Parameter{
 		{Name: "tags", In: "query"},
 	}
 	in := map[string]any{
@@ -119,12 +118,10 @@ func TestCoerceToString(t *testing.T) {
 }
 
 func TestSortedPaths(t *testing.T) {
-	spec := &appcli.Spec{
-		Paths: map[string]appcli.PathItem{
-			"/z": {}, "/a": {}, "/m": {},
-		},
+	paths := map[string]*openapi3.PathItem{
+		"/z": {}, "/a": {}, "/m": {},
 	}
-	require.Equal(t, []string{"/a", "/m", "/z"}, sortedPaths(spec))
+	require.Equal(t, []string{"/a", "/m", "/z"}, sortedPaths(paths))
 }
 
 func TestPaginationMeta(t *testing.T) {

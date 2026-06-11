@@ -7,13 +7,28 @@ import (
 	"encoding/json"
 	"testing"
 
+	"github.com/getkin/kin-openapi/openapi3"
 	"github.com/stretchr/testify/require"
-
-	appcli "github.com/NVIDIA/infra-controller/rest-api/cli/pkg"
 )
 
+func schemaOf(typ string) *openapi3.Schema {
+	return &openapi3.Schema{Type: &openapi3.Types{typ}}
+}
+
+func param(name, in string, required bool, sch *openapi3.Schema) *openapi3.Parameter {
+	p := &openapi3.Parameter{Name: name, In: in, Required: required}
+	if sch != nil {
+		p.Schema = &openapi3.SchemaRef{Value: sch}
+	}
+	return p
+}
+
+func paramRef(name, in string, required bool, sch *openapi3.Schema) *openapi3.ParameterRef {
+	return &openapi3.ParameterRef{Value: param(name, in, required, sch)}
+}
+
 func TestBuildInputSchema_OnlyConfigFields(t *testing.T) {
-	schema := buildInputSchema(appcli.PathItem{}, &appcli.Operation{OperationID: "get-metadata"})
+	schema := buildInputSchema(&openapi3.PathItem{}, &openapi3.Operation{OperationID: "get-metadata"})
 	require.Equal(t, "object", schema.Type)
 	for _, c := range commonConfigDescriptions {
 		require.Contains(t, schema.Properties, c.Name, "missing common config field %s", c.Name)
@@ -23,18 +38,18 @@ func TestBuildInputSchema_OnlyConfigFields(t *testing.T) {
 }
 
 func TestBuildInputSchema_PathAndQuery(t *testing.T) {
-	item := appcli.PathItem{
-		Parameters: []appcli.Parameter{
-			{Name: "org", In: "path", Required: true, Schema: &appcli.Schema{Type: "string"}},
-			{Name: "siteId", In: "path", Required: true, Schema: &appcli.Schema{Type: "string"}},
+	item := &openapi3.PathItem{
+		Parameters: openapi3.Parameters{
+			paramRef("org", "path", true, schemaOf("string")),
+			paramRef("siteId", "path", true, schemaOf("string")),
 		},
 	}
-	op := &appcli.Operation{
+	op := &openapi3.Operation{
 		OperationID: "get-site-status-history",
-		Parameters: []appcli.Parameter{
-			{Name: "pageNumber", In: "query", Schema: &appcli.Schema{Type: "integer"}},
-			{Name: "pageSize", In: "query", Schema: &appcli.Schema{Type: "integer"}},
-			{Name: "status", In: "query", Schema: &appcli.Schema{Type: "string", Enum: []string{"ACTIVE", "INACTIVE"}}, Required: true},
+		Parameters: openapi3.Parameters{
+			paramRef("pageNumber", "query", false, schemaOf("integer")),
+			paramRef("pageSize", "query", false, schemaOf("integer")),
+			paramRef("status", "query", true, &openapi3.Schema{Type: &openapi3.Types{"string"}, Enum: []any{"ACTIVE", "INACTIVE"}}),
 		},
 	}
 
@@ -71,15 +86,15 @@ func TestBuildInputSchema_PathAndQuery(t *testing.T) {
 }
 
 func TestBuildInputSchema_OperationOverridesPathItemParam(t *testing.T) {
-	item := appcli.PathItem{
-		Parameters: []appcli.Parameter{
-			{Name: "filter", In: "query", Required: true, Schema: &appcli.Schema{Type: "string"}},
+	item := &openapi3.PathItem{
+		Parameters: openapi3.Parameters{
+			paramRef("filter", "query", true, schemaOf("string")),
 		},
 	}
-	op := &appcli.Operation{
+	op := &openapi3.Operation{
 		OperationID: "get-foo",
-		Parameters: []appcli.Parameter{
-			{Name: "filter", In: "query", Required: false, Schema: &appcli.Schema{Type: "string"}},
+		Parameters: openapi3.Parameters{
+			paramRef("filter", "query", false, schemaOf("string")),
 		},
 	}
 
@@ -91,13 +106,18 @@ func TestBuildInputSchema_ConfigArgDoesNotOverrideOpenAPIParam(t *testing.T) {
 	// If an OpenAPI spec accidentally declares a query param named
 	// "token", the OpenAPI definition wins -- we never overwrite a
 	// real parameter with the common-config placeholder.
-	op := &appcli.Operation{
+	op := &openapi3.Operation{
 		OperationID: "get-foo",
-		Parameters: []appcli.Parameter{
-			{Name: "token", In: "query", Description: "API-specific token query param", Schema: &appcli.Schema{Type: "string"}},
+		Parameters: openapi3.Parameters{
+			&openapi3.ParameterRef{Value: &openapi3.Parameter{
+				Name:        "token",
+				In:          "query",
+				Description: "API-specific token query param",
+				Schema:      &openapi3.SchemaRef{Value: schemaOf("string")},
+			}},
 		},
 	}
-	schema := buildInputSchema(appcli.PathItem{}, op)
+	schema := buildInputSchema(&openapi3.PathItem{}, op)
 	require.Contains(t, schema.Properties, "token")
 	require.Equal(t, "API-specific token query param", schema.Properties["token"].Description)
 }
@@ -116,14 +136,14 @@ func TestParamToJSONSchema_TypeMapping(t *testing.T) {
 	}
 	for _, c := range cases {
 		t.Run(c.openapiType, func(t *testing.T) {
-			s := paramToJSONSchema(appcli.Parameter{Name: "x", Schema: &appcli.Schema{Type: appcli.SchemaType(c.openapiType)}})
+			s := paramToJSONSchema(param("x", "query", false, schemaOf(c.openapiType)))
 			require.Equal(t, c.want, s.Type)
 		})
 	}
 }
 
 func TestParamToJSONSchema_NoSchemaDefaultsToString(t *testing.T) {
-	s := paramToJSONSchema(appcli.Parameter{Name: "x", Description: "no schema"})
+	s := paramToJSONSchema(&openapi3.Parameter{Name: "x", Description: "no schema"})
 	require.Equal(t, "string", s.Type)
 	require.Equal(t, "no schema", s.Description)
 }
@@ -131,19 +151,20 @@ func TestParamToJSONSchema_NoSchemaDefaultsToString(t *testing.T) {
 func TestParamToJSONSchema_PreservesScalarValidationHints(t *testing.T) {
 	minLen := 3
 	maxLen := 64
-	min := 1
-	max := 100
-	s := paramToJSONSchema(appcli.Parameter{
+	maxLenU := uint64(64)
+	minV := float64(1)
+	maxV := float64(100)
+	s := paramToJSONSchema(&openapi3.Parameter{
 		Name: "pageSize",
-		Schema: &appcli.Schema{
-			Type:      "integer",
+		Schema: &openapi3.SchemaRef{Value: &openapi3.Schema{
+			Type:      &openapi3.Types{"integer"},
 			Format:    "int32",
-			MinLength: &minLen,
-			MaxLength: &maxLen,
-			Minimum:   &min,
-			Maximum:   &max,
+			MinLength: 3,
+			MaxLength: &maxLenU,
+			Min:       &minV,
+			Max:       &maxV,
 			Default:   20,
-		},
+		}},
 	})
 
 	require.Equal(t, "integer", s.Type)

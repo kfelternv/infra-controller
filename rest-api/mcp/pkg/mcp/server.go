@@ -16,6 +16,7 @@ import (
 	"strings"
 	"unicode"
 
+	"github.com/getkin/kin-openapi/openapi3"
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 
 	appcli "github.com/NVIDIA/infra-controller/rest-api/cli/pkg"
@@ -30,24 +31,30 @@ import (
 // BuildServer does not start a listener; callers wrap the result with
 // NewHandler to get an *http.Handler ready for ListenAndServe.
 func BuildServer(specData []byte, opts Options) (*mcp.Server, error) {
-	spec, err := appcli.ParseSpec(specData)
+	loader := openapi3.NewLoader()
+	doc, err := loader.LoadFromData(specData)
 	if err != nil {
 		return nil, fmt.Errorf("parsing spec: %w", err)
 	}
 	opts = opts.withDefaults()
 
+	version := ""
+	if doc.Info != nil {
+		version = doc.Info.Version
+	}
 	server := mcp.NewServer(&mcp.Implementation{
 		Name:    "nico-mcp",
 		Title:   "NVIDIA Infrastructure Controller (NICo) MCP",
-		Version: spec.Info.Version,
+		Version: version,
 	}, nil)
 
-	for _, path := range sortedPaths(spec) {
-		item := spec.Paths[path]
+	paths := doc.Paths.Map()
+	for _, path := range sortedPaths(paths) {
+		item := paths[path]
 		if item.Get == nil || item.Get.OperationID == "" {
 			continue
 		}
-		registerGET(server, spec, path, item, opts)
+		registerGET(server, path, item, opts)
 	}
 	return server, nil
 }
@@ -79,18 +86,18 @@ func NewHandler(server *mcp.Server) http.Handler {
 	)
 }
 
-// sortedPaths returns spec.Paths keys in deterministic order so the
+// sortedPaths returns the path keys in deterministic order so the
 // resulting tool list is stable across server restarts.
-func sortedPaths(spec *appcli.Spec) []string {
-	keys := make([]string, 0, len(spec.Paths))
-	for k := range spec.Paths {
+func sortedPaths(paths map[string]*openapi3.PathItem) []string {
+	keys := make([]string, 0, len(paths))
+	for k := range paths {
 		keys = append(keys, k)
 	}
 	sort.Strings(keys)
 	return keys
 }
 
-func registerGET(server *mcp.Server, spec *appcli.Spec, path string, item appcli.PathItem, opts Options) {
+func registerGET(server *mcp.Server, path string, item *openapi3.PathItem, opts Options) {
 	op := item.Get
 	allParams := mergeParameters(item, op)
 
@@ -158,7 +165,7 @@ func toSnakeCase(s string) string {
 	return strings.Trim(out, "_")
 }
 
-func toolDescription(op *appcli.Operation) string {
+func toolDescription(op *openapi3.Operation) string {
 	parts := make([]string, 0, 2)
 	if s := strings.TrimSpace(op.Summary); s != "" {
 		parts = append(parts, s)
@@ -182,7 +189,7 @@ func toolDescription(op *appcli.Operation) string {
 //
 // TODO: full OpenAPI style/explode serialization for array and object
 // parameters is intentionally deferred; unsupported shapes fail fast.
-func splitArgs(in map[string]any, params []appcli.Parameter) (pathParams, queryParams map[string]string, err error) {
+func splitArgs(in map[string]any, params []*openapi3.Parameter) (pathParams, queryParams map[string]string, err error) {
 	pathParams = map[string]string{}
 	queryParams = map[string]string{}
 	for _, p := range params {

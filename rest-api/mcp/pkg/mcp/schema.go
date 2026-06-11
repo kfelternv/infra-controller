@@ -7,9 +7,8 @@ import (
 	"encoding/json"
 	"sort"
 
+	"github.com/getkin/kin-openapi/openapi3"
 	"github.com/google/jsonschema-go/jsonschema"
-
-	appcli "github.com/NVIDIA/infra-controller/rest-api/cli/pkg"
 )
 
 // commonConfigDescriptions documents the four per-call config overrides
@@ -25,11 +24,6 @@ var commonConfigDescriptions = []struct {
 	{"token", "Bearer token for this call. Overrides the inbound Authorization header. Omit it when an upstream proxy injects the Authorization header, which is passed through to NICo REST unchanged."},
 }
 
-// buildInputSchema produces a JSON Schema describing a tool's input:
-// OpenAPI path and query parameters merged with the four common config
-// override fields (org, base_url, api_name, token). Path parameters are
-// marked required; OpenAPI-required query parameters are marked
-// required; the config overrides are always optional.
 type paramKey struct {
 	in   string
 	name string
@@ -38,22 +32,33 @@ type paramKey struct {
 // mergeParameters combines path-item and operation parameters, with
 // operation-level definitions overriding path-item-level ones that
 // share the same {in,name} tuple per OpenAPI override semantics.
-func mergeParameters(item appcli.PathItem, op *appcli.Operation) []appcli.Parameter {
-	merged := map[paramKey]appcli.Parameter{}
-	for _, p := range item.Parameters {
-		merged[paramKey{in: p.In, name: p.Name}] = p
+func mergeParameters(item *openapi3.PathItem, op *openapi3.Operation) []*openapi3.Parameter {
+	merged := map[paramKey]*openapi3.Parameter{}
+	add := func(refs openapi3.Parameters) {
+		for _, ref := range refs {
+			if ref == nil || ref.Value == nil {
+				continue
+			}
+			p := ref.Value
+			merged[paramKey{in: p.In, name: p.Name}] = p
+		}
 	}
-	for _, p := range op.Parameters {
-		merged[paramKey{in: p.In, name: p.Name}] = p
-	}
-	out := make([]appcli.Parameter, 0, len(merged))
+	add(item.Parameters)
+	add(op.Parameters)
+
+	out := make([]*openapi3.Parameter, 0, len(merged))
 	for _, p := range merged {
 		out = append(out, p)
 	}
 	return out
 }
 
-func buildInputSchema(item appcli.PathItem, op *appcli.Operation) *jsonschema.Schema {
+// buildInputSchema produces a JSON Schema describing a tool's input:
+// OpenAPI path and query parameters merged with the four common config
+// override fields (org, base_url, api_name, token). Path parameters are
+// marked required; OpenAPI-required query parameters are marked
+// required; the config overrides are always optional.
+func buildInputSchema(item *openapi3.PathItem, op *openapi3.Operation) *jsonschema.Schema {
 	props := map[string]*jsonschema.Schema{}
 	requiredSet := map[string]struct{}{}
 
@@ -106,42 +111,45 @@ func falseJSONSchema() *jsonschema.Schema {
 // such as format, min/max, length bounds, defaults, and enums are
 // preserved where present so MCP clients get the same guardrails as the
 // generated CLI flags.
-func paramToJSONSchema(p appcli.Parameter) *jsonschema.Schema {
+func paramToJSONSchema(p *openapi3.Parameter) *jsonschema.Schema {
 	s := &jsonschema.Schema{Description: p.Description}
-	if p.Schema == nil {
+	if p.Schema == nil || p.Schema.Value == nil {
 		s.Type = "string"
 		return s
 	}
-	openapiSchema := p.Schema
-	switch p.Schema.Type {
-	case "integer":
+	sch := p.Schema.Value
+	switch {
+	case sch.Type.Is("integer"):
 		s.Type = "integer"
-	case "boolean":
+	case sch.Type.Is("boolean"):
 		s.Type = "boolean"
-	case "number":
+	case sch.Type.Is("number"):
 		s.Type = "number"
 	default:
 		s.Type = "string"
 	}
-	if len(p.Schema.Enum) > 0 {
-		s.Enum = make([]any, 0, len(p.Schema.Enum))
-		for _, e := range p.Schema.Enum {
-			s.Enum = append(s.Enum, e)
-		}
+	if len(sch.Enum) > 0 {
+		s.Enum = append([]any(nil), sch.Enum...)
 	}
-	s.Format = openapiSchema.Format
-	s.MinLength = openapiSchema.MinLength
-	s.MaxLength = openapiSchema.MaxLength
-	if openapiSchema.Minimum != nil {
-		v := float64(*openapiSchema.Minimum)
+	s.Format = sch.Format
+	if sch.MinLength > 0 {
+		v := int(sch.MinLength)
+		s.MinLength = &v
+	}
+	if sch.MaxLength != nil {
+		v := int(*sch.MaxLength)
+		s.MaxLength = &v
+	}
+	if sch.Min != nil {
+		v := *sch.Min
 		s.Minimum = &v
 	}
-	if openapiSchema.Maximum != nil {
-		v := float64(*openapiSchema.Maximum)
+	if sch.Max != nil {
+		v := *sch.Max
 		s.Maximum = &v
 	}
-	if openapiSchema.Default != nil {
-		if b, err := json.Marshal(openapiSchema.Default); err == nil {
+	if sch.Default != nil {
+		if b, err := json.Marshal(sch.Default); err == nil {
 			s.Default = b
 		}
 	}

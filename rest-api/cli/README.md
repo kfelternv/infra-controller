@@ -335,7 +335,7 @@ nicocli --config ~/.nico/config.prod.yaml tui
 
 ## MCP Server Mode
 
-The NICo MCP server exposes the NICo REST read surface (every `GET` operation in the embedded OpenAPI spec) as Model Context Protocol tools over streamable-HTTP. It is intended to run behind an MCP-aware gateway such as the [Latinum Agent Gateway](https://agentgateway.dev), but works standalone for local development.
+The NICo MCP server exposes the NICo REST read surface (every `GET` operation in the embedded OpenAPI spec) as Model Context Protocol tools over streamable-HTTP.
 
 The server ships as its own binary, `nico-mcp`, so that neither the MCP server code nor its MCP SDK dependency are linked into `nicocli`. Build and run it directly — `nicocli mcp` prints these same build/run instructions but never launches `nico-mcp` itself.
 
@@ -353,7 +353,7 @@ Install the binaries with `make nico-cli` and `make nico-mcp`, run from the `res
 
 - **Read-only.** Only `GET` operations are exposed. Mutating routes (`POST`, `PATCH`, `PUT`, `DELETE`) are intentionally excluded.
 - **Tool naming.** Tools are named `nico_<snake_case(operationId)>` (e.g. `nico_get_all_site`, `nico_validate_rack`).
-- **Stateless and request/response only.** The server sets `Stateless: true` and `JSONResponse: true` on the MCP streamable-HTTP handler -- responses are always `Content-Type: application/json`, never `text/event-stream`, and the server retains no per-session state. This is compatible with deployment behind a NATS-bridged shard proxy.
+- **Stateless and request/response only.** The server sets `Stateless: true` and `JSONResponse: true` on the MCP streamable-HTTP handler -- responses are always `Content-Type: application/json`, never `text/event-stream`, and the server retains no per-session state.
 - **JWT passthrough.** The `Authorization: Bearer <jwt>` header on the inbound MCP request is forwarded unchanged to NICo REST. NICo REST validates the JWT, resolves the caller org, and enforces role-based authorization. The MCP layer never makes the authz decision itself.
 
 ### Flags

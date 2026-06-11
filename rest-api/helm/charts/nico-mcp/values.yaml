@@ -24,8 +24,8 @@ service:
 # MCP server configuration. The server is stateless and parameter-driven:
 # per-call tool arguments and the inbound Authorization header normally supply
 # the connection details, so the defaults below are optional and are typically
-# left empty when running behind an MCP-aware gateway. Tokens are intentionally
-# NOT exposed here -- supply them per-call or via the gateway.
+# left empty. Tokens are intentionally NOT exposed here -- supply them per-call
+# or via the inbound Authorization header.
 config:
   path: /mcp
   shutdownTimeout: 10s

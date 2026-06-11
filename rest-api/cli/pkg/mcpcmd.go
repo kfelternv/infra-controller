@@ -44,7 +44,6 @@ Common flags (each also reads its NICO_* environment variable):
   --org               default org used in /v2/org/<org>/... paths
   --api-name          API path segment in /v2/org/<org>/<name>/... (default "nico")
   --token             default bearer token
-  --token-command     script that prints a bearer token (used as a 401-refresh hook)
   --shutdown-timeout  graceful shutdown timeout (default 10s)
   --debug             enable debug logging
 

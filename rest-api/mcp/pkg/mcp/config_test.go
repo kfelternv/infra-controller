@@ -5,8 +5,6 @@ package mcp
 
 import (
 	"net/http"
-	"os"
-	"path/filepath"
 	"testing"
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
@@ -16,7 +14,6 @@ import (
 func TestResolveCallConfig_PrecedenceChain(t *testing.T) {
 	type expect struct {
 		baseURL, org, apiName, token string
-		hasRefresh                   bool
 		wantErr                      bool
 	}
 	cases := []struct {
@@ -65,24 +62,6 @@ func TestResolveCallConfig_PrecedenceChain(t *testing.T) {
 				org:     "opts-org",
 				apiName: "nico",
 				token:   "opts-token",
-			},
-		},
-		{
-			name: "token_command_wired_as_refresh_hook",
-			in:   map[string]any{},
-			req:  nil,
-			opts: Options{
-				BaseURL:      "https://opts.example.com",
-				Org:          "opts-org",
-				APIName:      "nico",
-				TokenCommand: "echo refreshed-token",
-			},
-			expected: expect{
-				baseURL:    "https://opts.example.com",
-				org:        "opts-org",
-				apiName:    "nico",
-				token:      "",
-				hasRefresh: true,
 			},
 		},
 		{
@@ -158,29 +137,8 @@ func TestResolveCallConfig_PrecedenceChain(t *testing.T) {
 			require.Equal(t, c.expected.org, cfg.Org)
 			require.Equal(t, c.expected.apiName, cfg.APIName)
 			require.Equal(t, c.expected.token, cfg.Token)
-			require.Equal(t, c.expected.hasRefresh, cfg.TokenRefresh != nil)
 		})
 	}
-}
-
-func TestResolveCallConfig_TokenRefreshIsPerCall(t *testing.T) {
-	// Sanity-check: the TokenRefresh closure is rebuilt on every call
-	// to resolveCallConfig. Two adjacent invocations produce two
-	// distinct closures, so a refresh on call A cannot leak state into
-	// call B.
-	opts := Options{
-		BaseURL:      "https://opts.example.com",
-		Org:          "opts-org",
-		TokenCommand: "echo t",
-	}
-	cfgA, err := resolveCallConfig(nil, nil, opts)
-	require.NoError(t, err)
-	cfgB, err := resolveCallConfig(nil, nil, opts)
-	require.NoError(t, err)
-	require.NotNil(t, cfgA.TokenRefresh)
-	require.NotNil(t, cfgB.TokenRefresh)
-	// Closures themselves are distinct values.
-	require.NotSame(t, &cfgA.TokenRefresh, &cfgB.TokenRefresh)
 }
 
 func TestStringArg(t *testing.T) {
@@ -254,35 +212,6 @@ func TestOptions_WithDefaults(t *testing.T) {
 	o := Options{}.withDefaults()
 	require.Equal(t, "nico", o.APIName)
 	require.NotNil(t, o.Log)
-}
-
-// TestNoConfigWriteBack exercises the package's TokenRefresh closure
-// against a temp config file and verifies the file on disk is byte-
-// identical before and after. This is the design guarantee from the
-// "Statelessness invariants" section: the MCP server never writes back
-// to the on-disk config, even when a token_command refresh fires.
-func TestNoConfigWriteBack(t *testing.T) {
-	tmpDir := t.TempDir()
-	cfgPath := filepath.Join(tmpDir, "config.yaml")
-	original := []byte("api:\n  base: https://example.test\n  org: tester\nauth:\n  token_command: echo new-token\n")
-	require.NoError(t, os.WriteFile(cfgPath, original, 0o600))
-
-	opts := Options{
-		BaseURL:      "https://example.test",
-		Org:          "tester",
-		APIName:      "nico",
-		TokenCommand: "echo new-token",
-	}
-	cfg, err := resolveCallConfig(nil, nil, opts)
-	require.NoError(t, err)
-	require.NotNil(t, cfg.TokenRefresh)
-	token, err := cfg.TokenRefresh()
-	require.NoError(t, err)
-	require.Equal(t, "new-token", token)
-
-	after, err := os.ReadFile(cfgPath)
-	require.NoError(t, err)
-	require.Equal(t, original, after, "TokenRefresh must not rewrite the on-disk config file")
 }
 
 func requestWithBearer(token string) *mcp.CallToolRequest {

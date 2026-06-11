@@ -19,8 +19,8 @@ import (
 
 // ServeFlags returns the full flag set for the standalone nico-mcp server
 // binary. The server-specific flags (listen, path, shutdown-timeout) sit
-// alongside the connection flags (base-url, org, api-name, token,
-// token-command, debug). The dynamically-generated CLI exposes the latter as
+// alongside the connection flags (base-url, org, api-name, token, debug).
+// The dynamically-generated CLI exposes the latter as
 // root-level flags, but nico-mcp is a single-purpose binary with no parent
 // command to inherit from, so it declares all of them itself. Each flag also
 // reads its NICO_* environment variable.
@@ -64,12 +64,6 @@ func ServeFlags() []urfave.Flag {
 			Name:    "token",
 			Usage:   "default bearer token (a per-call token argument or inbound Authorization header overrides this)",
 			EnvVars: []string{"NICO_TOKEN"},
-		},
-		&urfave.StringFlag{
-			Name:    "token-command",
-			Aliases: []string{"auth-script"},
-			Usage:   "shell command/script that prints a bearer token, used as a 401-refresh hook",
-			EnvVars: []string{"NICO_TOKEN_COMMAND", "NICO_AUTH_SCRIPT"},
 		},
 		&urfave.BoolFlag{
 			Name:  "debug",
@@ -163,12 +157,11 @@ func buildServeOptions(c *urfave.Context) Options {
 	}
 
 	return Options{
-		BaseURL:      c.String("base-url"),
-		Org:          c.String("org"),
-		APIName:      c.String("api-name"),
-		Token:        c.String("token"),
-		TokenCommand: c.String("token-command"),
-		Debug:        c.Bool("debug"),
-		Log:          log,
+		BaseURL: c.String("base-url"),
+		Org:     c.String("org"),
+		APIName: c.String("api-name"),
+		Token:   c.String("token"),
+		Debug:   c.Bool("debug"),
+		Log:     log,
 	}
 }

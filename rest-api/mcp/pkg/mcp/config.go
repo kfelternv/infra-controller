@@ -9,19 +9,11 @@ import (
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 	"github.com/sirupsen/logrus"
-
-	appcli "github.com/NVIDIA/infra-controller/rest-api/cli/pkg"
 )
 
 // Options carry the server-side defaults that every tool invocation
 // starts from. Individual tool calls override these per request through
 // resolveCallConfig.
-//
-// Token and TokenCommand are mutually compatible: Token is the static
-// fallback, TokenCommand is the dynamic refresh hook fired on a 401 from
-// NICo REST. The server never persists tokens back to disk -- the
-// refresh hook wires to appcli.ExecuteTokenCommand, not the login
-// flow's write-through helper LoginWithTokenCommand.
 type Options struct {
 	// BaseURL is the NICo REST base URL (e.g. https://nico.example.com).
 	BaseURL string
@@ -33,10 +25,6 @@ type Options struct {
 	// Token is the static bearer used when no inbound bearer or tool
 	// arg token is provided.
 	Token string
-	// TokenCommand, if non-empty, is a shell command that prints a
-	// fresh bearer to stdout. Used as a 401-refresh hook only; never
-	// pre-fetched and never persisted.
-	TokenCommand string
 	// Debug enables logrus debug-level HTTP request/response logging
 	// through to the appcli.Client.
 	Debug bool
@@ -62,11 +50,10 @@ func (o Options) withDefaults() Options {
 // overrides for one tool invocation. It is consumed by registerGET to
 // construct a fresh appcli.Client.
 type resolvedConfig struct {
-	BaseURL      string
-	Org          string
-	APIName      string
-	Token        string
-	TokenRefresh func() (string, error)
+	BaseURL string
+	Org     string
+	APIName string
+	Token   string
 }
 
 // resolveCallConfig implements the precedence chain documented in the
@@ -75,7 +62,6 @@ type resolvedConfig struct {
 //  1. Tool-call argument (org, base_url, api_name, token)
 //  2. Inbound Authorization header (token only)
 //  3. Server startup flag / Options (BaseURL, Org, APIName, Token)
-//  4. token_command (token only; wired as TokenRefresh, fires on 401)
 //
 // The function returns an error when a required field (org, base_url)
 // ends up empty so the tool handler can surface a JSON-RPC error
@@ -92,13 +78,6 @@ func resolveCallConfig(in map[string]any, req *mcp.CallToolRequest, opts Options
 		bearerFromExtra(req),
 		opts.Token,
 	))
-
-	if opts.TokenCommand != "" {
-		tokenCommand := opts.TokenCommand
-		cfg.TokenRefresh = func() (string, error) {
-			return appcli.ExecuteTokenCommand(tokenCommand)
-		}
-	}
 
 	if err := cfg.requireNonEmpty(); err != nil {
 		return resolvedConfig{}, err

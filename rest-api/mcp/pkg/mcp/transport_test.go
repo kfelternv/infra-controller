@@ -9,8 +9,6 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
-	"os"
-	"path/filepath"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -291,54 +289,6 @@ func TestHandler_ConcurrentCallersDoNotBleedTokens(t *testing.T) {
 	}
 }
 
-// TestHandler_TokenCommandRefreshIsPerCall drives two unrelated tool
-// calls through a server configured with a token_command but no static
-// token. The upstream returns 401 whenever no Authorization header is
-// present, so each call's 401 fires Client.TokenRefresh exactly once.
-// The shell counter file proves token_command ran twice -- once per
-// tool call -- with no cross-call reuse.
-func TestHandler_TokenCommandRefreshIsPerCall(t *testing.T) {
-	t.Parallel()
-
-	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.Header.Get("Authorization") == "" {
-			w.WriteHeader(http.StatusUnauthorized)
-			return
-		}
-		w.Header().Set("Content-Type", "application/json")
-		_, _ = w.Write([]byte(`{"ok":true}`))
-	}))
-	defer upstream.Close()
-
-	tmpDir := t.TempDir()
-	counterPath := filepath.Join(tmpDir, "counter")
-	// printf >> appends one line per invocation; we read line count
-	// after the test to learn how many times the shell ran.
-	tokenCmd := "printf 'x\\n' >> " + shellQuote(counterPath) + " && printf '%s' refreshed-token"
-
-	server, err := BuildServer([]byte(synthSpec), Options{
-		BaseURL:      upstream.URL,
-		Org:          "tester",
-		APIName:      "nico",
-		TokenCommand: tokenCmd,
-	})
-	require.NoError(t, err)
-	ts := httptest.NewServer(NewHandler(server))
-	defer ts.Close()
-
-	for i := 0; i < 2; i++ {
-		resp := mcpPost(t, ts.URL, "", jsonrpcRequest(i+1, "tools/call", map[string]any{
-			"name":      "nico_get_foo",
-			"arguments": map[string]any{"fooId": "foo-" + itoa(i)},
-		}))
-		_ = resp.Body.Close()
-	}
-
-	count := countLines(t, counterPath)
-	require.Equal(t, 2, count,
-		"token_command must run exactly once per tool call (got %d invocations)", count)
-}
-
 // --- helpers below ---
 
 func mcpPost(t *testing.T, base string, authorization string, body []byte) *http.Response {
@@ -434,26 +384,4 @@ func itoa(i int) string {
 	}
 	b.Write(digits)
 	return b.String()
-}
-
-// shellQuote returns a single-quoted shell string. Inputs from t.TempDir
-// are safe paths, but quoting keeps the test resilient to environments
-// that may sneak whitespace into tmp paths.
-func shellQuote(s string) string {
-	return "'" + strings.ReplaceAll(s, "'", `'\''`) + "'"
-}
-
-func countLines(t *testing.T, path string) int {
-	t.Helper()
-	data, err := os.ReadFile(path)
-	if err != nil {
-		if os.IsNotExist(err) {
-			return 0
-		}
-		require.NoError(t, err)
-	}
-	if len(data) == 0 {
-		return 0
-	}
-	return strings.Count(string(data), "\n")
 }

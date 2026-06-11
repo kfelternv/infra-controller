@@ -111,9 +111,6 @@ func registerGET(server *mcp.Server, spec *appcli.Spec, path string, item appcli
 		}
 		client := appcli.NewClient(cfg.BaseURL, cfg.Org, cfg.Token, opts.Log, opts.Debug)
 		client.APIName = cfg.APIName
-		if cfg.TokenRefresh != nil {
-			client.TokenRefresh = cfg.TokenRefresh
-		}
 
 		pathParams, queryParams, err := splitArgs(in, allParams)
 		if err != nil {

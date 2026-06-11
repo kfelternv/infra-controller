@@ -364,7 +364,7 @@ Install the binaries with `make nico-cli` and `make nico-mcp`, run from the `res
 | `--path` | `NICO_MCP_PATH` | HTTP path the MCP handler is mounted at (default `/mcp`) |
 | `--shutdown-timeout` | `NICO_MCP_SHUTDOWN_TIMEOUT` | Graceful shutdown timeout (default `10s`) |
 
-`--base-url`, `--org`, `--api-name`, `--token`, and `--token-command` are accepted directly by `nico-mcp` and provide optional server-side defaults; each also reads its `NICO_*` environment variable. The MCP server does **not** read `~/.nico/config.yaml`: it is stateless and entirely parameter-driven, so it starts cleanly with no config file present and every connection detail is supplied per tool call (see below), falling back to these flags only when an argument is omitted.
+`--base-url`, `--org`, `--api-name`, and `--token` are accepted directly by `nico-mcp` and provide optional server-side defaults; each also reads its `NICO_*` environment variable. The MCP server does **not** read `~/.nico/config.yaml`: it is stateless and entirely parameter-driven, so it starts cleanly with no config file present and every connection detail is supplied per tool call (see below), falling back to these flags only when an argument is omitted.
 
 ### Per-call config overrides
 
@@ -377,7 +377,7 @@ Every typical config value can also be passed as an argument on each MCP tool ca
 | `api_name` | `--api-name` | `api.name` |
 | `token` | `--token` | `auth.token` |
 
-Precedence per tool call (first non-empty wins): tool argument -> inbound `Authorization` header (token only) -> server startup flag/env -> `token_command` refresh on a 401. The MCP server does not read the on-disk config file. `token_command`, OIDC credentials, and NGC api_key settings are NOT exposed as tool arguments -- they are login-flow inputs configured server-side via flags/env.
+Precedence per tool call (first non-empty wins): tool argument -> inbound `Authorization` header (token only) -> server startup flag/env. The MCP server does not read the on-disk config file. OIDC credentials and NGC api_key settings are NOT exposed as tool arguments -- they are login-flow inputs configured server-side via flags/env.
 
 ### Probing the server
 

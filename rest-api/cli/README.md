@@ -337,23 +337,17 @@ nicocli --config ~/.nico/config.prod.yaml tui
 
 The NICo MCP server exposes the NICo REST read surface (every `GET` operation in the embedded OpenAPI spec) as Model Context Protocol tools over streamable-HTTP. It is intended to run behind an MCP-aware gateway such as the [Latinum Agent Gateway](https://agentgateway.dev), but works standalone for local development.
 
-The server ships as its own binary, `nico-mcp`, so that neither the MCP server code nor its MCP SDK dependency are linked into `nicocli`. The CLI keeps a convenience launcher — `nicocli mcp serve` locates the `nico-mcp` binary and execs it — but you can also run `nico-mcp` directly.
+The server ships as its own binary, `nico-mcp`, so that neither the MCP server code nor its MCP SDK dependency are linked into `nicocli`. Build and run it directly — `nicocli mcp` prints these same build/run instructions but never launches `nico-mcp` itself.
 
 ```bash
-# Run the standalone server directly:
-nico-mcp --listen :8080 --path /mcp --base-url https://nico.example.com --org tester
+# Build and install nico-mcp (from the rest-api directory):
+make nico-mcp
 
-# Or launch it through the CLI. The connection flags are root-level and must
-# be passed BEFORE the `mcp serve` subcommand:
-nicocli \
-  --base-url https://nico.example.com \
-  --org tester \
-  mcp serve \
-  --listen :8080 \
-  --path /mcp
+# Run the standalone server:
+nico-mcp --listen :8080 --path /mcp --base-url https://nico.example.com --org tester
 ```
 
-Install the binaries with `make nico-cli` and `make nico-mcp`. When launching through the CLI, `nicocli` finds the server via `$NICO_MCP_BIN`, then a `nico-mcp` next to the `nicocli` executable, then `nico-mcp` on `$PATH`.
+Install the binaries with `make nico-cli` and `make nico-mcp`, run from the `rest-api` directory.
 
 ### Properties
 
@@ -370,7 +364,7 @@ Install the binaries with `make nico-cli` and `make nico-mcp`. When launching th
 | `--path` | `NICO_MCP_PATH` | HTTP path the MCP handler is mounted at (default `/mcp`) |
 | `--shutdown-timeout` | `NICO_MCP_SHUTDOWN_TIMEOUT` | Graceful shutdown timeout (default `10s`) |
 
-`--base-url`, `--org`, `--api-name`, `--token`, and `--token-command` are accepted directly by `nico-mcp` and provide optional server-side defaults; each also reads its `NICO_*` environment variable. When launching through `nicocli mcp serve`, they are root-level flags inherited from the CLI, so pass them **before** the `mcp serve` subcommand (e.g. `nicocli --org tester mcp serve --listen :8080`) — the CLI forwards whichever ones you set to `nico-mcp`. The MCP server does **not** read `~/.nico/config.yaml`: it is stateless and entirely parameter-driven, so it starts cleanly with no config file present and every connection detail is supplied per tool call (see below), falling back to these flags only when an argument is omitted.
+`--base-url`, `--org`, `--api-name`, `--token`, and `--token-command` are accepted directly by `nico-mcp` and provide optional server-side defaults; each also reads its `NICO_*` environment variable. The MCP server does **not** read `~/.nico/config.yaml`: it is stateless and entirely parameter-driven, so it starts cleanly with no config file present and every connection detail is supplied per tool call (see below), falling back to these flags only when an argument is omitted.
 
 ### Per-call config overrides
 

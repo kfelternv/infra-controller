@@ -210,9 +210,9 @@ nico-cli:
 	go build -o $(INSTALL_DIR)/nicocli ./cli/cmd/cli
 	@echo "Installed nicocli to $(INSTALL_DIR)/nicocli"
 
-# Install the standalone MCP server binary. `nicocli mcp serve` discovers it
-# next to nicocli or on PATH, so installing both to INSTALL_DIR makes the CLI
-# launcher work out of the box.
+# Build and install the standalone MCP server binary. It runs as its own
+# process; `nicocli mcp` prints these build/run instructions but does not
+# launch it.
 nico-mcp:
 	go build -o $(INSTALL_DIR)/nico-mcp ./mcp/cmd/nico-mcp
 	@echo "Installed nico-mcp to $(INSTALL_DIR)/nico-mcp"

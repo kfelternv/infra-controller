@@ -151,11 +151,11 @@ func registerHandler(mux *http.ServeMux, path string, handler http.Handler) (err
 
 // buildServeOptions resolves the MCP server's start-up defaults from the
 // process flags (each of which also reads its NICO_* environment
-// variable). Unlike the dynamically-generated commands, mcp serve does
+// variable). Unlike the dynamically-generated CLI commands, nico-mcp does
 // NOT read ~/.nico/config.yaml: the server is stateless and entirely
 // parameter-driven, so every connection detail is supplied per tool call
 // via resolveCallConfig, with these flag values as the only fallback.
-// This lets "nicocli mcp serve" start cleanly with no config file present.
+// This lets nico-mcp start cleanly with no config file present.
 func buildServeOptions(c *urfave.Context) Options {
 	log := logrus.NewEntry(logrus.StandardLogger())
 	if c.Bool("debug") {

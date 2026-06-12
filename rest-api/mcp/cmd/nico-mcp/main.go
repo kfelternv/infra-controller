@@ -7,7 +7,7 @@ import (
 	"fmt"
 	"os"
 
-	"github.com/NVIDIA/infra-controller/rest-api/mcp/pkg/mcp"
+	"github.com/NVIDIA/infra-controller/rest-api/mcp/internal/server"
 	"github.com/NVIDIA/infra-controller/rest-api/openapi"
 	"github.com/urfave/cli/v2"
 )
@@ -22,9 +22,9 @@ func main() {
 			"body. Authentication is per-call: a token argument or the inbound\n" +
 			"Authorization header is forwarded to NICo REST, which makes the\n" +
 			"authorization decision.",
-		Flags: mcp.ServeFlags(),
+		Flags: server.ServeFlags(),
 		Action: func(c *cli.Context) error {
-			return mcp.Run(c, openapi.Spec)
+			return server.Run(c, openapi.Spec)
 		},
 	}
 	if err := app.Run(os.Args); err != nil {

@@ -1,7 +1,7 @@
 // SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 // SPDX-License-Identifier: Apache-2.0
 
-package mcp
+package server
 
 import (
 	"encoding/json"
@@ -27,8 +27,8 @@ func paramRef(name, in string, required bool, sch *openapi3.Schema) *openapi3.Pa
 	return &openapi3.ParameterRef{Value: param(name, in, required, sch)}
 }
 
-func TestBuildInputSchema_OnlyConfigFields(t *testing.T) {
-	schema := buildInputSchema(&openapi3.PathItem{}, &openapi3.Operation{OperationID: "get-metadata"})
+func TestBuildInput_OnlyConfigFields(t *testing.T) {
+	schema := NicoOpenAPIHandler{item: &openapi3.PathItem{}, op: &openapi3.Operation{OperationID: "get-metadata"}}.buildInput()
 	require.Equal(t, "object", schema.Type)
 	for _, c := range commonConfigDescriptions {
 		require.Contains(t, schema.Properties, c.Name, "missing common config field %s", c.Name)
@@ -37,7 +37,7 @@ func TestBuildInputSchema_OnlyConfigFields(t *testing.T) {
 	require.Empty(t, schema.Required, "common config fields should never be required")
 }
 
-func TestBuildInputSchema_PathAndQuery(t *testing.T) {
+func TestBuildInput_PathAndQuery(t *testing.T) {
 	item := &openapi3.PathItem{
 		Parameters: openapi3.Parameters{
 			paramRef("org", "path", true, schemaOf("string")),
@@ -53,7 +53,7 @@ func TestBuildInputSchema_PathAndQuery(t *testing.T) {
 		},
 	}
 
-	schema := buildInputSchema(item, op)
+	schema := NicoOpenAPIHandler{item: item, op: op}.buildInput()
 
 	require.Equal(t, "object", schema.Type)
 	// org as a path parameter is dropped because Client.Do fills the
@@ -85,7 +85,7 @@ func TestBuildInputSchema_PathAndQuery(t *testing.T) {
 	}
 }
 
-func TestBuildInputSchema_OperationOverridesPathItemParam(t *testing.T) {
+func TestBuildInput_OperationOverridesPathItemParam(t *testing.T) {
 	item := &openapi3.PathItem{
 		Parameters: openapi3.Parameters{
 			paramRef("filter", "query", true, schemaOf("string")),
@@ -98,11 +98,11 @@ func TestBuildInputSchema_OperationOverridesPathItemParam(t *testing.T) {
 		},
 	}
 
-	schema := buildInputSchema(item, op)
+	schema := NicoOpenAPIHandler{item: item, op: op}.buildInput()
 	require.NotContains(t, schema.Required, "filter")
 }
 
-func TestBuildInputSchema_ConfigArgDoesNotOverrideOpenAPIParam(t *testing.T) {
+func TestBuildInput_ConfigArgDoesNotOverrideOpenAPIParam(t *testing.T) {
 	// If an OpenAPI spec accidentally declares a query param named
 	// "token", the OpenAPI definition wins -- we never overwrite a
 	// real parameter with the common-config placeholder.
@@ -117,12 +117,12 @@ func TestBuildInputSchema_ConfigArgDoesNotOverrideOpenAPIParam(t *testing.T) {
 			}},
 		},
 	}
-	schema := buildInputSchema(&openapi3.PathItem{}, op)
+	schema := NicoOpenAPIHandler{item: &openapi3.PathItem{}, op: op}.buildInput()
 	require.Contains(t, schema.Properties, "token")
 	require.Equal(t, "API-specific token query param", schema.Properties["token"].Description)
 }
 
-func TestParamToJSONSchema_TypeMapping(t *testing.T) {
+func TestFromParam_TypeMapping(t *testing.T) {
 	cases := []struct {
 		openapiType string
 		want        string
@@ -136,25 +136,25 @@ func TestParamToJSONSchema_TypeMapping(t *testing.T) {
 	}
 	for _, c := range cases {
 		t.Run(c.openapiType, func(t *testing.T) {
-			s := paramToJSONSchema(param("x", "query", false, schemaOf(c.openapiType)))
+			s := NicoOpenAPIHandler{}.fromParam(param("x", "query", false, schemaOf(c.openapiType)))
 			require.Equal(t, c.want, s.Type)
 		})
 	}
 }
 
-func TestParamToJSONSchema_NoSchemaDefaultsToString(t *testing.T) {
-	s := paramToJSONSchema(&openapi3.Parameter{Name: "x", Description: "no schema"})
+func TestFromParam_NoSchemaDefaultsToString(t *testing.T) {
+	s := NicoOpenAPIHandler{}.fromParam(&openapi3.Parameter{Name: "x", Description: "no schema"})
 	require.Equal(t, "string", s.Type)
 	require.Equal(t, "no schema", s.Description)
 }
 
-func TestParamToJSONSchema_PreservesScalarValidationHints(t *testing.T) {
+func TestFromParam_PreservesScalarValidationHints(t *testing.T) {
 	minLen := 3
 	maxLen := 64
 	maxLenU := uint64(64)
 	minV := float64(1)
 	maxV := float64(100)
-	s := paramToJSONSchema(&openapi3.Parameter{
+	s := NicoOpenAPIHandler{}.fromParam(&openapi3.Parameter{
 		Name: "pageSize",
 		Schema: &openapi3.SchemaRef{Value: &openapi3.Schema{
 			Type:      &openapi3.Types{"integer"},

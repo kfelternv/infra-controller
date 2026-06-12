@@ -1,7 +1,7 @@
 // SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 // SPDX-License-Identifier: Apache-2.0
 
-package mcp
+package server
 
 import (
 	"cmp"
@@ -70,33 +70,26 @@ type resolvedConfig struct {
 	Token   string
 }
 
-// resolveCallConfig implements the precedence chain documented in the
-// design plan:
+// FromCallConfig populates cfg by resolving the precedence chain
+// documented in the design plan:
 //
 //  1. Tool-call argument (org, base_url, api_name, token)
 //  2. Inbound Authorization header (token only)
 //  3. Server startup flag / Options (BaseURL, Org, APIName, Token)
 //
-// The function returns an error when a required field (org, base_url)
-// ends up empty so the tool handler can surface a JSON-RPC error
-// instead of letting the call go out with an invalid URL.
-func resolveCallConfig(in map[string]any, req *mcp.CallToolRequest, opts Options) (resolvedConfig, error) {
-	cfg := resolvedConfig{
-		BaseURL: normalizeBaseURL(cmp.Or(stringArg(in, "base_url"), opts.BaseURL)),
-		Org:     cmp.Or(stringArg(in, "org"), opts.Org),
-		APIName: cmp.Or(stringArg(in, "api_name"), opts.APIName),
-	}
-
+// It returns an error when a required field (org, base_url) ends up
+// empty so the tool handler can surface a JSON-RPC error instead of
+// letting the call go out with an invalid URL.
+func (cfg *resolvedConfig) FromCallConfig(in map[string]any, req *mcp.CallToolRequest, opts Options) error {
+	cfg.BaseURL = normalizeBaseURL(cmp.Or(stringArg(in, "base_url"), opts.BaseURL))
+	cfg.Org = cmp.Or(stringArg(in, "org"), opts.Org)
+	cfg.APIName = cmp.Or(stringArg(in, "api_name"), opts.APIName)
 	cfg.Token = normalizeToken(cmp.Or(
 		stringArg(in, "token"),
 		bearerFromExtra(req),
 		opts.Token,
 	))
-
-	if err := cfg.requireNonEmpty(); err != nil {
-		return resolvedConfig{}, err
-	}
-	return cfg, nil
+	return cfg.requireNonEmpty()
 }
 
 // requireNonEmpty returns a descriptive error when org or BaseURL are

@@ -1,7 +1,7 @@
 // SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 // SPDX-License-Identifier: Apache-2.0
 
-package mcp
+package server
 
 import (
 	"net/http"
@@ -11,7 +11,7 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-func TestResolveCallConfig_PrecedenceChain(t *testing.T) {
+func TestFromCallConfig_PrecedenceChain(t *testing.T) {
 	type expect struct {
 		baseURL, org, apiName, token string
 		wantErr                      bool
@@ -127,7 +127,8 @@ func TestResolveCallConfig_PrecedenceChain(t *testing.T) {
 
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
-			cfg, err := resolveCallConfig(c.in, c.req, c.opts)
+			var cfg resolvedConfig
+			err := cfg.FromCallConfig(c.in, c.req, c.opts)
 			if c.expected.wantErr {
 				require.Error(t, err)
 				return

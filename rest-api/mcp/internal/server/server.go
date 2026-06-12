@@ -1,11 +1,11 @@
 // SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 // SPDX-License-Identifier: Apache-2.0
 
-// Package mcp serves the NICo REST read surface as MCP tools over
+// Package server serves the NICo REST read surface as MCP tools over
 // streamable-HTTP. Tools are projected 1:1 from the embedded OpenAPI
 // spec's GET operations. The server is stateless and never emits SSE:
 // every tool/call returns a single application/json body.
-package mcp
+package server
 
 import (
 	"context"
@@ -99,12 +99,13 @@ func sortedPaths(paths map[string]*openapi3.PathItem) []string {
 
 func registerGET(server *mcp.Server, path string, item *openapi3.PathItem, opts Options) {
 	op := item.Get
-	allParams := mergeParameters(item, op)
+	h := NicoOpenAPIHandler{item: item, op: op}
+	allParams := h.mergeParameters()
 
 	tool := &mcp.Tool{
 		Name:        toolName(op.OperationID),
 		Description: toolDescription(op),
-		InputSchema: buildInputSchema(item, op),
+		InputSchema: h.buildInput(),
 		Annotations: &mcp.ToolAnnotations{
 			ReadOnlyHint: true,
 			Title:        op.Summary,
@@ -112,8 +113,8 @@ func registerGET(server *mcp.Server, path string, item *openapi3.PathItem, opts 
 	}
 
 	mcp.AddTool(server, tool, func(ctx context.Context, req *mcp.CallToolRequest, in map[string]any) (*mcp.CallToolResult, any, error) {
-		cfg, err := resolveCallConfig(in, req, opts)
-		if err != nil {
+		var cfg resolvedConfig
+		if err := cfg.FromCallConfig(in, req, opts); err != nil {
 			return errorResult(err), nil, nil
 		}
 		client := appcli.NewClient(cfg.BaseURL, cfg.Org, cfg.Token, opts.Log, opts.Debug)

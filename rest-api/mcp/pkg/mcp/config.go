@@ -4,6 +4,7 @@
 package mcp
 
 import (
+	"cmp"
 	"fmt"
 	"strings"
 
@@ -46,6 +47,19 @@ func (o Options) withDefaults() Options {
 	return o
 }
 
+// commonConfigDescriptions documents the four per-call config overrides
+// that are merged into every tool's input schema. Kept as a slice (not
+// a map) so the schema render order is stable.
+var commonConfigDescriptions = []struct {
+	Name string
+	Desc string
+}{
+	{"org", "Org used in /v2/org/<org>/... paths for this call. Overrides the server startup flag/env default when set."},
+	{"base_url", "NICo REST base URL for this call. Overrides the server startup flag/env default when set; useful when one MCP server fronts multiple NICo REST deployments."},
+	{"api_name", "Override the API path segment used in /v2/org/<org>/<name>/... (api.name; default \"nico\")."},
+	{"token", "Bearer token for this call. Overrides the inbound Authorization header. Omit it when an upstream proxy injects the Authorization header, which is passed through to NICo REST unchanged."},
+}
+
 // resolvedConfig is the result of merging Options with the per-call
 // overrides for one tool invocation. It is consumed by registerGET to
 // construct a fresh appcli.Client.
@@ -68,12 +82,12 @@ type resolvedConfig struct {
 // instead of letting the call go out with an invalid URL.
 func resolveCallConfig(in map[string]any, req *mcp.CallToolRequest, opts Options) (resolvedConfig, error) {
 	cfg := resolvedConfig{
-		BaseURL: normalizeBaseURL(pickString(stringArg(in, "base_url"), opts.BaseURL)),
-		Org:     pickString(stringArg(in, "org"), opts.Org),
-		APIName: pickString(stringArg(in, "api_name"), opts.APIName),
+		BaseURL: normalizeBaseURL(cmp.Or(stringArg(in, "base_url"), opts.BaseURL)),
+		Org:     cmp.Or(stringArg(in, "org"), opts.Org),
+		APIName: cmp.Or(stringArg(in, "api_name"), opts.APIName),
 	}
 
-	cfg.Token = normalizeToken(pickString(
+	cfg.Token = normalizeToken(cmp.Or(
 		stringArg(in, "token"),
 		bearerFromExtra(req),
 		opts.Token,
@@ -102,60 +116,4 @@ func (c resolvedConfig) requireNonEmpty() error {
 	}
 	return fmt.Errorf("missing required config value(s): %s; pass via tool-call arguments, server flags, or NICO_* environment variables",
 		strings.Join(missing, ", "))
-}
-
-func stringArg(in map[string]any, key string) string {
-	if in == nil {
-		return ""
-	}
-	v, ok := in[key]
-	if !ok {
-		return ""
-	}
-	s, ok := v.(string)
-	if !ok {
-		return ""
-	}
-	return strings.TrimSpace(s)
-}
-
-func normalizeBaseURL(v string) string {
-	return strings.TrimRight(v, "/")
-}
-
-func normalizeToken(v string) string {
-	const prefix = "Bearer "
-	if len(v) > len(prefix) && strings.EqualFold(v[:len(prefix)], prefix) {
-		return strings.TrimSpace(v[len(prefix):])
-	}
-	return v
-}
-
-func pickString(values ...string) string {
-	for _, v := range values {
-		if v != "" {
-			return v
-		}
-	}
-	return ""
-}
-
-// bearerFromExtra extracts the bearer from a *mcp.CallToolRequest's
-// inbound HTTP headers. The streamable-HTTP handler stamps every JSON-RPC
-// request with req.Extra.Header from the HTTP request. Returns the bare
-// token without the "Bearer " prefix; returns "" for any value the SDK
-// did not stash or that does not look like a bearer.
-func bearerFromExtra(req *mcp.CallToolRequest) string {
-	if req == nil || req.Extra == nil || req.Extra.Header == nil {
-		return ""
-	}
-	auth := req.Extra.Header.Get("Authorization")
-	if auth == "" {
-		return ""
-	}
-	const prefix = "Bearer "
-	if len(auth) <= len(prefix) || !strings.EqualFold(auth[:len(prefix)], prefix) {
-		return ""
-	}
-	return strings.TrimSpace(auth[len(prefix):])
 }

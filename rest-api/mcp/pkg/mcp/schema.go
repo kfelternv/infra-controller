@@ -11,19 +11,6 @@ import (
 	"github.com/google/jsonschema-go/jsonschema"
 )
 
-// commonConfigDescriptions documents the four per-call config overrides
-// that are merged into every tool's input schema. Kept as a slice (not
-// a map) so the schema render order is stable.
-var commonConfigDescriptions = []struct {
-	Name string
-	Desc string
-}{
-	{"org", "Org used in /v2/org/<org>/... paths for this call. Overrides the server startup flag/env default when set."},
-	{"base_url", "NICo REST base URL for this call. Overrides the server startup flag/env default when set; useful when one MCP server fronts multiple NICo REST deployments."},
-	{"api_name", "Override the API path segment used in /v2/org/<org>/<name>/... (api.name; default \"nico\")."},
-	{"token", "Bearer token for this call. Overrides the inbound Authorization header. Omit it when an upstream proxy injects the Authorization header, which is passed through to NICo REST unchanged."},
-}
-
 type paramKey struct {
 	in   string
 	name string

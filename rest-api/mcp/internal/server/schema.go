@@ -5,7 +5,8 @@ package server
 
 import (
 	"encoding/json"
-	"sort"
+	"maps"
+	"slices"
 
 	"github.com/getkin/kin-openapi/openapi3"
 	"github.com/google/jsonschema-go/jsonschema"
@@ -72,11 +73,6 @@ func (h NicoOpenAPIHandler) buildInput() *jsonschema.Schema {
 		}
 	}
 
-	required := make([]string, 0, len(requiredSet))
-	for name := range requiredSet {
-		required = append(required, name)
-	}
-
 	for _, c := range commonConfigDescriptions {
 		if _, exists := props[c.Name]; exists {
 			continue
@@ -87,11 +83,10 @@ func (h NicoOpenAPIHandler) buildInput() *jsonschema.Schema {
 		}
 	}
 
-	sort.Strings(required)
 	return &jsonschema.Schema{
 		Type:                 "object",
 		Properties:           props,
-		Required:             required,
+		Required:             slices.Sorted(maps.Keys(requiredSet)),
 		AdditionalProperties: falseJSONSchema(),
 	}
 }
@@ -124,7 +119,7 @@ func (NicoOpenAPIHandler) fromParam(p *openapi3.Parameter) *jsonschema.Schema {
 		s.Type = "string"
 	}
 	if len(sch.Enum) > 0 {
-		s.Enum = append([]any(nil), sch.Enum...)
+		s.Enum = slices.Clone(sch.Enum)
 	}
 	s.Format = sch.Format
 	if sch.MinLength > 0 {

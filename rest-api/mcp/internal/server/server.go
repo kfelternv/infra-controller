@@ -11,8 +11,10 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"maps"
 	"net/http"
-	"sort"
+	"slices"
+	"strconv"
 	"strings"
 	"unicode"
 
@@ -89,12 +91,7 @@ func NewHandler(server *mcp.Server) http.Handler {
 // sortedPaths returns the path keys in deterministic order so the
 // resulting tool list is stable across server restarts.
 func sortedPaths(paths map[string]*openapi3.PathItem) []string {
-	keys := make([]string, 0, len(paths))
-	for k := range paths {
-		keys = append(keys, k)
-	}
-	sort.Strings(keys)
-	return keys
+	return slices.Sorted(maps.Keys(paths))
 }
 
 func registerGET(server *mcp.Server, path string, item *openapi3.PathItem, opts Options) {
@@ -225,21 +222,18 @@ func coerceToString(v any) (string, bool) {
 	case string:
 		return t, true
 	case bool:
-		if t {
-			return "true", true
-		}
-		return "false", true
+		return strconv.FormatBool(t), true
 	case float64:
 		// JSON numbers decode to float64; format integers without the
 		// decimal point so they round-trip through query strings.
 		if t == float64(int64(t)) {
-			return fmt.Sprintf("%d", int64(t)), true
+			return strconv.FormatInt(int64(t), 10), true
 		}
-		return fmt.Sprintf("%g", t), true
+		return strconv.FormatFloat(t, 'g', -1, 64), true
 	case int:
-		return fmt.Sprintf("%d", t), true
+		return strconv.Itoa(t), true
 	case int64:
-		return fmt.Sprintf("%d", t), true
+		return strconv.FormatInt(t, 10), true
 	case json.Number:
 		return t.String(), true
 	default:

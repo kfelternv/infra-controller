@@ -10,19 +10,11 @@ import (
 )
 
 // stringArg returns the trimmed string value for key in a tool-call
-// argument map, or "" when the key is absent or not a string.
+// argument map, or "" when the key is absent or not a string. Reading a
+// nil map or a missing key yields the zero value, and the comma-ok type
+// assertion yields "" for any non-string value.
 func stringArg(in map[string]any, key string) string {
-	if in == nil {
-		return ""
-	}
-	v, ok := in[key]
-	if !ok {
-		return ""
-	}
-	s, ok := v.(string)
-	if !ok {
-		return ""
-	}
+	s, _ := in[key].(string)
 	return strings.TrimSpace(s)
 }
 

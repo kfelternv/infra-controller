@@ -28,7 +28,7 @@ func paramRef(name, in string, required bool, sch *openapi3.Schema) *openapi3.Pa
 }
 
 func TestBuildInput_OnlyConfigFields(t *testing.T) {
-	schema := NicoOpenAPIHandler{item: &openapi3.PathItem{}, op: &openapi3.Operation{OperationID: "get-metadata"}}.buildInput()
+	schema := (&NicoOpenApiHandler{}).buildInput(&openapi3.PathItem{}, &openapi3.Operation{OperationID: "get-metadata"})
 	require.Equal(t, "object", schema.Type)
 	for _, c := range commonConfigDescriptions {
 		require.Contains(t, schema.Properties, c.Name, "missing common config field %s", c.Name)
@@ -53,7 +53,7 @@ func TestBuildInput_PathAndQuery(t *testing.T) {
 		},
 	}
 
-	schema := NicoOpenAPIHandler{item: item, op: op}.buildInput()
+	schema := (&NicoOpenApiHandler{}).buildInput(item, op)
 
 	require.Equal(t, "object", schema.Type)
 	// org as a path parameter is dropped because Client.Do fills the
@@ -98,7 +98,7 @@ func TestBuildInput_OperationOverridesPathItemParam(t *testing.T) {
 		},
 	}
 
-	schema := NicoOpenAPIHandler{item: item, op: op}.buildInput()
+	schema := (&NicoOpenApiHandler{}).buildInput(item, op)
 	require.NotContains(t, schema.Required, "filter")
 }
 
@@ -117,7 +117,7 @@ func TestBuildInput_ConfigArgDoesNotOverrideOpenAPIParam(t *testing.T) {
 			}},
 		},
 	}
-	schema := NicoOpenAPIHandler{item: &openapi3.PathItem{}, op: op}.buildInput()
+	schema := (&NicoOpenApiHandler{}).buildInput(&openapi3.PathItem{}, op)
 	require.Contains(t, schema.Properties, "token")
 	require.Equal(t, "API-specific token query param", schema.Properties["token"].Description)
 }
@@ -136,14 +136,14 @@ func TestFromParam_TypeMapping(t *testing.T) {
 	}
 	for _, c := range cases {
 		t.Run(c.openapiType, func(t *testing.T) {
-			s := NicoOpenAPIHandler{}.fromParam(param("x", "query", false, schemaOf(c.openapiType)))
+			s := (&NicoOpenApiHandler{}).fromParam(param("x", "query", false, schemaOf(c.openapiType)))
 			require.Equal(t, c.want, s.Type)
 		})
 	}
 }
 
 func TestFromParam_NoSchemaDefaultsToString(t *testing.T) {
-	s := NicoOpenAPIHandler{}.fromParam(&openapi3.Parameter{Name: "x", Description: "no schema"})
+	s := (&NicoOpenApiHandler{}).fromParam(&openapi3.Parameter{Name: "x", Description: "no schema"})
 	require.Equal(t, "string", s.Type)
 	require.Equal(t, "no schema", s.Description)
 }
@@ -154,7 +154,7 @@ func TestFromParam_PreservesScalarValidationHints(t *testing.T) {
 	maxLenU := uint64(64)
 	minV := float64(1)
 	maxV := float64(100)
-	s := NicoOpenAPIHandler{}.fromParam(&openapi3.Parameter{
+	s := (&NicoOpenApiHandler{}).fromParam(&openapi3.Parameter{
 		Name: "pageSize",
 		Schema: &openapi3.SchemaRef{Value: &openapi3.Schema{
 			Type:      &openapi3.Types{"integer"},

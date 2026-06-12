@@ -12,12 +12,11 @@ import (
 	"github.com/google/jsonschema-go/jsonschema"
 )
 
-// NicoOpenAPIHandler builds the MCP tool input schema for a single
-// OpenAPI GET operation, combining the path-item and operation-level
-// parameters.
-type NicoOpenAPIHandler struct {
-	item *openapi3.PathItem
-	op   *openapi3.Operation
+// NicoOpenApiHandler builds the MCP tool input schema for a single OpenAPI
+// GET operation, combining the path-item and operation-level parameters with
+// the common per-call config override fields.
+type NicoOpenApiHandler struct {
+	schema jsonschema.Schema
 }
 
 type paramKey struct {
@@ -26,9 +25,9 @@ type paramKey struct {
 }
 
 // mergeParameters combines path-item and operation parameters, with
-// operation-level definitions overriding path-item-level ones that
-// share the same {in,name} tuple per OpenAPI override semantics.
-func (h NicoOpenAPIHandler) mergeParameters() []*openapi3.Parameter {
+// operation-level definitions overriding path-item-level ones that share the
+// same {in,name} tuple per OpenAPI override semantics.
+func mergeParameters(item *openapi3.PathItem, op *openapi3.Operation) []*openapi3.Parameter {
 	merged := map[paramKey]*openapi3.Parameter{}
 	add := func(refs openapi3.Parameters) {
 		for _, ref := range refs {
@@ -39,8 +38,8 @@ func (h NicoOpenAPIHandler) mergeParameters() []*openapi3.Parameter {
 			merged[paramKey{in: p.In, name: p.Name}] = p
 		}
 	}
-	add(h.item.Parameters)
-	add(h.op.Parameters)
+	add(item.Parameters)
+	add(op.Parameters)
 
 	out := make([]*openapi3.Parameter, 0, len(merged))
 	for _, p := range merged {
@@ -49,16 +48,16 @@ func (h NicoOpenAPIHandler) mergeParameters() []*openapi3.Parameter {
 	return out
 }
 
-// buildInput produces a JSON Schema describing a tool's input: OpenAPI
-// path and query parameters merged with the four common config override
-// fields (org, base_url, api_name, token). Path parameters are marked
-// required; OpenAPI-required query parameters are marked required; the
-// config overrides are always optional.
-func (h NicoOpenAPIHandler) buildInput() *jsonschema.Schema {
+// buildInput populates the handler's schema from the operation's path and
+// query parameters merged with the four common config override fields (org,
+// base_url, api_name, token) and returns it. Path parameters are required;
+// OpenAPI-required query parameters are required; the config overrides are
+// always optional.
+func (h *NicoOpenApiHandler) buildInput(item *openapi3.PathItem, op *openapi3.Operation) *jsonschema.Schema {
 	props := map[string]*jsonschema.Schema{}
 	requiredSet := map[string]struct{}{}
 
-	for _, p := range h.mergeParameters() {
+	for _, p := range mergeParameters(item, op) {
 		if p.Name == "org" {
 			// Resolved from per-call args or server startup defaults.
 			// The OpenAPI {org} segment is filled in by appcli.Client.Do.
@@ -83,25 +82,25 @@ func (h NicoOpenAPIHandler) buildInput() *jsonschema.Schema {
 		}
 	}
 
-	return &jsonschema.Schema{
+	h.schema = jsonschema.Schema{
 		Type:                 "object",
 		Properties:           props,
 		Required:             slices.Sorted(maps.Keys(requiredSet)),
 		AdditionalProperties: falseJSONSchema(),
 	}
+	return &h.schema
 }
 
 func falseJSONSchema() *jsonschema.Schema {
 	return &jsonschema.Schema{Not: &jsonschema.Schema{}}
 }
 
-// fromParam converts a single OpenAPI parameter to a JSON schema
-// fragment. Types are normalised to integer/boolean/number/string;
-// everything else falls back to string. Scalar validation hints such as
-// format, min/max, length bounds, defaults, and enums are preserved
-// where present so MCP clients get the same guardrails as the generated
-// CLI flags.
-func (NicoOpenAPIHandler) fromParam(p *openapi3.Parameter) *jsonschema.Schema {
+// fromParam converts a single OpenAPI parameter to a JSON schema fragment.
+// Types are normalised to integer/boolean/number/string; everything else
+// falls back to string. Scalar validation hints such as format, min/max,
+// length bounds, defaults, and enums are preserved where present so MCP
+// clients get the same guardrails as the generated CLI flags.
+func (*NicoOpenApiHandler) fromParam(p *openapi3.Parameter) *jsonschema.Schema {
 	s := &jsonschema.Schema{Description: p.Description}
 	if p.Schema == nil || p.Schema.Value == nil {
 		s.Type = "string"

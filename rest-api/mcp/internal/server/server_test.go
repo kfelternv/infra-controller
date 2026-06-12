@@ -223,3 +223,16 @@ func TestBuildServer_RejectsInvalidSpec(t *testing.T) {
 	_, err := BuildServer([]byte("not: valid: yaml: ::"), Options{})
 	require.Error(t, err)
 }
+
+func TestRegisterHandler_ValidPath(t *testing.T) {
+	mux := http.NewServeMux()
+	err := registerHandler(mux, "/mcp", http.HandlerFunc(func(http.ResponseWriter, *http.Request) {}))
+	require.NoError(t, err)
+}
+
+func TestRegisterHandler_InvalidPatternReturnsError(t *testing.T) {
+	mux := http.NewServeMux()
+	err := registerHandler(mux, "/{", http.HandlerFunc(func(http.ResponseWriter, *http.Request) {}))
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "invalid --path")
+}

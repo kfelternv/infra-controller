@@ -47,6 +47,11 @@ use tokio_util::sync::CancellationToken;
 use crate::cfg::file::{PeriodicStateRepublishConfig, RepublishScope};
 use crate::mqtt_state_change_hook::message::ManagedHostStateChangeMessage;
 
+/// How many managed hosts to hydrate into full snapshots at a time. Bounds peak
+/// memory and the size of each snapshot query so a sweep scales to very large
+/// fleets without loading every snapshot at once.
+const REPUBLISH_BATCH_SIZE: usize = 500;
+
 /// Periodically re-publishes current `ManagedHostState` for managed hosts to
 /// the DSX Exchange Event Bus.
 ///
@@ -149,65 +154,84 @@ impl<P: MqttPublisher> ManagedHostStateRepublisher<P> {
         }
     }
 
-    /// Load every managed host and re-publish those selected by the current
-    /// scope. Unhealthy hosts are always published; healthy hosts are published
-    /// only when `publish_healthy` is true for this sweep.
+    /// Page through every managed host and re-publish those selected by the
+    /// current scope. Unhealthy hosts are always published; healthy hosts are
+    /// published only when `publish_healthy` is true for this sweep.
+    ///
+    /// Hosts are processed in bounded batches: the full ID list is fetched
+    /// cheaply up front (IDs only, no per-host snapshot JSON), then each batch
+    /// hydrates full snapshots via a short-lived pooled connection. This keeps
+    /// peak memory flat and builds each host's snapshot exactly once, so it
+    /// scales to fleets with hundreds of thousands of hosts without loading
+    /// every snapshot at once or pinning a DB connection open for the whole
+    /// (possibly paced) sweep.
     async fn run_sweep(
         &self,
         publish_healthy: bool,
         cancel_token: &CancellationToken,
     ) -> eyre::Result<()> {
-        // Instance data is not needed: the message only carries `machine_id`
-        // and `managed_state` (read from the host's own state column), and
-        // aggregate health is derived from host + DPU snapshots.
-        let options = LoadSnapshotOptions {
-            include_history: false,
-            include_instance_data: false,
-            host_health_config: self.host_health_config,
-        };
-        // Load the whole set up front rather than streaming: this NICo instance
-        // owns its own database (the same `load_all` the admin UI and
-        // site-explorer use), a site's managed-host count is bounded, and
-        // loading eagerly frees the DB connection before the publish loop --
-        // which can be long when `max_publishes_per_second` paces it -- instead
-        // of pinning a pooled connection open for the whole sweep.
-        let snapshots = db::managed_host::load_all(&self.db_pool, options).await?;
+        let host_ids = db::managed_host::load_host_ids(&self.db_pool).await?;
+        let total = host_ids.len();
 
         let pacing = pacing_delay(self.config.max_publishes_per_second);
         // One timestamp for the whole sweep: it marks when NICo asserts this
         // state, not when each individual publish happened.
         let timestamp = Utc::now();
-        let total = snapshots.len();
+        let mut reader: db::db_read::PgPoolReader = self.db_pool.clone().into();
         let mut published = 0usize;
         let mut skipped_healthy = 0usize;
 
-        for snapshot in &snapshots {
+        'sweep: for batch in host_ids.chunks(REPUBLISH_BATCH_SIZE) {
             if cancel_token.is_cancelled() {
                 break;
             }
 
-            let unhealthy = is_report_unhealthy(&snapshot.aggregate_health);
-            if !should_publish(unhealthy, publish_healthy) {
-                skipped_healthy += 1;
-                continue;
-            }
+            // Instance data isn't needed: the message only carries `machine_id`
+            // and `managed_state` (the host's own state column); aggregate
+            // health is derived from host + DPU snapshots.
+            let options = LoadSnapshotOptions {
+                include_history: false,
+                include_instance_data: false,
+                host_health_config: self.host_health_config,
+            };
+            // Each batch acquires and releases a pooled connection, so we never
+            // hold one open across the publish loop.
+            let snapshots =
+                db::managed_host::load_by_machine_ids(&mut reader, batch, options).await?;
 
-            publish_state(
-                &self.publisher,
-                &self.topic_prefix,
-                self.publish_timeout,
-                &self.metrics,
-                &snapshot.host_snapshot.id,
-                &snapshot.managed_state,
-                timestamp,
-            )
-            .await;
-            published += 1;
+            for machine_id in batch {
+                if cancel_token.is_cancelled() {
+                    break 'sweep;
+                }
 
-            if let Some(delay) = pacing {
-                tokio::select! {
-                    _ = tokio::time::sleep(delay) => {}
-                    _ = cancel_token.cancelled() => break,
+                // A host can be deleted between the ID load and this batch.
+                let Some(snapshot) = snapshots.get(machine_id) else {
+                    continue;
+                };
+
+                let unhealthy = is_report_unhealthy(&snapshot.aggregate_health);
+                if !should_publish(unhealthy, publish_healthy) {
+                    skipped_healthy += 1;
+                    continue;
+                }
+
+                publish_state(
+                    &self.publisher,
+                    &self.topic_prefix,
+                    self.publish_timeout,
+                    &self.metrics,
+                    &snapshot.host_snapshot.id,
+                    &snapshot.managed_state,
+                    timestamp,
+                )
+                .await;
+                published += 1;
+
+                if let Some(delay) = pacing {
+                    tokio::select! {
+                        _ = tokio::time::sleep(delay) => {}
+                        _ = cancel_token.cancelled() => break 'sweep,
+                    }
                 }
             }
         }

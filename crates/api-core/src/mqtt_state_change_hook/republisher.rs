@@ -33,7 +33,7 @@
 
 use std::time::Duration;
 
-use carbide_mqtt_common::hook::MqttPublisher;
+use carbide_mqtt_common::hook::{MqttPublisher, publish_with_deadline};
 use carbide_mqtt_common::metrics::MqttHookMetrics;
 use carbide_uuid::machine::MachineId;
 use chrono::{DateTime, Utc};
@@ -41,7 +41,7 @@ use health_report::HealthReport;
 use model::machine::{HostHealthConfig, LoadSnapshotOptions, ManagedHostState};
 use opentelemetry::metrics::Meter;
 use tokio::task::JoinSet;
-use tokio::time::{Instant, timeout_at};
+use tokio::time::{Instant, MissedTickBehavior};
 use tokio_util::sync::CancellationToken;
 
 use crate::cfg::file::{PeriodicStateRepublishConfig, RepublishScope};
@@ -119,8 +119,24 @@ impl<P: MqttPublisher> ManagedHostStateRepublisher<P> {
     }
 
     async fn run(self, cancel_token: CancellationToken) {
+        // A ticker (rather than `sleep(interval)` after each sweep) keeps the
+        // cadence fixed regardless of how long a sweep's publishes take. The
+        // first tick fires immediately, so the first sweep runs at startup. If
+        // a sweep overruns the interval, missed ticks are skipped rather than
+        // bursting back-to-back sweeps.
+        let mut ticker = tokio::time::interval(self.config.interval);
+        ticker.set_missed_tick_behavior(MissedTickBehavior::Skip);
         let mut sweep: u64 = 0;
+
         loop {
+            tokio::select! {
+                _ = ticker.tick() => {}
+                _ = cancel_token.cancelled() => {
+                    tracing::debug!("Managed host state republisher stop requested");
+                    return;
+                }
+            }
+
             let publish_healthy = should_publish_healthy(
                 self.config.scope,
                 self.config.healthy_republish_every,
@@ -130,14 +146,6 @@ impl<P: MqttPublisher> ManagedHostStateRepublisher<P> {
                 tracing::warn!(error = %e, "Managed host state republish sweep failed");
             }
             sweep = sweep.wrapping_add(1);
-
-            tokio::select! {
-                _ = tokio::time::sleep(self.config.interval) => {}
-                _ = cancel_token.cancelled() => {
-                    tracing::debug!("Managed host state republisher stop requested");
-                    return;
-                }
-            }
         }
     }
 
@@ -157,6 +165,12 @@ impl<P: MqttPublisher> ManagedHostStateRepublisher<P> {
             include_instance_data: false,
             host_health_config: self.host_health_config,
         };
+        // Load the whole set up front rather than streaming: this NICo instance
+        // owns its own database (the same `load_all` the admin UI and
+        // site-explorer use), a site's managed-host count is bounded, and
+        // loading eagerly frees the DB connection before the publish loop --
+        // which can be long when `max_publishes_per_second` paces it -- instead
+        // of pinning a pooled connection open for the whole sweep.
         let snapshots = db::managed_host::load_all(&self.db_pool, options).await?;
 
         let pacing = pacing_delay(self.config.max_publishes_per_second);
@@ -172,7 +186,7 @@ impl<P: MqttPublisher> ManagedHostStateRepublisher<P> {
                 break;
             }
 
-            let unhealthy = report_is_unhealthy(&snapshot.aggregate_health);
+            let unhealthy = is_report_unhealthy(&snapshot.aggregate_health);
             if !should_publish(unhealthy, publish_healthy) {
                 skipped_healthy += 1;
                 continue;
@@ -234,7 +248,7 @@ fn should_publish(unhealthy: bool, publish_healthy: bool) -> bool {
 
 /// A managed host is "unhealthy" when its aggregate health carries at least one
 /// alert.
-fn report_is_unhealthy(report: &HealthReport) -> bool {
+fn is_report_unhealthy(report: &HealthReport) -> bool {
     !report.alerts.is_empty()
 }
 
@@ -275,22 +289,11 @@ async fn publish_state<P: MqttPublisher>(
         }
     };
 
-    let topic = format!("{topic_prefix}/{machine_id}/state");
+    // Same topic layout and publish/timeout/metrics handling as the
+    // change-driven hook, shared so the two paths can't drift.
+    let topic = message.topic(topic_prefix);
     let deadline = Instant::now() + publish_timeout;
-    match timeout_at(deadline, publisher.publish(&topic, payload)).await {
-        Ok(Ok(())) => {
-            tracing::debug!(topic = %topic, "Republished managed host state to MQTT");
-            metrics.record_success();
-        }
-        Ok(Err(e)) => {
-            tracing::warn!(topic = %topic, error = %e, "Failed to republish managed host state");
-            metrics.record_publish_error();
-        }
-        Err(_) => {
-            tracing::warn!(topic = %topic, "Managed host state republish timed out");
-            metrics.record_timeout();
-        }
-    }
+    publish_with_deadline(publisher, &topic, payload, deadline, metrics).await;
 }
 
 #[cfg(test)]
@@ -395,7 +398,7 @@ mod tests {
 
     #[test]
     fn report_with_no_alerts_is_healthy() {
-        assert!(!report_is_unhealthy(&HealthReport::empty(
+        assert!(!is_report_unhealthy(&HealthReport::empty(
             "test".to_string()
         )));
     }
@@ -403,7 +406,7 @@ mod tests {
     #[test]
     fn report_with_an_alert_is_unhealthy() {
         // `missing_report` carries a single alert.
-        assert!(report_is_unhealthy(&HealthReport::missing_report()));
+        assert!(is_report_unhealthy(&HealthReport::missing_report()));
     }
 
     #[test]

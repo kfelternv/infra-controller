@@ -41,6 +41,14 @@ impl<'a> ManagedHostStateChangeMessage<'a> {
     pub fn to_json_bytes(&self) -> Result<Vec<u8>, serde_json::Error> {
         serde_json::to_vec(self)
     }
+
+    /// MQTT topic this message publishes to: `{topic_prefix}/{machineId}/state`.
+    ///
+    /// Shared by the change-driven hook and the periodic republisher so the
+    /// topic layout is defined in exactly one place.
+    pub fn topic(&self, topic_prefix: &str) -> String {
+        format!("{topic_prefix}/{}/state", self.machine_id)
+    }
 }
 
 #[cfg(test)]

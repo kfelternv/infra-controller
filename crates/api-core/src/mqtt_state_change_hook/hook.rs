@@ -78,10 +78,6 @@ impl MqttStateChangeHook {
             metrics,
         }
     }
-
-    fn build_topic(&self, machine_id: &MachineId) -> String {
-        format!("{}/{}/state", self.topic_prefix, machine_id)
-    }
 }
 
 impl StateChangeHook<MachineId, ManagedHostState> for MqttStateChangeHook {
@@ -92,7 +88,7 @@ impl StateChangeHook<MachineId, ManagedHostState> for MqttStateChangeHook {
             managed_host_state: event.new_state,
             timestamp: event.timestamp,
         };
-        let topic = self.build_topic(event.object_id);
+        let topic = message.topic(&self.topic_prefix);
 
         match message.to_json_bytes() {
             Ok(payload) => {

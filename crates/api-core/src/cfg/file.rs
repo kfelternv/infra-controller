@@ -2204,6 +2204,24 @@ pub enum RepublishScope {
     UnhealthyOnly,
 }
 
+/// Maximum number of MQTT publishes per second during a single republish sweep.
+/// `0` means unbounded (publish as fast as the broker accepts).
+///
+/// Wraps the raw count so the pacing semantics live with the type rather than
+/// being re-derived at call sites. `#[serde(transparent)]` keeps the config
+/// surface a plain integer (e.g. `max_publishes_per_second = 200`).
+#[derive(Clone, Copy, Debug, Default, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(transparent)]
+pub struct PublishRate(pub u32);
+
+impl PublishRate {
+    /// Delay to insert between publishes to honor this rate, or `None` when
+    /// unbounded.
+    pub fn pacing_delay(self) -> Option<std::time::Duration> {
+        (self.0 > 0).then(|| std::time::Duration::from_secs_f64(1.0 / f64::from(self.0)))
+    }
+}
+
 /// Periodic republishing of `ManagedHostState` on the DSX Exchange Event Bus.
 ///
 /// NICo publishes state on every transition, but integrators that cannot poll
@@ -2242,7 +2260,7 @@ pub struct PeriodicStateRepublishConfig {
     /// bursting the broker on large sites. `0` (default) disables pacing and
     /// publishes as fast as the broker accepts.
     #[serde(default)]
-    pub max_publishes_per_second: u32,
+    pub max_publishes_per_second: PublishRate,
 }
 
 impl Default for PeriodicStateRepublishConfig {
@@ -2252,7 +2270,7 @@ impl Default for PeriodicStateRepublishConfig {
             interval: Self::default_interval(),
             scope: RepublishScope::default(),
             healthy_republish_every: Self::default_healthy_republish_every(),
-            max_publishes_per_second: 0,
+            max_publishes_per_second: PublishRate(0),
         }
     }
 }

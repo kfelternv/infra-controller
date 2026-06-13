@@ -111,7 +111,7 @@ impl<P: MqttPublisher> ManagedHostStateRepublisher<P> {
                 interval_secs = self.config.interval.as_secs(),
                 scope = ?self.config.scope,
                 healthy_republish_every = self.config.healthy_republish_every,
-                max_publishes_per_second = self.config.max_publishes_per_second,
+                max_publishes_per_second = self.config.max_publishes_per_second.0,
                 "Starting periodic managed host state republisher"
             );
             join_set
@@ -173,7 +173,7 @@ impl<P: MqttPublisher> ManagedHostStateRepublisher<P> {
         let host_ids = db::managed_host::load_host_ids(&self.db_pool).await?;
         let total = host_ids.len();
 
-        let pacing = pacing_delay(self.config.max_publishes_per_second);
+        let pacing = self.config.max_publishes_per_second.pacing_delay();
         // One timestamp for the whole sweep: it marks when NICo asserts this
         // state, not when each individual publish happened.
         let timestamp = Utc::now();
@@ -276,13 +276,6 @@ fn is_report_unhealthy(report: &HealthReport) -> bool {
     !report.alerts.is_empty()
 }
 
-/// Per-publish delay that bounds a sweep to `max_publishes_per_second`, or
-/// `None` when unbounded (`0`).
-fn pacing_delay(max_publishes_per_second: u32) -> Option<Duration> {
-    (max_publishes_per_second > 0)
-        .then(|| Duration::from_secs_f64(1.0 / f64::from(max_publishes_per_second)))
-}
-
 /// Serialize and publish a single managed host's current state, bounded by
 /// `publish_timeout`, recording the outcome in `metrics`.
 async fn publish_state<P: MqttPublisher>(
@@ -331,6 +324,7 @@ mod tests {
     use tokio::sync::Barrier;
 
     use super::*;
+    use crate::cfg::file::PublishRate;
 
     fn test_meter() -> Meter {
         global::meter("republisher-test")
@@ -435,13 +429,16 @@ mod tests {
 
     #[test]
     fn pacing_disabled_when_zero() {
-        assert_eq!(pacing_delay(0), None);
+        assert_eq!(PublishRate(0).pacing_delay(), None);
     }
 
     #[test]
     fn pacing_divides_one_second_by_rate() {
-        assert_eq!(pacing_delay(10), Some(Duration::from_millis(100)));
-        assert_eq!(pacing_delay(1), Some(Duration::from_secs(1)));
+        assert_eq!(
+            PublishRate(10).pacing_delay(),
+            Some(Duration::from_millis(100))
+        );
+        assert_eq!(PublishRate(1).pacing_delay(), Some(Duration::from_secs(1)));
     }
 
     #[tokio::test]

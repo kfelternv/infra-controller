@@ -1053,6 +1053,7 @@ pub async fn initialize_and_start_controllers<'a>(
                 client.clone(),
                 ManagedHostStateRepublisherParams {
                     db_pool: db_pool.clone(),
+                    work_lock_manager_handle: work_lock_manager_handle.clone(),
                     topic_prefix: config.topic_prefix.clone(),
                     publish_timeout: config.publish_timeout,
                     config: config.periodic_state_republish.clone(),

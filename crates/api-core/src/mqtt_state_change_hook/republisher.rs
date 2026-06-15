@@ -37,6 +37,7 @@ use carbide_mqtt_common::hook::{MqttPublisher, publish_with_deadline};
 use carbide_mqtt_common::metrics::MqttHookMetrics;
 use carbide_uuid::machine::MachineId;
 use chrono::{DateTime, Utc};
+use db::work_lock_manager::{AcquireLockError, WorkLockManagerHandle};
 use health_report::HealthReport;
 use model::machine::{HostHealthConfig, LoadSnapshotOptions, ManagedHostState};
 use opentelemetry::metrics::Meter;
@@ -51,6 +52,7 @@ use crate::mqtt_state_change_hook::message::ManagedHostStateChangeMessage;
 /// memory and the size of each snapshot query so a sweep scales to very large
 /// fleets without loading every snapshot at once.
 const REPUBLISH_BATCH_SIZE: usize = 500;
+const REPUBLISH_WORK_KEY: &str = "managed_host_state_republisher::iteration";
 
 /// Periodically re-publishes current `ManagedHostState` for managed hosts to
 /// the DSX Exchange Event Bus.
@@ -64,6 +66,7 @@ const REPUBLISH_BATCH_SIZE: usize = 500;
 pub struct ManagedHostStateRepublisher<P: MqttPublisher> {
     publisher: P,
     db_pool: sqlx::PgPool,
+    work_lock_manager_handle: WorkLockManagerHandle,
     topic_prefix: String,
     publish_timeout: Duration,
     config: PeriodicStateRepublishConfig,
@@ -74,6 +77,7 @@ pub struct ManagedHostStateRepublisher<P: MqttPublisher> {
 /// Constructor parameters for [`ManagedHostStateRepublisher`].
 pub struct ManagedHostStateRepublisherParams {
     pub db_pool: sqlx::PgPool,
+    pub work_lock_manager_handle: WorkLockManagerHandle,
     pub topic_prefix: String,
     pub publish_timeout: Duration,
     pub config: PeriodicStateRepublishConfig,
@@ -91,6 +95,7 @@ impl<P: MqttPublisher> ManagedHostStateRepublisher<P> {
         Self {
             publisher,
             db_pool: params.db_pool,
+            work_lock_manager_handle: params.work_lock_manager_handle,
             topic_prefix: params.topic_prefix,
             publish_timeout: params.publish_timeout,
             config: params.config,
@@ -170,6 +175,28 @@ impl<P: MqttPublisher> ManagedHostStateRepublisher<P> {
         publish_healthy: bool,
         cancel_token: &CancellationToken,
     ) -> eyre::Result<()> {
+        let _work_lock = match self
+            .work_lock_manager_handle
+            .try_acquire_lock(REPUBLISH_WORK_KEY.into())
+            .await
+        {
+            Ok(lock) => lock,
+            Err(AcquireLockError::WorkAlreadyLocked(_)) => {
+                tracing::debug!(
+                    lock = REPUBLISH_WORK_KEY,
+                    "Skipping managed host state republish sweep; another instance holds the lock"
+                );
+                return Ok(());
+            }
+            Err(e) => {
+                tracing::warn!(
+                    lock = REPUBLISH_WORK_KEY,
+                    "Unable to acquire managed host state republish lock: {e}"
+                );
+                return Ok(());
+            }
+        };
+
         let host_ids = db::managed_host::load_host_ids(&self.db_pool).await?;
         let total = host_ids.len();
 

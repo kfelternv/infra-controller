@@ -1827,10 +1827,11 @@ async fn test_batch_update_expected_machines_partial_results(pool: sqlx::PgPool)
     assert_eq!(machine3.into_inner().bmc_username, "admin3_updated");
 }
 
-// test_patch_dpf_enabled_null_stays_null verifies that when dpf_enabled is NULL
-// in the DB and an update is applied with is_dpf_enabled: None, the value remains NULL.
+// test_patch_dpf_enabled_none_to_true verifies that when an expected machine is
+// added with is_dpf_enabled: None, the value defaults to true on insert, and a
+// subsequent update with is_dpf_enabled: None preserves that value.
 #[crate::sqlx_test()]
-async fn test_patch_dpf_enabled_none_to_false(pool: sqlx::PgPool) {
+async fn test_patch_dpf_enabled_none_to_true(pool: sqlx::PgPool) {
     let env = create_test_env(pool).await;
     let bmc_mac_address = "AA:BB:CC:DD:EE:F0";
 
@@ -1859,8 +1860,8 @@ async fn test_patch_dpf_enabled_none_to_false(pool: sqlx::PgPool) {
         .expect("unable to fetch expected machine")
         .into_inner();
 
-    // default should be updated as false
-    assert_eq!(updated.is_dpf_enabled, Some(false),);
+    // default should be true
+    assert_eq!(updated.is_dpf_enabled, Some(true),);
 
     updated.id = None;
     updated.bmc_username = "ADMIN_PATCHED".into();
@@ -1881,7 +1882,7 @@ async fn test_patch_dpf_enabled_none_to_false(pool: sqlx::PgPool) {
         .expect("unable to fetch expected machine after update")
         .into_inner();
 
-    assert_eq!(retrieved.is_dpf_enabled, Some(false),);
+    assert_eq!(retrieved.is_dpf_enabled, Some(true),);
 }
 
 // test_patch_dpf_enabled_true_stays_true_when_patched_with_null verifies that when
@@ -2126,6 +2127,148 @@ async fn test_add_expected_machine_with_invalid_static_ip(pool: sqlx::PgPool) {
     );
 }
 
+#[test]
+fn test_expected_machine_data_accepts_ipv6_host_nic_fixed_ip() {
+    let expected_machine = rpc::forge::ExpectedMachine {
+        bmc_mac_address: "5A:5B:5C:5D:5E:65".to_string(),
+        bmc_username: "root".into(),
+        bmc_password: "testpass".into(),
+        chassis_serial_number: "IPV6-HOST-NIC-FIXED-IP".into(),
+        host_nics: vec![rpc::forge::ExpectedHostNic {
+            mac_address: "5A:5B:5C:5D:5E:66".to_string(),
+            fixed_ip: Some("2001:db8::66".to_string()),
+            ..Default::default()
+        }],
+        metadata: Some(rpc::forge::Metadata::default()),
+        id: Some(::rpc::common::Uuid {
+            value: uuid::Uuid::new_v4().to_string(),
+        }),
+        ..Default::default()
+    };
+
+    let data = ExpectedMachineData::try_from(expected_machine).unwrap();
+
+    assert_eq!(
+        data.host_nics[0].fixed_ip,
+        Some("2001:db8::66".parse().unwrap())
+    );
+}
+
+#[test]
+fn test_expected_machine_data_rejects_invalid_host_nic_fixed_ip() {
+    let expected_machine = rpc::forge::ExpectedMachine {
+        bmc_mac_address: "5A:5B:5C:5D:5E:65".to_string(),
+        bmc_username: "root".into(),
+        bmc_password: "testpass".into(),
+        chassis_serial_number: "INVALID-HOST-NIC-FIXED-IP".into(),
+        host_nics: vec![rpc::forge::ExpectedHostNic {
+            mac_address: "5A:5B:5C:5D:5E:66".to_string(),
+            fixed_ip: Some("not-a-valid-ip".to_string()),
+            ..Default::default()
+        }],
+        metadata: Some(rpc::forge::Metadata::default()),
+        id: Some(::rpc::common::Uuid {
+            value: uuid::Uuid::new_v4().to_string(),
+        }),
+        ..Default::default()
+    };
+
+    let err = match ExpectedMachineData::try_from(expected_machine) {
+        Ok(_) => panic!("invalid host NIC fixed IP should fail conversion"),
+        Err(err) => err,
+    };
+
+    assert!(err.to_string().contains("Invalid fixed IP"));
+}
+
+#[test]
+fn test_expected_machine_data_accepts_ipv6_host_nic_fixed_gateway() {
+    let expected_machine = rpc::forge::ExpectedMachine {
+        bmc_mac_address: "5A:5B:5C:5D:5E:65".to_string(),
+        bmc_username: "root".into(),
+        bmc_password: "testpass".into(),
+        chassis_serial_number: "IPV6-HOST-NIC-FIXED-GATEWAY".into(),
+        host_nics: vec![rpc::forge::ExpectedHostNic {
+            mac_address: "5A:5B:5C:5D:5E:66".to_string(),
+            fixed_gateway: Some("2001:db8::1".to_string()),
+            ..Default::default()
+        }],
+        metadata: Some(rpc::forge::Metadata::default()),
+        id: Some(::rpc::common::Uuid {
+            value: uuid::Uuid::new_v4().to_string(),
+        }),
+        ..Default::default()
+    };
+
+    let data = ExpectedMachineData::try_from(expected_machine).unwrap();
+
+    assert_eq!(
+        data.host_nics[0].fixed_gateway,
+        Some("2001:db8::1".parse().unwrap())
+    );
+}
+
+#[test]
+fn test_expected_machine_data_rejects_invalid_host_nic_fixed_gateway() {
+    let expected_machine = rpc::forge::ExpectedMachine {
+        bmc_mac_address: "5A:5B:5C:5D:5E:65".to_string(),
+        bmc_username: "root".into(),
+        bmc_password: "testpass".into(),
+        chassis_serial_number: "INVALID-HOST-NIC-FIXED-GATEWAY".into(),
+        host_nics: vec![rpc::forge::ExpectedHostNic {
+            mac_address: "5A:5B:5C:5D:5E:66".to_string(),
+            fixed_gateway: Some("not-a-valid-ip".to_string()),
+            ..Default::default()
+        }],
+        metadata: Some(rpc::forge::Metadata::default()),
+        id: Some(::rpc::common::Uuid {
+            value: uuid::Uuid::new_v4().to_string(),
+        }),
+        ..Default::default()
+    };
+
+    let err = match ExpectedMachineData::try_from(expected_machine) {
+        Ok(_) => panic!("invalid host NIC fixed gateway should fail conversion"),
+        Err(err) => err,
+    };
+
+    assert!(err.to_string().contains("Invalid fixed gateway"));
+}
+
+#[test]
+fn test_expected_machine_data_rejects_invalid_host_nic_mac_address() {
+    let expected_machine = rpc::forge::ExpectedMachine {
+        bmc_mac_address: "5A:5B:5C:5D:5E:65".to_string(),
+        bmc_username: "root".into(),
+        bmc_password: "testpass".into(),
+        chassis_serial_number: "INVALID-HOST-NIC-MAC".into(),
+        host_nics: vec![rpc::forge::ExpectedHostNic {
+            mac_address: "not-a-mac".to_string(),
+            fixed_ip: Some("192.0.2.66".to_string()),
+            ..Default::default()
+        }],
+        metadata: Some(rpc::forge::Metadata::default()),
+        id: Some(::rpc::common::Uuid {
+            value: uuid::Uuid::new_v4().to_string(),
+        }),
+        ..Default::default()
+    };
+
+    let err = match ExpectedMachineData::try_from(expected_machine) {
+        Ok(_) => panic!("invalid host NIC MAC should fail conversion"),
+        Err(err) => err,
+    };
+
+    assert!(
+        matches!(
+            &err,
+            ::rpc::errors::RpcDataConversionError::InvalidMacAddress(mac)
+                if mac == "not-a-mac"
+        ),
+        "got: {err}"
+    );
+}
+
 /// Adding an expected machine with `host_nics[].fixed_ip` should result in a static
 /// `machine_interface` for that NIC. The materialization is deferred: site-explorer's
 /// reconciliation pass (or the DHCP discover hook) is what creates the row. The test
@@ -2166,6 +2309,7 @@ async fn test_add_with_host_nic_fixed_ip_creates_interface(
         fixed_ip.parse().unwrap(),
         model::machine_interface::InterfaceType::Data,
         "expected_machine host NIC",
+        None,
     )
     .await;
 
@@ -2261,11 +2405,11 @@ async fn test_preallocate_machine_interface_is_idempotent(
     let ip: std::net::IpAddr = "192.0.2.241".parse().unwrap();
 
     let mut txn = env.db_txn().await;
-    db::machine_interface::preallocate_machine_interface(txn.as_mut(), mac, ip).await?;
+    db::machine_interface::preallocate_machine_interface(txn.as_mut(), mac, ip, None).await?;
     txn.commit().await?;
 
     let mut txn = env.db_txn().await;
-    db::machine_interface::preallocate_machine_interface(txn.as_mut(), mac, ip).await?;
+    db::machine_interface::preallocate_machine_interface(txn.as_mut(), mac, ip, None).await?;
     let interfaces = db::machine_interface::find_by_mac_address(txn.as_mut(), mac).await?;
     txn.commit().await?;
 
@@ -2296,11 +2440,12 @@ async fn test_preallocate_machine_interface_rejects_conflicting_ip(
     let ip2: std::net::IpAddr = "192.0.2.243".parse().unwrap();
 
     let mut txn = env.db_txn().await;
-    db::machine_interface::preallocate_machine_interface(txn.as_mut(), mac, ip1).await?;
+    db::machine_interface::preallocate_machine_interface(txn.as_mut(), mac, ip1, None).await?;
     txn.commit().await?;
 
     let mut txn = env.db_txn().await;
-    let result = db::machine_interface::preallocate_machine_interface(txn.as_mut(), mac, ip2).await;
+    let result =
+        db::machine_interface::preallocate_machine_interface(txn.as_mut(), mac, ip2, None).await;
     assert!(
         matches!(result, Err(DatabaseError::InvalidArgument(_))),
         "preallocating a different IP for the same MAC should be rejected, got {result:?}"
@@ -2322,12 +2467,12 @@ async fn test_preallocate_machine_interface_rejects_ip_owned_by_different_mac(
     let ip: std::net::IpAddr = "192.0.2.248".parse().unwrap();
 
     let mut txn = env.db_txn().await;
-    db::machine_interface::preallocate_machine_interface(txn.as_mut(), mac_a, ip).await?;
+    db::machine_interface::preallocate_machine_interface(txn.as_mut(), mac_a, ip, None).await?;
     txn.commit().await?;
 
     let mut txn = env.db_txn().await;
     let result =
-        db::machine_interface::preallocate_machine_interface(txn.as_mut(), mac_b, ip).await;
+        db::machine_interface::preallocate_machine_interface(txn.as_mut(), mac_b, ip, None).await;
     assert!(
         matches!(result, Err(DatabaseError::InvalidArgument(_))),
         "preallocating an IP owned by a different MAC should be rejected, got {result:?}"
@@ -2349,14 +2494,14 @@ async fn test_preallocate_machine_interface_recreates_after_deletion(
     let ip: std::net::IpAddr = "192.0.2.244".parse().unwrap();
 
     let mut txn = env.db_txn().await;
-    db::machine_interface::preallocate_machine_interface(txn.as_mut(), mac, ip).await?;
+    db::machine_interface::preallocate_machine_interface(txn.as_mut(), mac, ip, None).await?;
     let interfaces_before = db::machine_interface::find_by_mac_address(txn.as_mut(), mac).await?;
     let interface_id = interfaces_before[0].id;
     db::machine_interface::delete(&interface_id, txn.as_mut()).await?;
     txn.commit().await?;
 
     let mut txn = env.db_txn().await;
-    db::machine_interface::preallocate_machine_interface(txn.as_mut(), mac, ip).await?;
+    db::machine_interface::preallocate_machine_interface(txn.as_mut(), mac, ip, None).await?;
     let interfaces_after = db::machine_interface::find_by_mac_address(txn.as_mut(), mac).await?;
     txn.commit().await?;
 
@@ -2389,7 +2534,7 @@ async fn test_preallocate_machine_interface_promotes_interface_type(
 
     // Initial preallocation lands as InterfaceType::Data.
     let mut txn = env.db_txn().await;
-    db::machine_interface::preallocate_machine_interface(txn.as_mut(), mac, ip).await?;
+    db::machine_interface::preallocate_machine_interface(txn.as_mut(), mac, ip, None).await?;
     let before = db::machine_interface::find_by_mac_address(txn.as_mut(), mac).await?;
     assert_eq!(
         before[0].interface_type,
@@ -2401,7 +2546,7 @@ async fn test_preallocate_machine_interface_promotes_interface_type(
     // Re-preallocate the same (MAC, IP) but as the BMC variant. Helper should promote
     // the existing row's interface_type rather than erroring or creating a duplicate.
     let mut txn = env.db_txn().await;
-    db::machine_interface::preallocate_bmc_machine_interface(txn.as_mut(), mac, ip).await?;
+    db::machine_interface::preallocate_bmc_machine_interface(txn.as_mut(), mac, ip, None).await?;
     let after = db::machine_interface::find_by_mac_address(txn.as_mut(), mac).await?;
     txn.commit().await?;
 
@@ -3005,7 +3150,7 @@ async fn test_create_missing_from_preallocates_interfaces(
             host_nics: vec![model::expected_machine::ExpectedHostNic {
                 mac_address: nic_mac,
                 nic_type: Some("onboard".into()),
-                fixed_ip: Some(host_ip.to_string()),
+                fixed_ip: Some(host_ip),
                 fixed_mask: None,
                 fixed_gateway: None,
                 primary: Some(true),
@@ -3030,6 +3175,7 @@ async fn test_create_missing_from_preallocates_interfaces(
         bmc_ip,
         model::machine_interface::InterfaceType::Bmc,
         "expected_machine BMC",
+        None,
     )
     .await;
     carbide_site_explorer::try_preallocate_one(
@@ -3038,6 +3184,7 @@ async fn test_create_missing_from_preallocates_interfaces(
         host_ip,
         model::machine_interface::InterfaceType::Data,
         "expected_machine host NIC",
+        None,
     )
     .await;
 

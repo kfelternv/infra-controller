@@ -46,6 +46,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             "#[cfg_attr(feature = \"cli\", derive(clap::ValueEnum))]",
         )
         .type_attribute(
+            ".forge.DpaInterfaceType",
+            "#[cfg_attr(feature = \"cli\", derive(clap::ValueEnum))]",
+        )
+        .type_attribute(
             ".forge.DpuMode",
             "#[derive(serde::Serialize, serde::Deserialize)]",
         )
@@ -327,6 +331,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         .type_attribute("forge.NetworkSegmentConfig", "#[derive(serde::Serialize)]")
         .type_attribute("forge.NetworkSegmentStatus", "#[derive(serde::Serialize)]")
         .type_attribute("forge.NetworkSegment", "#[derive(serde::Serialize)]")
+        .type_attribute(
+            "forge.AttachNetworkSegmentToVpcRequest",
+            "#[derive(serde::Serialize)]",
+        )
         .type_attribute("forge.IBPartitionConfig", "#[derive(serde::Serialize)]")
         .type_attribute("forge.SpxPartitionConfig", "#[derive(serde::Serialize)]")
         .type_attribute("forge.IBPartitionStatus", "#[derive(serde::Serialize)]")

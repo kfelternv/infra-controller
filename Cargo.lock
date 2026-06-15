@@ -1036,55 +1036,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "1e748733b7cbc798e1434b6ac524f0c1ff2ab456fe201501e6497c8417a4fc33"
 
 [[package]]
-name = "carbide-admin-cli"
-version = "0.0.1"
-dependencies = [
- "bmc-vendor",
- "carbide-health-report",
- "carbide-libmlx",
- "carbide-libmlx-model",
- "carbide-macros",
- "carbide-measured-boot",
- "carbide-network",
- "carbide-rpc",
- "carbide-rpc-utils",
- "carbide-secrets",
- "carbide-ssh",
- "carbide-tls",
- "carbide-utils",
- "carbide-uuid",
- "carbide-version",
- "chrono",
- "clap",
- "clap_complete",
- "clap_mangen",
- "color-eyre",
- "csv",
- "eyre",
- "futures",
- "ipnet",
- "libredfish",
- "librms",
- "mac_address",
- "pandoc",
- "prettytable-rs",
- "reqwest 0.13.4",
- "serde",
- "serde_json",
- "serde_yaml",
- "thiserror 2.0.18",
- "tokio",
- "toml 1.1.2+spec-1.1.0",
- "tonic",
- "tracing",
- "tracing-subscriber",
- "urlencoding",
- "uuid",
- "x509-parser",
- "zip",
-]
-
-[[package]]
 name = "carbide-agent"
 version = "0.1.0"
 dependencies = [
@@ -1211,6 +1162,7 @@ dependencies = [
  "carbide-dpa-manager",
  "carbide-dpf",
  "carbide-firmware",
+ "carbide-health-metrics",
  "carbide-health-report",
  "carbide-host-support",
  "carbide-ib-fabric",
@@ -1239,6 +1191,7 @@ dependencies = [
  "carbide-sqlx-testing",
  "carbide-state-controller-common",
  "carbide-switch-controller",
+ "carbide-test-support",
  "carbide-utils",
  "carbide-uuid",
  "carbide-version",
@@ -1345,6 +1298,7 @@ dependencies = [
  "carbide-network",
  "carbide-secrets",
  "carbide-sqlx-testing",
+ "carbide-test-support",
  "carbide-utils",
  "carbide-uuid",
  "carbide-version",
@@ -1414,9 +1368,11 @@ dependencies = [
  "carbide-health-report",
  "carbide-ipxe-renderer",
  "carbide-libmlx-model",
+ "carbide-macros",
  "carbide-network",
  "carbide-secrets",
  "carbide-sqlx-testing",
+ "carbide-test-support",
  "carbide-utils",
  "carbide-uuid",
  "carbide-version",
@@ -1511,6 +1467,7 @@ dependencies = [
  "carbide-rpc",
  "carbide-rpc-utils",
  "carbide-sqlx-testing",
+ "carbide-test-harness",
  "carbide-uuid",
  "carbide-version",
  "chrono",
@@ -1563,6 +1520,7 @@ dependencies = [
  "bytes",
  "carbide-authn",
  "carbide-rpc",
+ "carbide-test-support",
  "carbide-tls",
  "carbide-utils",
  "carbide-version",
@@ -1772,6 +1730,7 @@ version = "0.0.1"
 dependencies = [
  "anyhow",
  "async-trait",
+ "carbide-test-support",
  "carbide-uuid",
  "clap",
  "dashmap",
@@ -1913,6 +1872,7 @@ dependencies = [
  "carbide-api-model",
  "carbide-macros",
  "carbide-sqlx-testing",
+ "carbide-test-support",
  "eyre",
  "futures-util",
  "hex",
@@ -1977,6 +1937,7 @@ dependencies = [
  "base64",
  "carbide-health-report",
  "carbide-rpc",
+ "carbide-test-support",
  "carbide-tls",
  "carbide-utils",
  "carbide-uuid",
@@ -2047,6 +2008,7 @@ dependencies = [
  "carbide-libmlx",
  "carbide-rpc",
  "carbide-rpc-utils",
+ "carbide-test-support",
  "carbide-tls",
  "carbide-utils",
  "carbide-uuid",
@@ -2203,6 +2165,7 @@ dependencies = [
  "carbide-libmlx-model",
  "carbide-rpc",
  "carbide-ssh",
+ "carbide-test-support",
  "carbide-uuid",
  "chrono",
  "clap",
@@ -2429,6 +2392,9 @@ dependencies = [
 name = "carbide-network"
 version = "0.0.0"
 dependencies = [
+ "carbide-macros",
+ "carbide-sqlx-testing",
+ "carbide-test-support",
  "eyre",
  "ipnet",
  "ipnetwork",
@@ -2673,6 +2639,7 @@ dependencies = [
  "carbide-network",
  "carbide-prost-builder",
  "carbide-secrets",
+ "carbide-test-support",
  "carbide-tls",
  "carbide-utils",
  "carbide-uuid",
@@ -2726,6 +2693,7 @@ dependencies = [
  "byte-unit",
  "carbide-health-report",
  "carbide-rpc",
+ "carbide-test-support",
  "carbide-uuid",
  "chrono",
  "config-version",
@@ -2848,7 +2816,6 @@ dependencies = [
  "async-trait",
  "bmc-explorer",
  "bmc-vendor",
- "carbide-api-core",
  "carbide-api-db",
  "carbide-api-model",
  "carbide-firmware",
@@ -2858,7 +2825,9 @@ dependencies = [
  "carbide-redfish",
  "carbide-rpc",
  "carbide-secrets",
+ "carbide-site-explorer",
  "carbide-test-harness",
+ "carbide-test-support",
  "carbide-utils",
  "carbide-uuid",
  "chrono",
@@ -3052,12 +3021,14 @@ dependencies = [
  "carbide-api-model",
  "carbide-macros",
  "carbide-network-segment-controller",
+ "carbide-site-explorer",
  "carbide-sqlx-testing",
  "carbide-utils",
  "carbide-uuid",
  "chrono",
  "ctor",
  "ipnetwork",
+ "mac_address",
  "sqlx",
  "state-controller",
  "tokio",
@@ -3067,9 +3038,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "carbide-test-support"
+version = "0.0.0"
+
+[[package]]
 name = "carbide-tls"
 version = "0.0.0"
 dependencies = [
+ "carbide-test-support",
  "rustls",
  "serde",
  "serde_json",
@@ -3083,6 +3059,7 @@ version = "0.0.0"
 dependencies = [
  "byte-unit",
  "carbide-network",
+ "carbide-test-support",
  "chrono",
  "clap",
  "ipnetwork",
@@ -3102,6 +3079,7 @@ dependencies = [
 name = "carbide-uuid"
 version = "0.0.0"
 dependencies = [
+ "carbide-test-support",
  "data-encoding",
  "eyre",
  "prost",
@@ -3534,6 +3512,7 @@ dependencies = [
 name = "config-version"
 version = "0.1.0"
 dependencies = [
+ "carbide-test-support",
  "chrono",
  "serde",
  "serde_json",
@@ -4354,6 +4333,7 @@ name = "dns-record"
 version = "0.1.0"
 dependencies = [
  "assert-json-diff",
+ "carbide-test-support",
  "chrono",
  "serde",
  "serde_json",
@@ -7053,6 +7033,7 @@ name = "mqttea"
 version = "0.1.0"
 dependencies = [
  "async-trait",
+ "carbide-test-support",
  "chrono",
  "clap",
  "oauth2",
@@ -7195,6 +7176,56 @@ dependencies = [
  "libc",
  "log",
  "tokio",
+]
+
+[[package]]
+name = "nico-admin-cli"
+version = "0.0.1"
+dependencies = [
+ "bmc-vendor",
+ "carbide-health-report",
+ "carbide-libmlx",
+ "carbide-libmlx-model",
+ "carbide-macros",
+ "carbide-measured-boot",
+ "carbide-network",
+ "carbide-rpc",
+ "carbide-rpc-utils",
+ "carbide-secrets",
+ "carbide-ssh",
+ "carbide-test-support",
+ "carbide-tls",
+ "carbide-utils",
+ "carbide-uuid",
+ "carbide-version",
+ "chrono",
+ "clap",
+ "clap_complete",
+ "clap_mangen",
+ "color-eyre",
+ "csv",
+ "eyre",
+ "futures",
+ "ipnet",
+ "libredfish",
+ "librms",
+ "mac_address",
+ "pandoc",
+ "prettytable-rs",
+ "reqwest 0.13.4",
+ "serde",
+ "serde_json",
+ "serde_yaml",
+ "thiserror 2.0.18",
+ "tokio",
+ "toml 1.1.2+spec-1.1.0",
+ "tonic",
+ "tracing",
+ "tracing-subscriber",
+ "urlencoding",
+ "uuid",
+ "x509-parser",
+ "zip",
 ]
 
 [[package]]
@@ -8532,6 +8563,7 @@ dependencies = [
 name = "prometheus-text-parser"
 version = "0.1.0"
 dependencies = [
+ "carbide-test-support",
  "thiserror 2.0.18",
 ]
 

@@ -41,13 +41,15 @@ use carbide_power_shelf_controller::context::{
 };
 use carbide_power_shelf_controller::handler::PowerShelfStateHandler;
 use carbide_power_shelf_controller::metrics::PowerShelfMetrics;
+use carbide_secrets::credentials::Credentials;
+use carbide_secrets::test_support::credentials::TestCredentialManager;
 use carbide_uuid::power_shelf::PowerShelfId;
 use carbide_uuid::rack::RackId;
-use component_manager::compute_tray_manager::Backend;
+use component_manager::compute_tray_manager::Backend as ComputeBackend;
 use component_manager::config::ComponentManagerConfig;
+use component_manager::nv_switch_manager::Backend as NvSwitchBackend;
+use component_manager::power_shelf_manager::Backend as PowerShelfBackend;
 use db::{expected_power_shelf as db_expected_power_shelf, power_shelf as db_power_shelf};
-use forge_secrets::credentials::Credentials;
-use forge_secrets::test_support::credentials::TestCredentialManager;
 use librms::protos::rack_manager as rms;
 use mac_address::MacAddress;
 use model::expected_power_shelf::ExpectedPowerShelf;
@@ -81,6 +83,7 @@ fn services_with_component_manager(
             username: TEST_BMC_USER.into(),
             password: TEST_BMC_PASSWORD.into(),
         })),
+        per_object_metrics_registry: env.per_object_metrics_registry(),
     }
 }
 
@@ -89,13 +92,13 @@ async fn build_test_component_manager(
     rms_client: Option<Arc<dyn librms::RmsApi>>,
 ) -> Option<Arc<component_manager::component_manager::ComponentManager>> {
     let config = ComponentManagerConfig {
-        nv_switch_backend: "mock".into(),
+        nv_switch_backend: NvSwitchBackend::Mock,
         power_shelf_backend: if rms_client.is_some() {
-            "rms".into()
+            PowerShelfBackend::Rms
         } else {
-            "mock".into()
+            PowerShelfBackend::Mock
         },
-        compute_tray_backend: Backend::Mock,
+        compute_tray_backend: ComputeBackend::Mock,
         ..Default::default()
     };
     component_manager::component_manager::build_component_manager(

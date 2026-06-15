@@ -30,12 +30,14 @@ use std::time::Duration;
 use carbide_firmware::FirmwareDownloader;
 use carbide_redfish::libredfish::conv::IntoLibredfish;
 use carbide_redfish::libredfish::{RedfishClientCreationError, RedfishClientPool};
+use carbide_secrets::credentials::{
+    BmcCredentialType, CredentialKey, CredentialReader, Credentials,
+};
 use carbide_utils::periodic_timer::PeriodicTimer;
 use chrono::{DateTime, Utc};
 pub use config::PreingestionManagerConfig;
 use db::work_lock_manager::WorkLockManagerHandle;
 use db::{DatabaseError, WithTransaction};
-use forge_secrets::credentials::{BmcCredentialType, CredentialKey, CredentialReader, Credentials};
 use futures_util::FutureExt;
 use libredfish::model::task::TaskState;
 use libredfish::model::update_service::TransferProtocolType;
@@ -1423,21 +1425,16 @@ impl PreingestionManagerStatic {
                 };
                 match redfish_client.get_service_root().await {
                     Ok(_) => {
-                        // BMC is back. Force a fresh exploration and wait for it
-                        // before running checks, so pairing/ingestion reads the
-                        // post-reset inventory (e.g. a DPU that reappeared), not the
-                        // stale pre-reset report.
+                        // BMC is back. Wait for a fresh exploration before running
+                        // checks, so pairing/ingestion reads the post-reset
+                        // inventory (e.g. a DPU that reappeared), not the stale
+                        // pre-reset report.
                         let address = endpoint.address;
                         db.with_txn(|txn| {
                             async move {
                                 db::explored_endpoints::set_preingestion_initial_bmc_reset(
                                     address,
                                     InitialBmcResetPhase::WaitForExplorerRefresh,
-                                    txn,
-                                )
-                                .await?;
-                                db::explored_endpoints::request_exploration_for_addresses(
-                                    &[address],
                                     txn,
                                 )
                                 .await?;

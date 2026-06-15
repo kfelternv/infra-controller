@@ -23,6 +23,7 @@ use arc_swap::ArcSwap;
 use carbide_dpa::DpaInfo;
 use carbide_dpa_manager::DpaMonitor;
 use carbide_firmware::FirmwareDownloader;
+use carbide_health_metrics::PerObjectMetricsRegistry;
 use carbide_ib_fabric::IbFabricMonitor;
 use carbide_ib_fabric::ib::{self, IBFabricManager};
 use carbide_ib_partition_controller::context::IBPartitionStateHandlerServices;
@@ -519,6 +520,11 @@ pub async fn start_api(
             join_set,
         )?))
     } else {
+        tracing::warn!(
+            removed_in = "v2.1",
+            docs = "https://docs.nvidia.com/infra-controller/documentation/getting-started/installation-options/dpf-setup",
+            "iPXE provisioning strategy (internally) is deprecated; enable DPF management for DPUs to migrate"
+        );
         None
     };
 
@@ -1096,6 +1102,27 @@ async fn initialize_and_start_controllers<'a>(
         .to_string_lossy()
         .to_string();
 
+    // Cross-controller registry feeding the per-object health metrics; shared by
+    // every state controller and registered once.
+    let per_object_metric_hold_time = [
+        &carbide_config.machine_state_controller.controller,
+        &carbide_config.switch_state_controller.controller,
+        &carbide_config.rack_state_controller.controller,
+        &carbide_config.power_shelf_state_controller.controller,
+    ]
+    .into_iter()
+    .map(|controller| controller.metric_hold_time)
+    .max()
+    .unwrap_or_default();
+    let per_object_metrics_registry = PerObjectMetricsRegistry::new(
+        carbide_config
+            .observability
+            .per_object_metrics_for_classifications
+            .clone(),
+        per_object_metric_hold_time.saturating_add(std::time::Duration::from_secs(60)),
+    );
+    per_object_metrics_registry.register(&meter);
+
     // handles need to be stored in a variable
     // If they are assigned to _ then the destructor will be immediately called
     StateController::<MachineStateControllerIO>::builder()
@@ -1109,6 +1136,7 @@ async fn initialize_and_start_controllers<'a>(
                 redfish_client_pool: shared_redfish_pool.clone(),
                 ipmi_tool: ipmi_tool.clone(),
                 site_config: carbide_config.machine_state_handler_site_config().into(),
+                per_object_metrics_registry: per_object_metrics_registry.clone(),
             }
             .into(),
         )
@@ -1273,6 +1301,7 @@ async fn initialize_and_start_controllers<'a>(
                 db_pool: db_pool.clone(),
                 component_manager: component_manager.clone().map(Arc::new),
                 credential_manager: credential_manager.clone(),
+                per_object_metrics_registry: per_object_metrics_registry.clone(),
             }
             .into(),
         )
@@ -1297,6 +1326,7 @@ async fn initialize_and_start_controllers<'a>(
                 .into(),
                 switch_system_image_rms_client,
                 credential_manager: credential_manager.clone(),
+                per_object_metrics_registry: per_object_metrics_registry.clone(),
             }
             .into(),
         )
@@ -1313,6 +1343,7 @@ async fn initialize_and_start_controllers<'a>(
                 db_pool: db_pool.clone(),
                 component_manager: component_manager.clone().map(Arc::new),
                 credential_manager: credential_manager.clone(),
+                per_object_metrics_registry: per_object_metrics_registry.clone(),
             }
             .into(),
         )

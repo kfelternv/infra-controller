@@ -558,6 +558,18 @@ impl MachineStateHandler {
             &state.aggregate_health,
             &state.host_snapshot.health_reports,
         );
+
+        // Feed the per-object health classification metric. The registry filters
+        // to the opted-in classifications and emits a series labeled with this
+        // host's id; emitting an empty set clears any prior series once the host
+        // becomes healthy.
+        let in_use = ctx.metrics.in_use_by_tenant.is_some();
+        ctx.services.per_object_metrics_registry.record(
+            "machine",
+            &state.host_snapshot.id.to_string(),
+            &ctx.metrics.health.health_alert_classifications,
+            vec![opentelemetry::KeyValue::new("in_use", in_use.to_string())],
+        );
     }
 
     fn record_health_history(
@@ -2238,6 +2250,15 @@ impl StateHandler for MachineStateHandler {
         let power_options_pool = ctx.services.db_pool.clone();
 
         let was_ready = matches!(mh_snapshot.managed_state, ManagedHostState::Ready);
+
+        if !mh_snapshot.host_snapshot.dpf.used_for_ingestion {
+            tracing::debug!(
+                machine_id = %host_machine_id,
+                removed_in = "v2.1",
+                docs = "https://docs.nvidia.com/infra-controller/documentation/getting-started/installation-options/dpf-setup",
+                "iPXE provisioning strategy (internally) is deprecated; enable DPF management for DPUs to migrate"
+            );
+        }
 
         let mut result = if continue_state_machine {
             self.attempt_state_transition(host_machine_id, mh_snapshot, ctx)

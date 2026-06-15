@@ -4,7 +4,10 @@
 package server
 
 import (
+	"encoding/json"
+	"strconv"
 	"strings"
+	"unicode"
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 )
@@ -32,6 +35,56 @@ func normalizeToken(v string) string {
 		return strings.TrimSpace(v[len(prefix):])
 	}
 	return v
+}
+
+func toSnakeCase(s string) string {
+	var b strings.Builder
+	var prev rune
+	for i, r := range s {
+		switch {
+		case unicode.IsUpper(r):
+			if i > 0 && (unicode.IsLower(prev) || unicode.IsDigit(prev)) {
+				b.WriteByte('_')
+			}
+			b.WriteRune(unicode.ToLower(r))
+		case unicode.IsLetter(r) || unicode.IsDigit(r):
+			b.WriteRune(r)
+		default:
+			b.WriteByte('_')
+		}
+		prev = r
+	}
+	out := b.String()
+	for strings.Contains(out, "__") {
+		out = strings.ReplaceAll(out, "__", "_")
+	}
+	return strings.Trim(out, "_")
+}
+
+func coerceToString(v any) (string, bool) {
+	switch t := v.(type) {
+	case nil:
+		return "", true
+	case string:
+		return t, true
+	case bool:
+		return strconv.FormatBool(t), true
+	case float64:
+		// JSON numbers decode to float64; format integers without the
+		// decimal point so they round-trip through query strings.
+		if t == float64(int64(t)) {
+			return strconv.FormatInt(int64(t), 10), true
+		}
+		return strconv.FormatFloat(t, 'g', -1, 64), true
+	case int:
+		return strconv.Itoa(t), true
+	case int64:
+		return strconv.FormatInt(t, 10), true
+	case json.Number:
+		return t.String(), true
+	default:
+		return "", false
+	}
 }
 
 // bearerFromExtra extracts the bearer from a *mcp.CallToolRequest's

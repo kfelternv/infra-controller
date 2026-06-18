@@ -15,6 +15,8 @@
  * limitations under the License.
  */
 
+use std::path::PathBuf;
+
 use carbide_uuid::rack::RackId;
 use clap::Parser;
 
@@ -25,6 +27,21 @@ pub enum Args {
 }
 
 #[derive(Parser, Debug)]
+#[command(after_long_help = "\
+EXAMPLES:
+
+Start maintenance on a full rack (all activities, all components):
+    $ nico-admin-cli rack maintenance start --rack 12345678-1234-5678-90ab-cdef01234567
+
+Run only a firmware upgrade on specific machines:
+    $ nico-admin-cli rack maintenance start --rack 12345678-1234-5678-90ab-cdef01234567 \
+    --machine-ids m1,m2 --activities firmware-upgrade
+
+Firmware upgrade from a SOT JSON file, forcing the update:
+    $ nico-admin-cli rack maintenance start --rack 12345678-1234-5678-90ab-cdef01234567 \
+    --activities firmware-upgrade --sot-json-file ./sot.json --access-token \"$TOKEN\" --force-update
+
+")]
 pub struct MaintenanceOptions {
     #[clap(short, long, help = "Rack ID to start maintenance on")]
     pub rack: RackId,
@@ -55,7 +72,7 @@ pub struct MaintenanceOptions {
 
     #[clap(
         long,
-        help = "Maintenance activities to perform: firmware-upgrade, configure-nmx-cluster, power-sequence (omit for all)",
+        help = "Maintenance activities to perform: firmware-upgrade, nvos-update, configure-nmx-cluster, power-sequence (omit for all)",
         num_args = 1..,
         value_delimiter = ','
     )]
@@ -63,9 +80,25 @@ pub struct MaintenanceOptions {
 
     #[clap(
         long,
-        help = "Target firmware version for firmware-upgrade activity (omit for RMS default)"
+        help = "Raw SOT JSON for firmware-upgrade activity (prefer --sot-json-file)"
     )]
     pub firmware_version: Option<String>,
+
+    #[clap(
+        long = "sot-json-file",
+        value_name = "PATH",
+        help = "SOT JSON file for RMS ApplyFirmwareObject"
+    )]
+    pub sot_json_file: Option<PathBuf>,
+
+    #[clap(
+        long = "access-token",
+        help = "Artifact access token for RMS SOT JSON downloads; omit or pass empty for NOAUTH"
+    )]
+    pub access_token: Option<String>,
+
+    #[clap(long = "force-update", help = "Force firmware update when supported")]
+    pub force_update: bool,
 
     #[clap(
         long,

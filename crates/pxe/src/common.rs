@@ -14,8 +14,9 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
+use std::net::IpAddr;
+
 use axum_template::engine::Engine;
-use carbide_uuid::machine::MachineInterfaceId;
 use metrics_exporter_prometheus::PrometheusHandle;
 use rpc::forge::CloudInitInstructions;
 use serde::{Deserialize, Serialize};
@@ -33,7 +34,9 @@ pub(crate) struct Machine {
 #[derive(Debug, Serialize, Deserialize)]
 pub(crate) struct MachineInterface {
     pub architecture: Option<machine_architecture::MachineArchitecture>,
-    pub interface_id: MachineInterfaceId,
+    /// IP carbide-pxe observed for the booting machine: Does not support `X-Forwarded-For` for
+    /// proxying, it is the real IP of the connecting client.
+    pub client_ip: IpAddr,
     pub platform: Option<String>,
     pub manufacturer: Option<String>,
     pub product: Option<String>,

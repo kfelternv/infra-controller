@@ -21,6 +21,7 @@
 
 pub mod attestation;
 pub mod bmc_metadata;
+pub mod bmc_redfish_session;
 pub mod carbide_version;
 pub mod compute_allocation;
 pub mod db_read;
@@ -42,6 +43,7 @@ pub mod extension_service;
 pub mod health_history;
 pub mod health_report;
 pub mod host_machine_update;
+pub mod host_naming;
 pub mod ib_partition;
 pub mod instance;
 pub mod instance_address;
@@ -66,6 +68,8 @@ pub mod network_security_group;
 pub mod network_segment;
 pub mod nvl_logical_partition;
 pub mod nvl_partition;
+pub mod nvlink_domain_health_report;
+pub mod nvlink_nmxc_endpoints;
 pub mod operating_system;
 pub mod os_image;
 pub mod power_options;
@@ -73,12 +77,13 @@ pub mod power_shelf;
 pub mod predicted_machine_interface;
 pub mod queries;
 pub mod rack;
-pub mod rack_firmware;
 pub mod redfish_actions;
 pub mod resource_pool;
+pub mod retained_boot_interface;
 pub mod route_servers;
 pub mod site_exploration_report;
 pub mod sku;
+pub mod spx_partition;
 pub mod state_history;
 pub mod switch;
 pub mod tenant;
@@ -90,6 +95,9 @@ pub mod vpc_dpu_loopback;
 pub mod vpc_peering;
 pub mod vpc_prefix;
 pub mod work_lock_manager;
+
+#[cfg(test)]
+mod test_support;
 
 use std::backtrace::{Backtrace, BacktraceStatus};
 use std::error::Error;
@@ -108,6 +116,7 @@ use sqlx::{Acquire, PgPool, PgTransaction, Postgres};
 use tonic::Status;
 
 use crate::ip_allocator::DhcpError;
+use crate::machine_interface_address::AddressAlreadyInUseError;
 use crate::resource_pool::ResourcePoolDatabaseError;
 
 // Max values we can bind to a Postgres SQL statement... half the stated value of 65536, since in
@@ -146,20 +155,20 @@ pub enum ObjectColumnFilter<'a, C: ColumnInfo<'a>> {
 }
 
 /// Newtype wrapper around sqlx::QueryBuilder that allows passing an ObjectColumnFilter to build the WHERE clause
-pub struct FilterableQueryBuilder<'q>(sqlx::QueryBuilder<'q, Postgres>);
+pub struct FilterableQueryBuilder(sqlx::QueryBuilder<Postgres>);
 
-impl<'q> FilterableQueryBuilder<'q> {
+impl FilterableQueryBuilder {
     pub fn new(init: impl Into<String>) -> Self {
         FilterableQueryBuilder(sqlx::QueryBuilder::new(init))
     }
 
     /// Push a WHERE clause to this query builder that matches the given filter, optionally using
     /// the given relation to qualify the column names
-    pub fn filter_relation<'a, C: ColumnInfo<'q>>(
+    pub fn filter_relation<'a, C: ColumnInfo<'a>>(
         mut self,
-        filter: &ObjectColumnFilter<'q, C>,
+        filter: &ObjectColumnFilter<'a, C>,
         relation: Option<&str>,
-    ) -> sqlx::QueryBuilder<'q, Postgres> {
+    ) -> sqlx::QueryBuilder<Postgres> {
         match filter {
             ObjectColumnFilter::All => self.0.push(" WHERE true".to_string()),
             ObjectColumnFilter::List(column, list) => {
@@ -192,10 +201,10 @@ impl<'q> FilterableQueryBuilder<'q> {
     }
 
     /// Push a WHERE clause to this query builder that matches the given filter.
-    pub fn filter<'a, C: ColumnInfo<'q>>(
+    pub fn filter<'a, C: ColumnInfo<'a>>(
         self,
-        filter: &ObjectColumnFilter<'q, C>,
-    ) -> sqlx::QueryBuilder<'q, Postgres> {
+        filter: &ObjectColumnFilter<'a, C>,
+    ) -> sqlx::QueryBuilder<Postgres> {
         self.filter_relation(filter, None)
     }
 }
@@ -296,12 +305,12 @@ pub struct AnnotatedSqlxError {
 
 impl AnnotatedSqlxError {
     #[track_caller]
-    pub fn new(op_name: &str, source: sqlx::Error) -> Self {
+    pub fn new(op_name: impl AsRef<str>, source: sqlx::Error) -> Self {
         let loc = Location::caller();
         AnnotatedSqlxError {
             file: loc.file(),
             line: loc.line(),
-            query: op_name.to_string(),
+            query: op_name.as_ref().to_string(),
             source,
         }
     }
@@ -324,6 +333,8 @@ pub enum DatabaseError {
     Internal { message: String },
     #[error("Unable to parse string into IP Address: {0}")]
     AddressParseError(#[from] std::net::AddrParseError),
+    #[error(transparent)]
+    AddressAlreadyInUse(#[from] AddressAlreadyInUseError),
     #[error("Unable to parse string into IP Network: {0}")]
     NetworkParseError(#[from] ipnetwork::IpNetworkError),
     #[error("{kind} already exists: {id}")]
@@ -417,12 +428,12 @@ pub type DatabaseResult<T> = Result<T, DatabaseError>;
 
 impl DatabaseError {
     #[track_caller]
-    pub fn new(op_name: &str, source: sqlx::Error) -> DatabaseError {
+    pub fn new(op_name: impl AsRef<str>, source: sqlx::Error) -> DatabaseError {
         let loc = Location::caller();
         DatabaseError::Sqlx(AnnotatedSqlxError {
             file: loc.file(),
             line: loc.line(),
-            query: op_name.to_string(),
+            query: op_name.as_ref().to_string(),
             source,
         })
     }
@@ -466,12 +477,12 @@ impl DatabaseError {
     }
 
     #[track_caller]
-    pub fn query(query: &str, source: sqlx::Error) -> DatabaseError {
+    pub fn query(query: impl AsRef<str>, source: sqlx::Error) -> DatabaseError {
         let loc = Location::caller();
         DatabaseError::Sqlx(AnnotatedSqlxError {
             file: loc.file(),
             line: loc.line(),
-            query: query.to_string(),
+            query: query.as_ref().to_string(),
             source,
         })
     }
@@ -734,8 +745,21 @@ impl WithTransaction for PgPool {
     }
 }
 
+pub trait TransactionVending {
+    fn txn_begin(&self) -> impl Future<Output = Result<Transaction<'_>, DatabaseError>>;
+}
+
+impl TransactionVending for PgPool {
+    #[track_caller]
+    // This returns an `impl Future` instead of being async, so that we can use #[track_caller],
+    // which is unsupported with async fn's.
+    fn txn_begin(&self) -> impl Future<Output = Result<Transaction<'_>, DatabaseError>> {
+        Transaction::begin(self)
+    }
+}
+
 #[cfg(test)]
-#[ctor::ctor]
+#[ctor::ctor(unsafe)]
 fn setup_test_logging() {
     use tracing::metadata::LevelFilter;
     use tracing_subscriber::filter::EnvFilter;
@@ -762,7 +786,7 @@ fn setup_test_logging() {
                 .add_directive("hyper=warn".parse().unwrap())
                 .add_directive("h2=warn".parse().unwrap())
                 // Silence permissive mode related messages
-                .add_directive("carbide::auth=error".parse().unwrap()),
+                .add_directive("carbide_api_core::auth=error".parse().unwrap()),
         )
         .try_init()
     {

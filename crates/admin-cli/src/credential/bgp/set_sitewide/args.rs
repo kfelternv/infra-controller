@@ -16,12 +16,19 @@
  */
 
 use clap::Parser;
-use rpc::admin_cli::{CarbideCliError, CarbideCliResult};
 use rpc::{CredentialType, forge as forgerpc};
 
 use crate::credential::common::password_validator;
+use crate::errors::{CarbideCliError, CarbideCliResult};
 
 #[derive(Parser, Debug, Clone)]
+#[command(after_long_help = "\
+EXAMPLES:
+
+Set the site-wide leaf BGP session password:
+    $ nico-admin-cli credential bgp set-sitewide --password mynewpassword
+
+")]
 pub struct Args {
     #[clap(long, required(true), help = "Leaf BGP session password")]
     pub password: String,

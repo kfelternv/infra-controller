@@ -16,12 +16,13 @@
  */
 use std::io::Write;
 
-use ::rpc::admin_cli::{CarbideCliError, CarbideCliResult, OutputFormat};
+use ::rpc::admin_cli::OutputFormat;
 use ::rpc::forge::SkuList;
 use prettytable::{Row, Table};
 use tokio::io::AsyncWriteExt;
 
 use super::args::Args;
+use crate::errors::{CarbideCliError, CarbideCliResult};
 use crate::rpc::ApiClient;
 use crate::{async_write_table_as_csv, async_writeln};
 
@@ -119,7 +120,7 @@ fn memory_table(memory: Vec<::rpc::forge::SkuComponentMemory>) -> Table {
     for m in memory {
         table.add_row(Row::from(vec![
             m.memory_type,
-            ::utils::sku::capacity_string(m.capacity_mb as u64),
+            ::carbide_utils::sku::capacity_string(m.capacity_mb as u64),
             m.count.to_string(),
         ]));
     }
@@ -273,7 +274,7 @@ pub async fn show_sku_details(
                     writeln!(
                         output,
                         "Memory ({}): ",
-                        ::utils::sku::capacity_string(
+                        ::carbide_utils::sku::capacity_string(
                             components
                                 .memory
                                 .iter()

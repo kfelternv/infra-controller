@@ -110,11 +110,11 @@ All pull requests are automatically checked for DCO compliance via DCO bot. Pull
 
 ## Fork and Setup
 
-Developers must first fork the upstream [NCX Infra Controller repository](https://github.com/NVIDIA/ncx-infra-controller-core).
+Developers must first fork the upstream [Infra Controller repository](https://github.com/NVIDIA/infra-controller).
 
 ### 1. Fork the Repository
 
-1. Navigate to the [NCX Infra Controller repository](https://github.com/NVIDIA/ncx-infra-controller-core) on GitHub.
+1. Navigate to the [Infra Controller repository](https://github.com/NVIDIA/infra-controller) on GitHub.
 2. Click the **Fork** button in the upper right corner.
 3. Select your GitHub account as the destination.
 
@@ -179,6 +179,11 @@ Use descriptive branch names like:
 - Keep pull requests focused on a single change.
 - Be responsive to feedback and code review comments.
 - Ensure all CI checks pass before requesting review.
+
+## Build Guide
+
+For pinned dependency updates, image testing, and build optimization trade-offs, see the
+[Build Guide](docs/development/build-guide.md).
 
 ## Questions?
 

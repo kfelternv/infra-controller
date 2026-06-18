@@ -18,7 +18,7 @@ use std::borrow::Cow;
 use std::fmt::Write;
 use std::str::FromStr;
 
-use ::rpc::admin_cli::{CarbideCliError, CarbideCliResult, OutputFormat};
+use ::rpc::admin_cli::OutputFormat;
 use ::rpc::forge::{self as forgerpc, Vpc, VpcsByIdsRequest};
 use carbide_uuid::instance::InstanceId;
 use carbide_uuid::machine::MachineId;
@@ -28,6 +28,8 @@ use prettytable::{Table, row};
 
 use super::args::Args;
 use crate::cfg::cli_options::SortField;
+use crate::cfg::runtime::RuntimeContext;
+use crate::errors::{CarbideCliError, CarbideCliResult};
 use crate::rpc::ApiClient;
 use crate::{async_write, async_writeln, invalid_machine_id};
 
@@ -256,7 +258,8 @@ async fn convert_instance_to_nice_format(
                 (
                     "VPC NAME",
                     vpc.as_ref()
-                        .map(|v| v.name.as_str().into())
+                        .and_then(|v| v.metadata.as_ref())
+                        .map(|v| Cow::Borrowed(v.name.as_str()))
                         .unwrap_or("<not found>".into()),
                 ),
             ];
@@ -359,18 +362,7 @@ async fn convert_instance_to_nice_format(
         writeln!(&mut lines, "NETWORK SECURITY GROUP ID: {nsg_id}")?;
     }
 
-    if let Some(metadata) = instance.metadata.as_ref() {
-        writeln!(
-            &mut lines,
-            "LABELS: {}",
-            metadata
-                .labels
-                .iter()
-                .map(|x| format!("{}: {}", x.key, x.value.as_deref().unwrap_or_default()))
-                .collect::<Vec<String>>()
-                .join(", ")
-        )?;
-    }
+    crate::metadata::write_metadata_in_nice_format(&mut lines, width, instance.metadata.as_ref())?;
 
     Ok(lines)
 }
@@ -397,7 +389,7 @@ fn convert_instances_to_nice_table(instances: forgerpc::InstanceList) -> Box<Tab
             .map(|tenant| tenant.tenant_organization_id.as_str())
             .unwrap_or_default();
 
-        let labels = crate::metadata::get_nice_labels_from_rpc_metadata(instance.metadata.as_ref());
+        let labels = crate::metadata::fmt_labels_as_kv_pairs(instance.metadata.as_ref());
 
         let tenant_state = instance
             .status
@@ -493,28 +485,22 @@ async fn show_instance_details(
     Ok(())
 }
 
-pub async fn handle_show(
-    args: Args,
-    output_file: &mut Box<dyn tokio::io::AsyncWrite + Unpin>,
-    output_format: &OutputFormat,
-    api_client: &ApiClient,
-    page_size: usize,
-    sort_by: &SortField,
-) -> CarbideCliResult<()> {
+pub async fn handle_show(args: Args, ctx: &mut RuntimeContext) -> CarbideCliResult<()> {
     if args.id.is_empty() {
-        let mut all_instances = api_client
+        let mut all_instances = ctx
+            .api_client
             .get_all_instances(
                 args.tenant_org_id,
                 args.vpc_id,
                 args.label_key,
                 args.label_value,
                 args.instance_type_id,
-                page_size,
+                ctx.config.page_size,
             )
             .await?;
 
-        match sort_by {
-            SortField::PrimaryId => all_instances.instances.sort_by(|i1, i2| i1.id.cmp(&i2.id)),
+        match ctx.config.sort_by {
+            SortField::PrimaryId => all_instances.instances.sort_by_key(|instance| instance.id),
             SortField::State => all_instances.instances.sort_by(|i1, i2| {
                 let tenant_status1 = i1
                     .status
@@ -533,17 +519,17 @@ pub async fn handle_show(
                 tenant_status1.cmp(&tenant_status2)
             }),
         }
-        match output_format {
+        match ctx.config.format {
             OutputFormat::Json => {
                 async_writeln!(
-                    output_file,
+                    ctx.output_file,
                     "{}",
                     serde_json::to_string_pretty(&all_instances)?
                 )?;
             }
             OutputFormat::AsciiTable => {
                 let table = convert_instances_to_nice_table(all_instances);
-                async_write!(output_file, "{}", table)?;
+                async_write!(ctx.output_file, "{}", table)?;
             }
             OutputFormat::Csv => {
                 return Err(CarbideCliError::NotImplemented(
@@ -560,15 +546,16 @@ pub async fn handle_show(
     }
     show_instance_details(
         args.id,
-        output_file,
-        output_format,
-        api_client,
+        &mut ctx.output_file,
+        &ctx.config.format,
+        &ctx.api_client,
         args.extrainfo,
     )
     .await?;
     Ok(())
 }
 
+#[allow(deprecated)]
 async fn get_vpc_for_interface_network_segment(
     api_client: &ApiClient,
     network_segment_id: NetworkSegmentId,
@@ -581,7 +568,7 @@ async fn get_vpc_for_interface_network_segment(
         && let Some(vpc_id) = network_segments
             .network_segments
             .first()
-            .and_then(|s| s.vpc_id)
+            .and_then(|s| s.config.as_ref().and_then(|c| c.vpc_id).or(s.vpc_id))
     {
         let vpc_ids: Vec<VpcId> = vec![vpc_id];
         Ok(api_client

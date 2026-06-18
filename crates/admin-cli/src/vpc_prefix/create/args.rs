@@ -21,6 +21,19 @@ use ipnet::IpNet;
 use rpc::forge::VpcPrefixCreationRequest;
 
 #[derive(Parser, Debug)]
+#[command(after_long_help = "\
+EXAMPLES:
+
+Create a prefix in a VPC:
+    $ nico-admin-cli vpc-prefix create --vpc-id 12345678-1234-5678-90ab-cdef01234567 \
+    --prefix 10.0.0.0/24 --name web-tier
+
+Create a prefix with a description and labels:
+    $ nico-admin-cli vpc-prefix create --vpc-id 12345678-1234-5678-90ab-cdef01234567 \
+    --prefix 10.0.0.0/24 --name web-tier --description \"Front-end subnet\" \
+    --label environment:production --label team:platform
+
+")]
 pub struct Args {
     #[clap(
         long,
@@ -96,7 +109,6 @@ impl From<Args> for VpcPrefixCreationRequest {
         VpcPrefixCreationRequest {
             id: args.vpc_prefix_id,
             prefix: String::new(), // Deprecated field
-            name: String::new(),   // Deprecated field
             vpc_id: Some(args.vpc_id),
             config: Some(rpc::forge::VpcPrefixConfig {
                 prefix: args.prefix.to_string(),

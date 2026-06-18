@@ -15,10 +15,11 @@
  * limitations under the License.
  */
 
-use ::rpc::admin_cli::{CarbideCliError, OutputFormat};
+use ::rpc::admin_cli::OutputFormat;
 use prettytable::{Cell, Row, Table, row};
 
 use super::Opts;
+use crate::errors::CarbideCliError;
 use crate::rpc::ApiClient;
 
 macro_rules! r {
@@ -62,9 +63,9 @@ pub async fn handle_show_version(
         "carbide-api:\n\tbuild_version={}, build_date={}, git_sha={}, rust_version={}, build_user={}, build_hostname={}",
         v.build_version, v.build_date, v.git_sha, v.rust_version, v.build_user, v.build_hostname,
     );
-    // Same as running `forge-admin-cli --version`
+    // Same as running `nico-admin-cli --version`
     println!();
-    println!("forge-admin-cli:\n\t{}", carbide_version::version!());
+    println!("nico-admin-cli:\n\t{}", carbide_version::version!());
 
     if opts.show_runtime_config {
         let config = v
@@ -140,6 +141,8 @@ pub async fn handle_show_version(
 
         r!(table, config, dpu_secure_boot_enabled);
         r!(table, config, dpf_enabled);
+        r!(table, config, compile_time_helm_version);
+        r!(table, config, compile_time_docker_version);
 
         _ = table.print_tty(true);
     }

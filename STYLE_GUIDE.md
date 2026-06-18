@@ -1,4 +1,4 @@
-# How to write Rust in ncx-infra-controller-core
+# How to write Rust in infra-controller
 
 The goal of this document is to help keep our codebase consistent and maintainable by outlining best-practices we've
 learned through experience. It is currently a mix of best practices for _this codebase_ (ie. how we expect code to
@@ -48,6 +48,70 @@ Other common places where we've seen `#[allow(dead_code)]` that are not necessar
 - If a field isn't currently yet, but you want to leave it around as documentation on what fields could exist (like an
   unused database column, or unused JSON field), comment it out.
 - Otherwise, strongly consider deleting the code.
+
+## Testing
+
+Prefer **table-driven tests** for any function that maps inputs to outputs, errors, or other observable results —
+parsers, validators, conversions, serde round-trips, formatters, and the like. The `carbide-test-support` crate
+provides tiny, zero-dependency helpers for exactly this. Add it as a dev-dependency:
+
+```toml
+[dev-dependencies]
+carbide-test-support = { path = "../test-support" }
+```
+
+Write the test as a list of labeled cases — each a `scenario`, an `input`, and an `expect`ed result — and run them all
+through one operation, written once:
+
+```rust
+use carbide_test_support::Outcome::*;
+use carbide_test_support::scenarios;
+
+#[test]
+fn parse_port() {
+    scenarios!(parse_port:
+        "valid ports" {
+            "0" => Yields(0),
+            "443" => Yields(443),
+        }
+
+        "invalid ports" {
+            "https" => Fails,
+            "99999" => FailsWith(PortError::TooLarge),
+        }
+    );
+}
+```
+
+- Use **`scenarios!`** with `Outcome` (`Yields` / `Fails` / `FailsWith`) for **fallible** operations (those returning
+  `Result`). It expands to `check_cases` and keeps failures labeled by both scenario and input.
+- Use **`value_scenarios!`** for **total** operations (those returning a plain value, `Option`, or `bool`). It expands to
+  `check_values`.
+- Use **`check_cases`** / **`check_values`** directly when a macro would obscure a table with several inputs or several
+  expected fields per row.
+- Reach for `FailsWith(err)` only when the error type is `PartialEq` and its exact value is the contract. Otherwise use
+  `Fails` (with `.map_err(drop)` in the operation) when only "it failed" matters.
+
+Why we prefer this:
+
+- **It is the cheapest path to thorough coverage.** Each branch of the function under test — every `match` arm, each
+  `Option`/`Result` path, every boundary and error case — becomes one more row. To comprehensively test (and cover) a
+  function, simply *enumerate its input variants as cases*: the operation is written once, and every row exercises it.
+  This is by far the easiest way to take a function from partially-tested to nearly fully-covered, and it applies equally
+  whether a human or an agent is writing the tests.
+- **Failures are precise.** Each row carries its `scenario` label, so a failure names the exact case instead of leaving
+  you to bisect a wall of `assert!`s.
+- **Adding a case is one line**, so there is no friction to covering the edge case you would otherwise skip.
+
+Reach for a table whenever two or more tests call the same operation with different inputs. Do **not** force
+genuinely-distinct tests (different setup, a different operation, or several unrelated assertions) into a table — a table
+that obscures intent is worse than a few honest standalone `#[test]`s.
+
+When an exact expected value is awkward to write by hand, assert a robust property instead of guessing: a round-trip
+(`Yields(input)` after serialize-then-deserialize), `Fails` vs `Yields(())` for plain success/failure, or a
+substring/`contains` check. The case still exercises — and covers — the path.
+
+See [`crates/test-support/src/lib.rs`](crates/test-support/src/lib.rs) for the full API and more examples.
 
 ## gRPC API definitions
 
@@ -129,18 +193,18 @@ using interpolation if it makes sense.
 
 ### Core API handler Errors
 
-Inside API handlers, the `CarbideError` data type should be used to construct errors. It should then be converted into
-`tonic::Status` using `.into()`. All errors being derived from `CarbideError` assures that the errors will look uniform
+Inside API handlers, the `NicoError` data type should be used to construct errors. It should then be converted into
+`tonic::Status` using `.into()`. All errors being derived from `NicoError` assures that the errors will look uniform
 to tenants.
 
-The `CarbideError` variant that is used should be selected based on whether the error gets returned due to the user
+The `NicoError` variant that is used should be selected based on whether the error gets returned due to the user
 passing invalid arguments or due to the system not being able to handle the request correctly. Error variants that
 should be used if the user passing invalid arguments can be `InvalidArgument`, `InvalidConfiguration`, `NotFoundError`
 or `ConcurrentModificationError` - these will map to "4xx-like" gRPC error codes. An example of a system-side error
-would be `CarbideError::Internal`.
+would be `NicoError::Internal`.
 
 ```rust
-// Avoid — constructing Status directly, bypassing `CarbideError` error mapping
+// Avoid — constructing Status directly, bypassing `NicoError` error mapping
 pub async fn create_resource(
     api: &Api,
     request: Request<rpc::Resource>,
@@ -151,7 +215,7 @@ pub async fn create_resource(
         .ok_or_else(|| Status::invalid_argument("id is required"))?;
 }
 
-// Prefer — uses `CarbideError::InvalidArgument`
+// Prefer — uses `NicoError::InvalidArgument`
 pub async fn create_resource(
     api: &Api,
     request: Request<rpc::Resource>,
@@ -159,7 +223,7 @@ pub async fn create_resource(
     let resource = request.into_inner();
     let id = resource
         .id
-        .ok_or(CarbideError::InvalidArgument("id is required".into()))?;
+        .ok_or(NicoError::InvalidArgument("id is required".into()))?;
 }
 ```
 
@@ -172,14 +236,14 @@ checks for each meaningful combination of feature flags we support, which scales
 
 Cases where features *are* warranted:
 
-- For shared crates when only a subset of dependents need certain code: For example, the `carbide_uuid` is used by
-  several dependents, but only the `carbide_api` crate needs the sqlx conversions. We don't want e.g.
-  `carbide_admin_cli` to take a dependency on `sqlx`, so the sqlx conversions are behind a `sqlx` crate feature. But
+- For shared crates when only a subset of dependents need certain code: For example, the `nico_uuid` is used by
+  several dependents, but only the `nico_api` crate needs the sqlx conversions. We don't want e.g.
+  `nico_admin_cli` to take a dependency on `sqlx`, so the sqlx conversions are behind a `sqlx` crate feature. But
   this is covered by CI tests, since CI builds both the admin-cli and the api crate, both sets of features are
   exercised.
 
-- For supporting non-linux builds: The `carbide_api` crate needs to use types from the `tss-esapi` crate to support
-  validating secure-boot keys, but `tss-esapi` only builds on Linux. To support developers running `carbide_api` on
+- For supporting non-linux builds: The `nico_api` crate needs to use types from the `tss-esapi` crate to support
+  validating secure-boot keys, but `tss-esapi` only builds on Linux. To support developers running `nico_api` on
   their Mac for testing, the parts which require `tss-esapi` are carefully carved out into a `linux-build` feature
   (which is enabled by default). We do not run CI tests with this feature disabled, so supporting a build without
   `linux-build` enabled is best-effort.
@@ -217,10 +281,10 @@ Avoid spawning background tasks without joining them. Any panics that happen in 
 the rest of the process unless you join them via `JoinHandle::join()` or add them to a `JoinSet` which is later awaited
 with `JoinSet::join_all()`.
 
-For carbide-api, we use a single `JoinSet` to spawn all background tasks, and call `join_all()` to block "forever" until
+For nico-api, we use a single `JoinSet` to spawn all background tasks, and call `join_all()` to block "forever" until
 the process is shut down. This makes it so any panics in the JoinSet will propagate to the main task, and crash the
 process (which is what we want.) If you want to spawn background work, prefer accepting a `&mut JoinSet` and spawn your
-background task into it. Your task can be constructed it inside `carbide::setup::initialize_and_spawn_controllers`,
+background task into it. Your task can be constructed it inside `nico::setup::initialize_and_spawn_controllers`,
 which has a JoinSet it can pass to your `start()` function.
 
 Avoid using `oneshot::Sender<()>` as a cancellation signal, and prefer tokio_util's `CancellationToken`, which can
@@ -286,7 +350,7 @@ impl ClientlessBackgroundJob {
 ```
 
 Avoid mixing the approaches and returning an RAII handle for "client-less" background tasks, if it only exists to stop
-the task when dropped. In carbide-api, there are many such client-less background jobs, and storing each of their
+the task when dropped. In nico-api, there are many such client-less background jobs, and storing each of their
 handles for the correct lifetime is awkward and error-prone. Propagating a single top-level CancellationToken to each of
 them is the preferred approach.
 

@@ -25,6 +25,30 @@ use serde::{Deserialize, Serialize};
 use crate::metadata::parse_rpc_labels;
 
 #[derive(Parser, Debug, Serialize, Deserialize)]
+#[command(after_long_help = "\
+EXAMPLES:
+
+Add an expected switch with its BMC credentials and serial number:
+    $ nico-admin-cli expected-switch add --bmc-mac-address 00:11:22:33:44:55 \
+    --bmc-username admin --bmc-password mypassword --switch-serial-number DGX-H100-640GB
+
+Add an expected switch and associate it with a rack:
+    $ nico-admin-cli expected-switch add --bmc-mac-address 00:11:22:33:44:55 \
+    --bmc-username admin --bmc-password mypassword --switch-serial-number DGX-H100-640GB \
+    --rack_id 12345678-1234-5678-90ab-cdef01234567
+
+Add an expected switch with NVOS credentials and a static NVOS IP:
+    $ nico-admin-cli expected-switch add --bmc-mac-address 00:11:22:33:44:55 \
+    --bmc-username admin --bmc-password mypassword --switch-serial-number DGX-H100-640GB \
+    --nvos-mac-address aa:bb:cc:dd:ee:ff --nvos-username admin --nvos-password mypassword \
+    --nvos-ip-address 192.0.2.10
+
+Add an expected switch with metadata name and a label:
+    $ nico-admin-cli expected-switch add --bmc-mac-address 00:11:22:33:44:55 \
+    --bmc-username admin --bmc-password mypassword --switch-serial-number DGX-H100-640GB \
+    --meta-name spine-01 --label DATACENTER:XYZ
+
+")]
 pub struct Args {
     #[clap(short = 'a', long, help = "BMC MAC Address of the expected switch")]
     pub bmc_mac_address: MacAddress,
@@ -84,6 +108,13 @@ pub struct Args {
     pub bmc_ip_address: Option<IpAddr>,
 
     #[clap(
+        long = "nvos-ip-address",
+        value_name = "NVOS_IP_ADDRESS",
+        help = "Static IP for the single wired NVOS port. Requires exactly one --nvos-mac-address"
+    )]
+    pub nvos_ip_address: Option<IpAddr>,
+
+    #[clap(
         long = "bmc-retain-credentials",
         value_name = "BMC_RETAIN_CREDENTIALS",
         help = "When true, site-explorer skips BMC password rotation and stores factory-default credentials in Vault as-is"
@@ -118,6 +149,7 @@ impl From<Args> for rpc::forge::ExpectedSwitch {
                 .bmc_ip_address
                 .map(|ip| ip.to_string())
                 .unwrap_or_default(),
+            nvos_ip_address: value.nvos_ip_address.map(|ip| ip.to_string()),
             bmc_retain_credentials: value.bmc_retain_credentials,
         }
     }

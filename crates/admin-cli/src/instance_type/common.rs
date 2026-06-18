@@ -15,9 +15,10 @@
  * limitations under the License.
  */
 
-use ::rpc::admin_cli::{CarbideCliError, CarbideCliResult};
 use ::rpc::forge as forgerpc;
 use prettytable::{Table, row};
+
+use crate::errors::{CarbideCliError, CarbideCliResult};
 
 /// Produces a table for printing a non-JSON representation of a
 /// instance type to standard out.
@@ -54,16 +55,7 @@ pub fn convert_itypes_to_table(
 
     for itype in itypes {
         let metadata = itype.metadata.as_ref().unwrap_or(&default_metadata);
-
-        let labels = metadata
-            .labels
-            .iter()
-            .map(|label| {
-                let key = &label.key;
-                let value = label.value.as_deref().unwrap_or_default();
-                format!("\"{key}:{value}\"")
-            })
-            .collect::<Vec<_>>();
+        let labels = crate::metadata::fmt_labels_as_kv_pairs(Some(metadata));
 
         let default_attributes = forgerpc::InstanceTypeAttributes {
             desired_capabilities: vec![],

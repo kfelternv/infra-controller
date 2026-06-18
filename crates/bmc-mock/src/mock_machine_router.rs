@@ -16,18 +16,17 @@
  */
 use std::sync::Arc;
 
-use axum::extract::State;
-use axum::http::StatusCode;
-use axum::response::Response;
-use axum::routing::get;
-use axum::{Json, Router};
+use axum::Router;
 use tokio::sync::oneshot;
 
+use crate::auth_router::Authorizer;
 use crate::bmc_state::BmcState;
-use crate::bug::InjectedBugs;
-use crate::json::JsonExt;
+use crate::injection::InjectionStore;
 use crate::redfish::manager::ManagerState;
-use crate::{Callbacks, MachineInfo, SystemPowerControl, middleware_router, redfish};
+use crate::{
+    Callbacks, HostHardwareType, MachineInfo, SystemPowerControl, auth_router, middleware_router,
+    redfish,
+};
 
 #[derive(Debug)]
 pub enum BmcCommand {
@@ -66,6 +65,7 @@ pub fn machine_router(
     machine_info: MachineInfo,
     callbacks: Arc<dyn Callbacks>,
     mat_host_id: String,
+    redfish_auth: bool,
 ) -> (Router, BmcState) {
     let system_config = machine_info.system_config(callbacks.clone());
     let chassis_config = machine_info.chassis_config();
@@ -74,18 +74,16 @@ pub fn machine_router(
     let bmc_product = machine_info.bmc_product();
     let bmc_redfish_version = machine_info.bmc_redfish_version();
     let oem_state = machine_info.oem_state();
+    let factory_default_account = machine_info.factory_default_account();
     let router = Router::new()
-        // Couple routes for bug injection.
-        .route(
-            "/InjectedBugs",
-            get(get_injected_bugs).post(post_injected_bugs),
-        )
+        .add_routes(crate::injection::add_routes)
         .add_routes(crate::redfish::service_root::add_routes)
         .add_routes(crate::redfish::chassis::add_routes)
         .add_routes(crate::redfish::manager::add_routes)
         .add_routes(crate::redfish::update_service::add_routes)
         .add_routes(crate::redfish::task_service::add_routes)
         .add_routes(crate::redfish::account_service::add_routes)
+        .add_routes(crate::redfish::session_service::add_routes)
         .add_routes(|routes| crate::redfish::computer_system::add_routes(routes, bmc_vendor))
         .add_routes(crate::ipmi::add_routes);
     let router = match &machine_info {
@@ -104,7 +102,12 @@ pub fn machine_router(
     let update_service_state = Arc::new(
         crate::redfish::update_service::UpdateServiceState::from_config(update_service_config),
     );
-    let injected_bugs = Arc::new(InjectedBugs::default());
+    let account_service_state = Arc::new(
+        crate::redfish::account_service::AccountServiceState::new(factory_default_account),
+    );
+    let session_service_state =
+        Arc::new(crate::redfish::session_service::SessionServiceState::new());
+    let injection = Arc::new(InjectionStore::new());
     let state = BmcState {
         bmc_vendor,
         bmc_product,
@@ -114,30 +117,37 @@ pub fn machine_router(
         system_state,
         chassis_state,
         update_service_state,
-        injected_bugs: injected_bugs.clone(),
+        account_service_state,
+        session_service_state,
+        injection: injection.clone(),
         callbacks: Some(callbacks.clone()),
     };
-    let router = router.with_state(state.clone());
-    let router_with_expansion = redfish::expander_router::append(router);
-    (
-        middleware_router::append(mat_host_id, router_with_expansion, injected_bugs, callbacks),
-        state,
-    )
-}
-
-async fn get_injected_bugs(State(state): State<BmcState>) -> Response {
-    state.injected_bugs.get().into_ok_response()
-}
-
-async fn post_injected_bugs(
-    State(state): State<BmcState>,
-    Json(bug_args): Json<serde_json::Value>,
-) -> Response {
-    state
-        .injected_bugs
-        .update(bug_args)
-        .map(|_| state.injected_bugs.get().into_ok_response())
-        .unwrap_or_else(|err| {
-            serde_json::json!({"error": format!("{err:?}")}).into_response(StatusCode::BAD_REQUEST)
-        })
+    let account_service_state = state.account_service_state.clone();
+    let session_service_state = state.session_service_state.clone();
+    let permit_factory_default_password = matches!(
+        &machine_info,
+        MachineInfo::Host(h) if h.hw_type == HostHardwareType::LiteOnPowerShelf
+    );
+    let router = ([
+        Box::new(redfish::expander_router::append),
+        Box::new(move |router| {
+            if redfish_auth {
+                let authorizer = Authorizer::new(account_service_state, session_service_state);
+                let authorizer = if permit_factory_default_password {
+                    authorizer.permit_factory_default_password()
+                } else {
+                    authorizer
+                };
+                auth_router::append(router, authorizer)
+            } else {
+                router
+            }
+        }),
+        Box::new(move |router| {
+            middleware_router::append(mat_host_id, router, injection, callbacks)
+        }),
+    ] as [Box<dyn FnOnce(axum::Router) -> axum::Router>; _])
+        .into_iter()
+        .fold(router.with_state(state.clone()), |router, f| f(router));
+    (router, state)
 }

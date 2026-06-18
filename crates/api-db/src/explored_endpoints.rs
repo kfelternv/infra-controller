@@ -16,13 +16,14 @@
  */
 use std::net::IpAddr;
 
-use chrono::Utc;
+use chrono::{DateTime, Utc};
 use config_version::ConfigVersion;
 use mac_address::MacAddress;
 use model::firmware::FirmwareComponentType;
+use model::machine_boot_interface::MachineBootInterface;
 use model::site_explorer::{
-    EndpointExplorationReport, ExploredEndpoint, InitialResetPhase, PowerDrainState,
-    PreingestionState, TimeSyncResetPhase,
+    EndpointExplorationReport, ExploredEndpoint, InitialBmcResetPhase, InitialResetPhase,
+    PowerDrainState, PreingestionState, TimeSyncResetPhase,
 };
 use sqlx::postgres::PgRow;
 use sqlx::{FromRow, PgConnection, Row};
@@ -59,6 +60,8 @@ struct DbExploredEndpoint {
     pause_remediation: bool,
     /// The MAC address of the boot interface (primary interface) for this host endpoint
     boot_interface_mac: Option<MacAddress>,
+    /// The vendor-native Redfish interface id of the boot interface
+    boot_interface_id: Option<String>,
 }
 
 impl<'r> FromRow<'r, PgRow> for DbExploredEndpoint {
@@ -76,6 +79,7 @@ impl<'r> FromRow<'r, PgRow> for DbExploredEndpoint {
         let pause_ingestion_and_poweron = row.try_get("pause_ingestion_and_poweron")?;
         let pause_remediation = row.try_get("pause_remediation")?;
         let boot_interface_mac = row.try_get("boot_interface_mac")?;
+        let boot_interface_id = row.try_get("boot_interface_id")?;
         Ok(DbExploredEndpoint {
             address: row.try_get("address")?,
             report: report.0,
@@ -90,6 +94,7 @@ impl<'r> FromRow<'r, PgRow> for DbExploredEndpoint {
             pause_ingestion_and_poweron,
             pause_remediation,
             boot_interface_mac,
+            boot_interface_id,
         })
     }
 }
@@ -110,6 +115,7 @@ impl From<DbExploredEndpoint> for ExploredEndpoint {
             pause_ingestion_and_poweron: endpoint.pause_ingestion_and_poweron,
             pause_remediation: endpoint.pause_remediation,
             boot_interface_mac: endpoint.boot_interface_mac,
+            boot_interface_id: endpoint.boot_interface_id,
         }
     }
 }
@@ -259,17 +265,63 @@ WHERE address=$4 AND version=$5";
     Ok(query_result.rows_affected() > 0)
 }
 
-/// clear_last_known_error clears the last known error in explored_endpoints for the BMC identified by IP
+/// Updates only the last exploration error and latency in an endpoint's report.
+///
+/// This preserves the rest of the last successful exploration report while recording
+/// an exploration failure. Returns `Ok(false)` if the entry had been deleted in the
+/// meantime or otherwise modified. It will not fail for version mismatches.
+pub async fn try_update_last_exploration_error(
+    address: IpAddr,
+    old_version: ConfigVersion,
+    error: &model::site_explorer::EndpointExplorationError,
+    latency: std::time::Duration,
+    txn: &mut PgConnection,
+) -> Result<bool, DatabaseError> {
+    let new_version = old_version.increment();
+    let query = "UPDATE explored_endpoints
+SET version=$1,
+    exploration_report=jsonb_set(
+        jsonb_set(exploration_report, '{LastExplorationError}', $2::jsonb, true),
+        '{LastExplorationLatency}', $3::jsonb, true
+    ),
+    waiting_for_explorer_refresh=true,
+    exploration_requested=false
+WHERE address=$4 AND version=$5";
+    let query_result = sqlx::query(query)
+        .bind(new_version)
+        .bind(sqlx::types::Json(error))
+        .bind(sqlx::types::Json(&latency))
+        .bind(address)
+        .bind(old_version)
+        .execute(txn)
+        .await
+        .map_err(|e| DatabaseError::query(query, e))?;
+
+    Ok(query_result.rows_affected() > 0)
+}
+
+/// Clears `LastExplorationError` on the endpoint's report and sets
+/// `waiting_for_explorer_refresh = true` so preingestion waits for a fresh probe.
+///
+/// Intentionally does NOT bump `version`: clearing an operator-visible error
+/// does not freshen the underlying Redfish data, so the report's age (used by
+/// the UI "Last updated" bubble and by the periodic loop's oldest-first
+/// rotation) must keep tracking the last real probe. Leaves `exploration_requested`
+/// untouched so a previously queued priority probe is not cancelled.
 pub async fn clear_last_known_error(
     address: IpAddr,
     txn: &mut PgConnection,
 ) -> Result<(), DatabaseError> {
-    for row in find_all_by_ip(address, txn).await? {
-        let mut report = row.report;
-        report.last_exploration_error = None;
-        try_update(address, row.report_version, &report, true, txn).await?;
-    }
-
+    let query = "
+UPDATE explored_endpoints
+SET exploration_report = jsonb_set(exploration_report, '{LastExplorationError}', 'null'::jsonb),
+    waiting_for_explorer_refresh = true
+WHERE address = $1";
+    sqlx::query(query)
+        .bind(address)
+        .execute(txn)
+        .await
+        .map_err(|e| DatabaseError::query(query, e))?;
     Ok(())
 }
 
@@ -368,14 +420,35 @@ pub async fn set_preingestion_initial_reset(
     set_preingestion(address, state, txn).await
 }
 
+pub async fn set_preingestion_initial_bmc_reset(
+    address: IpAddr,
+    phase: InitialBmcResetPhase,
+    txn: &mut PgConnection,
+) -> Result<(), DatabaseError> {
+    let state = PreingestionState::InitialBMCReset { phase };
+    set_preingestion(address, state, txn).await
+}
+
+pub async fn set_preingestion_set_ntp_servers(
+    address: IpAddr,
+    set_at: Option<DateTime<Utc>>,
+    attempts: u32,
+    txn: &mut PgConnection,
+) -> Result<(), DatabaseError> {
+    let state = PreingestionState::SetNtpServers { set_at, attempts };
+    set_preingestion(address, state, txn).await
+}
+
 pub async fn set_preingestion_time_sync_reset(
     address: IpAddr,
     phase: TimeSyncResetPhase,
+    attempt: u32,
     txn: &mut PgConnection,
 ) -> Result<(), DatabaseError> {
     let state = PreingestionState::TimeSyncReset {
         phase,
         last_time: Utc::now(),
+        attempt,
     };
     set_preingestion(address, state, txn).await
 }
@@ -533,6 +606,26 @@ pub async fn set_preingestion_failed(
     set_preingestion(address, state, txn).await
 }
 
+/// If the endpoint's preingestion is in the terminal `Failed` state, reset it
+/// back to `Initial` so preingestion runs again from the top. States other than
+/// `Failed` are left untouched, so this is safe to call unconditionally when an
+/// operator clears an error. Returns true if a `Failed` state was actually reset.
+pub async fn reset_failed_preingestion(
+    address: IpAddr,
+    txn: &mut PgConnection,
+) -> Result<bool, DatabaseError> {
+    let query = "
+UPDATE explored_endpoints
+SET preingestion_state = '{\"state\":\"initial\"}'
+WHERE address = $1 AND preingestion_state->>'state' = 'failed'";
+    let result = sqlx::query(query)
+        .bind(address)
+        .execute(txn)
+        .await
+        .map_err(|e| DatabaseError::query(query, e))?;
+    Ok(result.rows_affected() > 0)
+}
+
 pub async fn insert(
     address: IpAddr,
     exploration_report: &EndpointExplorationReport,
@@ -677,14 +770,15 @@ pub async fn set_pause_remediation(
     Ok(())
 }
 
-pub async fn set_boot_interface_mac(
+pub async fn set_boot_interface(
     address: IpAddr,
-    mac: MacAddress,
+    boot_interface: &MachineBootInterface,
     txn: &mut PgConnection,
 ) -> Result<(), DatabaseError> {
-    let query = "UPDATE explored_endpoints SET boot_interface_mac = $1 WHERE address = $2";
+    let query = "UPDATE explored_endpoints SET boot_interface_mac = $1, boot_interface_id = $2 WHERE address = $3";
     sqlx::query(query)
-        .bind(mac)
+        .bind(boot_interface.mac_address)
+        .bind(&boot_interface.interface_id)
         .bind(address)
         .execute(txn)
         .await

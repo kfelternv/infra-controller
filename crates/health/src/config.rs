@@ -16,7 +16,7 @@
  */
 
 use std::fmt::Debug;
-use std::net::SocketAddr;
+use std::net::{IpAddr, SocketAddr};
 use std::path::Path;
 use std::time::Duration;
 
@@ -49,6 +49,10 @@ pub struct Config {
     /// Maximum cache size per BMC, uses etags
     pub cache_size: usize,
 
+    /// Interval between BMC endpoint discovery iterations.
+    #[serde(with = "humantime_serde")]
+    pub endpoint_discovery_interval: Duration,
+
     /// BMC proxy URL
     pub bmc_proxy_url: Option<Url>,
 }
@@ -65,6 +69,7 @@ impl Default for Config {
             shard: 0,
             shards_count: 1,
             cache_size: 100,
+            endpoint_discovery_interval: Duration::from_secs(300),
             bmc_proxy_url: None,
         }
     }
@@ -92,16 +97,65 @@ impl Default for EndpointSourcesConfig {
 
 /// A single static BMC endpoint configuration.
 #[derive(Clone, serde::Deserialize, serde::Serialize)]
+#[serde(deny_unknown_fields)]
 pub struct StaticBmcEndpoint {
-    pub ip: String,
+    pub ip: IpAddr,
     #[serde(default)]
     pub port: Option<u16>,
     pub mac: String,
     pub username: String,
     pub password: Option<String>,
-    pub switch_serial: Option<String>,
-    pub machine_id: Option<String>,
+    pub machine: Option<StaticMachineEndpoint>,
+    pub power_shelf: Option<StaticPowerShelfEndpoint>,
+    pub switch: Option<StaticSwitchEndpoint>,
     pub rack_id: Option<String>,
+}
+
+#[derive(Clone, Debug, serde::Deserialize, serde::Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct StaticMachineEndpoint {
+    pub id: String,
+    pub serial: Option<String>,
+    #[serde(alias = "physical_slot_number")]
+    pub slot_number: Option<i32>,
+    #[serde(alias = "compute_tray_index")]
+    pub tray_index: Option<i32>,
+    pub nvlink_domain_uuid: Option<String>,
+}
+
+#[derive(Clone, Debug, serde::Deserialize, serde::Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct StaticPowerShelfEndpoint {
+    pub id: Option<String>,
+    pub serial: Option<String>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Deserialize, serde::Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum StaticSwitchEndpointRole {
+    Bmc,
+    Host,
+}
+
+fn default_static_switch_endpoint_role() -> StaticSwitchEndpointRole {
+    StaticSwitchEndpointRole::Host
+}
+
+#[derive(Clone, Debug, serde::Deserialize, serde::Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct StaticSwitchEndpoint {
+    pub id: Option<String>,
+    pub serial: Option<String>,
+    #[serde(alias = "physical_slot_number")]
+    pub slot_number: Option<i32>,
+    #[serde(alias = "compute_tray_index")]
+    pub tray_index: Option<i32>,
+    #[serde(default = "default_static_switch_endpoint_role")]
+    pub endpoint_role: StaticSwitchEndpointRole,
+    #[serde(default)]
+    pub is_primary: bool,
+    #[serde(default)]
+    pub nmxt_enabled: Option<bool>,
 }
 
 impl Debug for StaticBmcEndpoint {
@@ -110,10 +164,47 @@ impl Debug for StaticBmcEndpoint {
             .field("ip", &self.ip)
             .field("port", &self.port)
             .field("mac", &self.mac)
-            .field("switch_serial", &self.switch_serial)
-            .field("machine_id", &self.machine_id)
+            .field("machine", &self.machine)
+            .field("power_shelf", &self.power_shelf)
+            .field("switch", &self.switch)
             .field("rack_id", &self.rack_id)
             .finish()
+    }
+}
+
+impl StaticBmcEndpoint {
+    fn identity_count(&self) -> usize {
+        usize::from(self.machine.is_some())
+            + usize::from(self.power_shelf.is_some())
+            + usize::from(self.switch.is_some())
+    }
+
+    fn validate(&self, index: usize) -> Result<(), String> {
+        if self.identity_count() > 1 {
+            return Err(format!(
+                "endpoint_sources.static_bmc_endpoints[{index}] must specify at most one of machine, power_shelf, or switch"
+            ));
+        }
+
+        if let Some(power_shelf) = &self.power_shelf
+            && power_shelf.id.is_none()
+            && power_shelf.serial.is_none()
+        {
+            return Err(format!(
+                "endpoint_sources.static_bmc_endpoints[{index}].power_shelf requires id or serial"
+            ));
+        }
+
+        if let Some(switch) = &self.switch
+            && switch.id.is_none()
+            && switch.serial.is_none()
+        {
+            return Err(format!(
+                "endpoint_sources.static_bmc_endpoints[{index}].switch requires id or serial"
+            ));
+        }
+
+        Ok(())
     }
 }
 
@@ -127,12 +218,21 @@ pub struct SinksConfig {
     /// Prometheus sink: stores metric events in Prometheus exporter format.
     pub prometheus: Configurable<PrometheusSinkConfig>,
 
-    /// Health override sink: sends health override events to Carbide API.
-    #[serde(alias = "carbide_override")]
-    pub health_override: Configurable<HealthOverrideSinkConfig>,
+    /// Health report sink: sends health report events to Carbide API.
+    #[serde(alias = "carbide_override", alias = "health_override")]
+    pub health_report: Configurable<HealthReportSinkConfig>,
 
-    /// Rack health override sink: sends rack-level health overrides to Carbide API.
-    pub rack_health_override: Configurable<RackHealthOverrideSinkConfig>,
+    /// Rack health report sink: sends rack-level health reports to Carbide API.
+    #[serde(alias = "rack_health_override")]
+    pub rack_health_report: Configurable<RackHealthReportSinkConfig>,
+
+    /// Switch health report sink: sends switch-level health reports to Carbide API.
+    #[serde(alias = "switch_health_override")]
+    pub switch_health_report: Configurable<SwitchHealthReportSinkConfig>,
+
+    /// Power shelf health report sink: sends power-shelf-level health reports to Carbide API.
+    #[serde(alias = "power_shelf_health_override")]
+    pub power_shelf_health_report: Configurable<PowerShelfHealthReportSinkConfig>,
 
     /// Log file sink: writes log events as JSONL to rotating files on disk.
     pub log_file: Configurable<LogFileSinkConfig>,
@@ -146,8 +246,12 @@ impl Default for SinksConfig {
         Self {
             tracing: Configurable::Disabled,
             prometheus: Configurable::Enabled(PrometheusSinkConfig::default()),
-            health_override: Configurable::Enabled(HealthOverrideSinkConfig::default()),
-            rack_health_override: Configurable::Enabled(RackHealthOverrideSinkConfig::default()),
+            health_report: Configurable::Enabled(HealthReportSinkConfig::default()),
+            rack_health_report: Configurable::Enabled(RackHealthReportSinkConfig::default()),
+            switch_health_report: Configurable::Enabled(SwitchHealthReportSinkConfig::default()),
+            power_shelf_health_report: Configurable::Enabled(
+                PowerShelfHealthReportSinkConfig::default(),
+            ),
             log_file: Configurable::Disabled,
             otlp: Configurable::Disabled,
         }
@@ -229,38 +333,100 @@ impl Default for CarbideApiConnectionConfig {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default)]
-pub struct HealthOverrideSinkConfig {
+pub struct HealthReportSinkConfig {
     #[serde(flatten)]
     pub connection: CarbideApiConnectionConfig,
 
     /// Number of concurrent workers submitting reports to Carbide API.
     pub workers: usize,
+
+    /// Drop reports that contain no successes and no alerts before submitting them.
+    pub skip_empty_reports: bool,
+
+    /// Suppress re-sending a success-only health report whose content has not changed
+    /// since the last send, until this interval elapses. Reports that contain any alert
+    /// are always forwarded immediately regardless of this setting.
+    /// Set to null or omit to disable suppression.
+    #[serde(with = "humantime_serde::option", default)]
+    pub suppress_unchanged_interval: Option<Duration>,
 }
 
-impl Default for HealthOverrideSinkConfig {
+impl Default for HealthReportSinkConfig {
     fn default() -> Self {
         Self {
             connection: CarbideApiConnectionConfig::default(),
             workers: 4,
+            skip_empty_reports: true,
+            suppress_unchanged_interval: Some(Duration::from_secs(300)),
         }
     }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default)]
-pub struct RackHealthOverrideSinkConfig {
+pub struct RackHealthReportSinkConfig {
     #[serde(flatten)]
     pub connection: CarbideApiConnectionConfig,
 
     /// Number of concurrent workers submitting rack-level reports to Carbide API.
     pub workers: usize,
+
+    /// Drop reports that contain no successes and no alerts before submitting them.
+    pub skip_empty_reports: bool,
 }
 
-impl Default for RackHealthOverrideSinkConfig {
+impl Default for RackHealthReportSinkConfig {
     fn default() -> Self {
         Self {
             connection: CarbideApiConnectionConfig::default(),
             workers: 2,
+            skip_empty_reports: true,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
+pub struct SwitchHealthReportSinkConfig {
+    #[serde(flatten)]
+    pub connection: CarbideApiConnectionConfig,
+
+    /// Number of concurrent workers submitting switch-level reports to Carbide API.
+    pub workers: usize,
+
+    /// Drop reports that contain no successes and no alerts before submitting them.
+    pub skip_empty_reports: bool,
+}
+
+impl Default for SwitchHealthReportSinkConfig {
+    fn default() -> Self {
+        Self {
+            connection: CarbideApiConnectionConfig::default(),
+            workers: 2,
+            skip_empty_reports: true,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
+pub struct PowerShelfHealthReportSinkConfig {
+    #[serde(flatten)]
+    pub connection: CarbideApiConnectionConfig,
+
+    /// Number of concurrent workers submitting power-shelf-level reports to Carbide API.
+    pub workers: usize,
+
+    /// Drop reports that contain no successes and no alerts before submitting them.
+    pub skip_empty_reports: bool,
+}
+
+impl Default for PowerShelfHealthReportSinkConfig {
+    fn default() -> Self {
+        Self {
+            connection: CarbideApiConnectionConfig::default(),
+            workers: 2,
+            skip_empty_reports: true,
         }
     }
 }
@@ -284,12 +450,21 @@ pub struct RateLimitConfig {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default)]
 pub struct CollectorsConfig {
+    /// Entity discovery configuration
+    pub discovery: DiscoveryConfig,
+
     /// Sensor collector configuration (if present, sensor collector is enabled)
     #[serde(alias = "health")]
     pub sensors: Configurable<SensorCollectorConfig>,
 
+    /// Entity metrics collector configuration (if present, metrics collector is enabled)
+    pub metrics: Configurable<MetricsCollectorConfig>,
+
     /// Firmware collector configuration (if present, firmware collector is enabled)
     pub firmware: Configurable<FirmwareCollectorConfig>,
+
+    /// Leak detector collector configuration (if present, leak detector collector is enabled)
+    pub leak_detector: Configurable<LeakDetectorCollectorConfig>,
 
     /// Logs collector configuration (if present, logs collector is enabled)
     pub logs: Configurable<LogsCollectorConfig>,
@@ -304,11 +479,50 @@ pub struct CollectorsConfig {
 impl Default for CollectorsConfig {
     fn default() -> Self {
         Self {
+            discovery: DiscoveryConfig::default(),
             sensors: Configurable::Enabled(SensorCollectorConfig::default()),
+            metrics: Configurable::Disabled,
             firmware: Configurable::Disabled,
+            leak_detector: Configurable::Enabled(LeakDetectorCollectorConfig::default()),
             logs: Configurable::Disabled,
             nmxt: Configurable::Disabled,
             nvue: Configurable::Disabled,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
+pub struct DiscoveryConfig {
+    #[serde(with = "humantime_serde")]
+    pub refresh_interval: Duration,
+
+    pub discovery_concurrency: usize,
+}
+
+impl Default for DiscoveryConfig {
+    fn default() -> Self {
+        Self {
+            refresh_interval: Duration::from_secs(300),
+            discovery_concurrency: 4,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
+pub struct MetricsCollectorConfig {
+    #[serde(with = "humantime_serde")]
+    pub fetch_interval: Duration,
+
+    pub fetch_concurrency: usize,
+}
+
+impl Default for MetricsCollectorConfig {
+    fn default() -> Self {
+        Self {
+            fetch_interval: Duration::from_secs(120),
+            fetch_concurrency: 4,
         }
     }
 }
@@ -366,14 +580,6 @@ impl Default for RackLeakProcessorConfig {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default)]
 pub struct SensorCollectorConfig {
-    /// Interval between BMC endpoint rediscovery.
-    #[serde(with = "humantime_serde")]
-    pub rediscover_interval: Duration,
-
-    /// Interval between entity state refresh.
-    #[serde(with = "humantime_serde")]
-    pub state_refresh_interval: Duration,
-
     /// Interval between sensor fetch iterations.
     #[serde(with = "humantime_serde")]
     pub sensor_fetch_interval: Duration,
@@ -388,10 +594,8 @@ pub struct SensorCollectorConfig {
 impl Default for SensorCollectorConfig {
     fn default() -> Self {
         Self {
-            rediscover_interval: Duration::from_secs(300),
-            state_refresh_interval: Duration::from_secs(9000),
             sensor_fetch_interval: Duration::from_secs(60),
-            sensor_fetch_concurrency: 10,
+            sensor_fetch_concurrency: 4,
             include_sensor_thresholds: true,
         }
     }
@@ -413,32 +617,115 @@ impl Default for FirmwareCollectorConfig {
     }
 }
 
-/// SSE is the preferred mode for real-time log streaming.
-/// Periodic polling is retained as a fallback for BMCs that lack SSE support.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "lowercase")]
-pub enum LogCollectionMode {
-    Sse,
-    Periodic,
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
+pub struct LeakDetectorCollectorConfig {
+    /// Interval between thermal subsystem leak detector polls.
+    #[serde(with = "humantime_serde")]
+    pub poll_interval: Duration,
+
+    /// Interval between thermal subsystem leak detector discovery refreshes.
+    #[serde(with = "humantime_serde")]
+    pub state_refresh_interval: Duration,
 }
 
-impl Default for LogCollectionMode {
+impl Default for LeakDetectorCollectorConfig {
     fn default() -> Self {
-        Self::Sse
+        Self {
+            poll_interval: Duration::from_secs(60),
+            state_refresh_interval: Duration::from_secs(60 * 30),
+        }
     }
+}
+
+/// How log events are collected from each BMC endpoint.
+///
+/// - `Auto` (default): tries SSE first, downgrades to periodic per-endpoint
+///   when SSE is unsupported or keeps failing.
+/// - `Sse`: SSE only, retries forever. Use when every BMC has `/EventService`.
+/// - `Periodic`: polling only, no SSE attempt.
+///
+/// Downgrades are in-memory; restart the health service to retry SSE.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum LogCollectionMode {
+    #[default]
+    Auto,
+    Sse,
+    Periodic,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[serde(default)]
 pub struct LogsCollectorConfig {
-    /// Collection mode: "sse" (default, preferred) or "periodic" (fallback).
     pub mode: LogCollectionMode,
 
-    /// Configuration for periodic log polling
+    pub sse: Option<SseLogConfig>,
     pub periodic: Option<PeriodicLogConfig>,
+    pub auto: Option<AutoModeConfig>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+impl LogsCollectorConfig {
+    pub fn sse_or_default(&self) -> SseLogConfig {
+        self.sse.unwrap_or_default()
+    }
+
+    pub fn periodic_or_default(&self) -> PeriodicLogConfig {
+        self.periodic.clone().unwrap_or_default()
+    }
+
+    pub fn auto_periodic_or_default(&self) -> PeriodicLogConfig {
+        self.auto
+            .as_ref()
+            .map(|auto| auto.periodic.clone())
+            .or_else(|| self.periodic.clone())
+            .unwrap_or_default()
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct SseLogConfig {
+    /// Initial retry backoff after a streaming connection failure.
+    #[serde(with = "humantime_serde")]
+    pub initial_backoff: Duration,
+
+    /// Maximum retry backoff after repeated streaming connection failures.
+    #[serde(with = "humantime_serde")]
+    pub max_backoff: Duration,
+}
+
+impl Default for SseLogConfig {
+    fn default() -> Self {
+        Self {
+            initial_backoff: Duration::from_secs(1),
+            max_backoff: Duration::from_secs(30),
+        }
+    }
+}
+
+impl SseLogConfig {
+    fn validate(&self) -> Result<(), String> {
+        if self.initial_backoff.is_zero() {
+            return Err("[collectors.logs.sse].initial_backoff must be greater than 0".to_string());
+        }
+
+        if self.max_backoff.is_zero() {
+            return Err("[collectors.logs.sse].max_backoff must be greater than 0".to_string());
+        }
+
+        if self.max_backoff < self.initial_backoff {
+            return Err(
+                "[collectors.logs.sse].max_backoff must be greater than or equal to initial_backoff"
+                    .to_string(),
+            );
+        }
+
+        Ok(())
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct PeriodicLogConfig {
     /// Interval between log collection.
@@ -463,17 +750,105 @@ impl Default for PeriodicLogConfig {
     }
 }
 
+/// downgrade thresholds and periodic fallback for `collectors.logs.mode = "auto"`.
+/// sse_not_available is terminal (defaults to 1), everything else goes
+/// through a rolling window.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct AutoModeConfig {
+    pub sse_not_available_threshold: u32,
+    #[serde(with = "humantime_serde")]
+    pub connect_failure_window: Duration,
+    pub connect_failure_threshold: u32,
+    #[serde(default, flatten)]
+    pub periodic: PeriodicLogConfig,
+}
+
+impl Default for AutoModeConfig {
+    fn default() -> Self {
+        Self {
+            sse_not_available_threshold: 1,
+            connect_failure_window: Duration::from_secs(300),
+            connect_failure_threshold: 5,
+            periodic: PeriodicLogConfig::default(),
+        }
+    }
+}
+
+impl AutoModeConfig {
+    fn validate(&self) -> Result<(), String> {
+        if self.sse_not_available_threshold == 0 {
+            return Err(
+                "[collectors.logs.auto].sse_not_available_threshold must be greater than 0"
+                    .to_string(),
+            );
+        }
+        if self.connect_failure_threshold == 0 {
+            return Err(
+                "[collectors.logs.auto].connect_failure_threshold must be greater than 0"
+                    .to_string(),
+            );
+        }
+        if self.connect_failure_window.is_zero() {
+            return Err(
+                "[collectors.logs.auto].connect_failure_window must be greater than 0".to_string(),
+            );
+        }
+
+        Ok(())
+    }
+}
+
 impl LogsCollectorConfig {
     pub fn validate(&self) -> Result<(), String> {
         match self.mode {
-            LogCollectionMode::Periodic if self.periodic.is_none() => {
-                Err("[collectors.logs.periodic] is required when mode = \"periodic\"".to_string())
+            LogCollectionMode::Auto => {
+                if let Some(auto) = &self.auto {
+                    auto.validate()?;
+                }
+                if let Some(sse) = &self.sse {
+                    sse.validate()?;
+                }
             }
-            LogCollectionMode::Sse if self.periodic.is_some() => {
-                Err("[collectors.logs.periodic] should not be set when mode = \"sse\"".to_string())
+            LogCollectionMode::Periodic => {
+                if self.auto.is_some() {
+                    return Err(
+                        "[collectors.logs.auto] should not be set when mode = \"periodic\""
+                            .to_string(),
+                    );
+                }
+                if self.periodic.is_none() {
+                    return Err(
+                        "[collectors.logs.periodic] is required when mode = \"periodic\""
+                            .to_string(),
+                    );
+                }
+                if self.sse.is_some() {
+                    return Err(
+                        "[collectors.logs.sse] should not be set when mode = \"periodic\""
+                            .to_string(),
+                    );
+                }
             }
-            _ => Ok(()),
+            LogCollectionMode::Sse => {
+                if self.auto.is_some() {
+                    return Err(
+                        "[collectors.logs.auto] should not be set when mode = \"sse\"".to_string(),
+                    );
+                }
+                if self.periodic.is_some() {
+                    return Err(
+                        "[collectors.logs.periodic] should not be set when mode = \"sse\""
+                            .to_string(),
+                    );
+                }
+                if let Some(sse) = &self.sse {
+                    sse.validate()?;
+                }
+            }
         }
+
+        Ok(())
     }
 }
 
@@ -502,12 +877,64 @@ impl Default for NmxtCollectorConfig {
 #[serde(default)]
 pub struct NvueCollectorConfig {
     pub rest: Configurable<NvueRestConfig>,
+    pub gnmi: Configurable<NvueGnmiConfig>,
 }
 
 impl Default for NvueCollectorConfig {
     fn default() -> Self {
         Self {
             rest: Configurable::Enabled(NvueRestConfig::default()),
+            gnmi: Configurable::Disabled,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
+pub struct NvueGnmiConfig {
+    /// gNMI server port on the switch.
+    pub gnmi_port: u16,
+
+    /// Interval between SAMPLE mode subscription updates.
+    #[serde(with = "humantime_serde")]
+    pub sample_interval: Duration,
+
+    /// Timeout for gRPC connection attempts.
+    #[serde(with = "humantime_serde")]
+    pub request_timeout: Duration,
+
+    /// Enable gNMI ON_CHANGE subscription for live system-event messages.
+    #[serde(alias = "system_events_subscription_enabled", alias = "events_enabled")]
+    pub system_events_enabled: bool,
+
+    /// gNMI SAMPLE subscription paths.
+    pub paths: NvueGnmiPaths,
+}
+
+impl Default for NvueGnmiConfig {
+    fn default() -> Self {
+        Self {
+            gnmi_port: 9339,
+            sample_interval: Duration::from_secs(300),
+            request_timeout: Duration::from_secs(30),
+            system_events_enabled: true,
+            paths: NvueGnmiPaths::default(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
+pub struct NvueGnmiPaths {
+    pub components_enabled: bool,
+    pub interfaces_enabled: bool,
+}
+
+impl Default for NvueGnmiPaths {
+    fn default() -> Self {
+        Self {
+            components_enabled: true,
+            interfaces_enabled: true,
         }
     }
 }
@@ -626,6 +1053,10 @@ impl Config {
             ));
         }
 
+        if self.endpoint_discovery_interval.is_zero() {
+            return Err("endpoint_discovery_interval must be greater than 0".to_string());
+        }
+
         if let Configurable::Enabled(rate_limit) = &self.rate_limit
             && rate_limit.bucket_replenish.is_zero()
         {
@@ -643,10 +1074,40 @@ impl Config {
             );
         }
 
-        if let Configurable::Enabled(health_override) = &self.sinks.health_override
-            && health_override.workers == 0
+        for (index, endpoint) in self
+            .endpoint_sources
+            .static_bmc_endpoints
+            .iter()
+            .enumerate()
         {
-            return Err("sinks.health_override.workers must be greater than 0".to_string());
+            endpoint.validate(index)?;
+        }
+
+        if let Configurable::Enabled(health_report) = &self.sinks.health_report
+            && health_report.workers == 0
+        {
+            return Err("sinks.health_report.workers must be greater than 0".to_string());
+        }
+
+        if let Configurable::Enabled(rack_health_report) = &self.sinks.rack_health_report
+            && rack_health_report.workers == 0
+        {
+            return Err("sinks.rack_health_report.workers must be greater than 0".to_string());
+        }
+
+        if let Configurable::Enabled(switch_health_report) = &self.sinks.switch_health_report
+            && switch_health_report.workers == 0
+        {
+            return Err("sinks.switch_health_report.workers must be greater than 0".to_string());
+        }
+
+        if let Configurable::Enabled(power_shelf_health_report) =
+            &self.sinks.power_shelf_health_report
+            && power_shelf_health_report.workers == 0
+        {
+            return Err(
+                "sinks.power_shelf_health_report.workers must be greater than 0".to_string(),
+            );
         }
 
         if let Configurable::Enabled(logs) = &self.collectors.logs {
@@ -750,14 +1211,15 @@ mod tests {
             panic!("carbide api empty for sources")
         }
 
-        if let Configurable::Enabled(ref health_override) = config.sinks.health_override {
+        if let Configurable::Enabled(ref health_report) = config.sinks.health_report {
             assert_eq!(
-                health_override.connection.root_ca,
+                health_report.connection.root_ca,
                 "/var/run/secrets/spiffe.io/ca.crt"
             );
-            assert_eq!(health_override.workers, 8);
+            assert_eq!(health_report.workers, 8);
+            assert!(health_report.skip_empty_reports);
         } else {
-            panic!("health override sink is disabled")
+            panic!("health report sink is disabled")
         }
 
         if let Configurable::Enabled(ref rate_limit) = config.rate_limit {
@@ -770,27 +1232,48 @@ mod tests {
 
         assert!(config.collectors.sensors.is_enabled());
         assert!(config.collectors.firmware.is_enabled());
+        assert!(config.collectors.leak_detector.is_enabled());
         assert!(config.collectors.logs.is_enabled());
         assert!(config.collectors.nvue.is_enabled());
         assert!(!config.sinks.tracing.is_enabled());
         assert!(config.sinks.prometheus.is_enabled());
 
         if let Configurable::Enabled(ref sensors) = config.collectors.sensors {
-            assert_eq!(sensors.rediscover_interval, Duration::from_secs(300));
             assert_eq!(sensors.sensor_fetch_concurrency, 10);
         } else {
             panic!("sensors empty")
         }
 
         if let Configurable::Enabled(ref logs) = config.collectors.logs {
-            assert_eq!(logs.mode, LogCollectionMode::Sse);
-            assert!(
-                logs.periodic.is_none(),
-                "SSE mode should not have periodic config"
+            assert_eq!(logs.mode, LogCollectionMode::Auto);
+            let auto = logs.auto.as_ref().expect("example config sets [auto]");
+            assert_eq!(auto.sse_not_available_threshold, 1);
+            assert_eq!(auto.connect_failure_window, Duration::from_secs(300));
+            assert_eq!(auto.connect_failure_threshold, 5);
+            assert_eq!(
+                auto.periodic.logs_collection_interval,
+                Duration::from_secs(300)
             );
+            assert_eq!(
+                auto.periodic.state_refresh_interval,
+                Duration::from_secs(1800)
+            );
+            let sse = logs.sse_or_default();
+            assert_eq!(sse.initial_backoff, Duration::from_secs(1));
+            assert_eq!(sse.max_backoff, Duration::from_secs(30));
             assert!(logs.validate().is_ok());
         } else {
             panic!("logs empty")
+        }
+
+        if let Configurable::Enabled(ref leak_detector) = config.collectors.leak_detector {
+            assert_eq!(leak_detector.poll_interval, Duration::from_secs(60));
+            assert_eq!(
+                leak_detector.state_refresh_interval,
+                Duration::from_secs(1800)
+            );
+        } else {
+            panic!("leak detector collector is disabled")
         }
 
         if let Configurable::Enabled(ref leak_detection) = config.processors.leak_detection {
@@ -805,6 +1288,7 @@ mod tests {
         assert_eq!(config.shards_count, 1);
 
         assert_eq!(config.cache_size, 100);
+        assert_eq!(config.endpoint_discovery_interval, Duration::from_secs(300));
 
         if let Configurable::Enabled(ref nvue) = config.collectors.nvue {
             if let Configurable::Enabled(ref rest) = nvue.rest {
@@ -812,6 +1296,14 @@ mod tests {
                 assert_eq!(rest.request_timeout, Duration::from_secs(30));
             } else {
                 panic!("nvue rest config should be enabled in example config");
+            }
+            if let Configurable::Enabled(ref gnmi) = nvue.gnmi {
+                assert_eq!(gnmi.gnmi_port, 9339);
+                assert_eq!(gnmi.sample_interval, Duration::from_secs(300));
+                assert_eq!(gnmi.request_timeout, Duration::from_secs(30));
+                assert!(gnmi.system_events_enabled);
+            } else {
+                panic!("nvue gnmi config should be enabled in example config");
             }
         } else {
             panic!("nvue config should be enabled in example config");
@@ -821,6 +1313,8 @@ mod tests {
     #[test]
     fn test_static_only_config() {
         let toml_content = r#"
+endpoint_discovery_interval = "1m"
+
 [[endpoint_sources.static_bmc_endpoints]]
 ip = "192.168.1.100"
 mac = "00:11:22:33:44:55"
@@ -830,13 +1324,11 @@ password = "pass"
 [endpoint_sources.carbide_api]
 enabled = false
 
-[sinks.health_override]
+[sinks.health_report]
 enabled = false
 
 [collectors.sensors]
-rediscover_interval = "1m"
 sensor_fetch_interval = "30s"
-state_refresh_interval = "10m"
 sensor_fetch_concurrency = 5
 include_sensor_thresholds = false
 
@@ -855,12 +1347,12 @@ cache_size = 50
             .expect("failed to parse");
 
         assert!(!config.endpoint_sources.carbide_api.is_enabled());
-        assert!(!config.sinks.health_override.is_enabled());
+        assert!(!config.sinks.health_report.is_enabled());
 
         assert_eq!(config.endpoint_sources.static_bmc_endpoints.len(), 1);
         assert_eq!(
             config.endpoint_sources.static_bmc_endpoints[0].ip,
-            "192.168.1.100"
+            "192.168.1.100".parse::<IpAddr>().unwrap()
         );
         assert_eq!(
             config.endpoint_sources.static_bmc_endpoints[0].mac,
@@ -868,6 +1360,7 @@ cache_size = 50
         );
 
         assert_eq!(config.metrics.prefix, "carbide_hardware_new_health");
+        assert_eq!(config.endpoint_discovery_interval, Duration::from_secs(60));
 
         if let Configurable::Enabled(ref rate_limit) = config.rate_limit {
             assert_eq!(rate_limit.bucket_replenish, Duration::from_millis(30));
@@ -879,7 +1372,6 @@ cache_size = 50
 
         assert!(config.collectors.sensors.is_enabled());
         if let Configurable::Enabled(ref sensors) = config.collectors.sensors {
-            assert_eq!(sensors.rediscover_interval, Duration::from_secs(60));
             assert_eq!(sensors.sensor_fetch_interval, Duration::from_secs(30));
             assert!(!sensors.include_sensor_thresholds);
         } else {
@@ -887,10 +1379,28 @@ cache_size = 50
         }
 
         assert!(!config.collectors.firmware.is_enabled());
+        assert!(config.collectors.leak_detector.is_enabled());
         assert!(!config.collectors.logs.is_enabled());
         assert!(config.processors.leak_detection.is_enabled());
 
         config.validate().expect("config should be valid");
+    }
+
+    #[test]
+    fn test_static_endpoint_config_rejects_invalid_ip() {
+        let toml_content = r#"
+[[endpoint_sources.static_bmc_endpoints]]
+ip = "not-an-ip"
+mac = "00:11:22:33:44:55"
+username = "root"
+"#;
+
+        let result = Figment::new()
+            .merge(Serialized::defaults(Config::default()))
+            .merge(Toml::string(toml_content))
+            .extract::<Config>();
+
+        assert!(result.is_err());
     }
 
     #[test]
@@ -905,6 +1415,11 @@ cache_size = 50
 
         config.shard = 0;
         config.shards_count = 1;
+        assert!(config.validate().is_ok());
+
+        config.endpoint_discovery_interval = Duration::from_secs(0);
+        assert!(config.validate().is_err());
+        config.endpoint_discovery_interval = Duration::from_secs(300);
         assert!(config.validate().is_ok());
 
         config.rate_limit = Configurable::Enabled(RateLimitConfig {
@@ -922,31 +1437,78 @@ cache_size = 50
 
         config.processors.leak_detection =
             Configurable::Enabled(LeakDetectionProcessorConfig::default());
-        config.sinks.health_override = Configurable::Enabled(HealthOverrideSinkConfig {
+        config.sinks.health_report = Configurable::Enabled(HealthReportSinkConfig {
             workers: 0,
-            ..HealthOverrideSinkConfig::default()
+            ..HealthReportSinkConfig::default()
         });
         assert!(config.validate().is_err());
 
-        config.sinks.health_override = Configurable::Enabled(HealthOverrideSinkConfig::default());
+        config.sinks.health_report = Configurable::Enabled(HealthReportSinkConfig::default());
 
         config.collectors.logs = Configurable::Enabled(LogsCollectorConfig {
             mode: LogCollectionMode::Periodic,
+            sse: None,
             periodic: None,
+            auto: None,
         });
         assert!(config.validate().is_err());
 
         config.collectors.logs = Configurable::Enabled(LogsCollectorConfig {
             mode: LogCollectionMode::Sse,
+            sse: None,
             periodic: Some(PeriodicLogConfig::default()),
+            auto: None,
         });
         assert!(config.validate().is_err());
 
         config.collectors.logs = Configurable::Enabled(LogsCollectorConfig {
             mode: LogCollectionMode::Sse,
+            sse: None,
             periodic: None,
+            auto: None,
         });
         assert!(config.validate().is_ok());
+
+        config.collectors.logs = Configurable::Enabled(LogsCollectorConfig {
+            mode: LogCollectionMode::Auto,
+            sse: None,
+            periodic: None,
+            auto: None,
+        });
+        assert!(config.validate().is_ok());
+
+        config.collectors.logs = Configurable::Enabled(LogsCollectorConfig {
+            mode: LogCollectionMode::Auto,
+            sse: None,
+            periodic: None,
+            auto: Some(AutoModeConfig {
+                sse_not_available_threshold: 0,
+                ..AutoModeConfig::default()
+            }),
+        });
+        assert!(config.validate().is_err());
+
+        config.collectors.logs = Configurable::Enabled(LogsCollectorConfig {
+            mode: LogCollectionMode::Auto,
+            sse: None,
+            periodic: None,
+            auto: Some(AutoModeConfig {
+                connect_failure_threshold: 0,
+                ..AutoModeConfig::default()
+            }),
+        });
+        assert!(config.validate().is_err());
+
+        config.collectors.logs = Configurable::Enabled(LogsCollectorConfig {
+            mode: LogCollectionMode::Auto,
+            sse: None,
+            periodic: None,
+            auto: Some(AutoModeConfig {
+                connect_failure_window: Duration::from_secs(0),
+                ..AutoModeConfig::default()
+            }),
+        });
+        assert!(config.validate().is_err());
 
         config.collectors.logs = Configurable::Disabled;
         assert!(config.validate().is_ok());
@@ -970,7 +1532,33 @@ cache_size = 50
         assert_eq!(config.metrics.endpoint, "0.0.0.0:9009");
         assert!(config.rate_limit.is_enabled());
         assert!(config.processors.leak_detection.is_enabled());
+        assert!(config.collectors.leak_detector.is_enabled());
         assert!(!config.collectors.nvue.is_enabled());
+        if let Configurable::Enabled(ref health_report) = config.sinks.health_report {
+            assert!(health_report.skip_empty_reports);
+        } else {
+            panic!("health report sink should be enabled by default");
+        }
+    }
+
+    #[test]
+    fn test_health_report_sink_can_send_empty_reports_when_configured() {
+        let toml_content = r#"
+[sinks.health_report]
+skip_empty_reports = false
+"#;
+
+        let config: Config = Figment::new()
+            .merge(Serialized::defaults(Config::default()))
+            .merge(Toml::string(toml_content))
+            .extract()
+            .expect("could not parse config toml file");
+
+        if let Configurable::Enabled(ref health_report) = config.sinks.health_report {
+            assert!(!health_report.skip_empty_reports);
+        } else {
+            panic!("health report sink is disabled")
+        }
     }
 
     #[test]
@@ -994,7 +1582,7 @@ cache_size = 50
 [endpoint_sources.carbide_api]
 enabled = false
 
-[sinks.health_override]
+[sinks.health_report]
 enabled = false
 
 [collectors.nvue.rest]
@@ -1035,7 +1623,7 @@ request_timeout = "45s"
 [endpoint_sources.carbide_api]
 enabled = false
 
-[sinks.health_override]
+[sinks.health_report]
 enabled = false
 
 [collectors.nvue]
@@ -1057,7 +1645,7 @@ enabled = false
 [endpoint_sources.carbide_api]
 enabled = false
 
-[sinks.health_override]
+[sinks.health_report]
 enabled = false
 
 [collectors.nvue.rest]
@@ -1082,7 +1670,7 @@ poll_interval = "1m"
 [endpoint_sources.carbide_api]
 enabled = false
 
-[sinks.health_override]
+[sinks.health_report]
 enabled = false
 
 [collectors.nvue.rest]
@@ -1116,12 +1704,43 @@ interfaces_enabled = false
     }
 
     #[test]
+    fn test_nvue_gnmi_events_disabled() {
+        let toml_content = r#"
+[endpoint_sources.carbide_api]
+enabled = false
+
+[sinks.health_report]
+enabled = false
+
+[collectors.nvue.gnmi]
+gnmi_port = 9339
+system_events_enabled = false
+"#;
+
+        let config: Config = Figment::new()
+            .merge(Serialized::defaults(Config::default()))
+            .merge(Toml::string(toml_content))
+            .extract()
+            .expect("failed to parse");
+
+        if let Configurable::Enabled(ref nvue) = config.collectors.nvue {
+            if let Configurable::Enabled(ref gnmi) = nvue.gnmi {
+                assert!(!gnmi.system_events_enabled);
+            } else {
+                panic!("gnmi config should be enabled");
+            }
+        } else {
+            panic!("nvue config should be enabled");
+        }
+    }
+
+    #[test]
     fn test_static_endpoint_with_switch_serial() {
         let toml_content = r#"
 [endpoint_sources.carbide_api]
 enabled = false
 
-[sinks.health_override]
+[sinks.health_report]
 enabled = false
 
 [[endpoint_sources.static_bmc_endpoints]]
@@ -1131,11 +1750,25 @@ username = "admin"
 password = "pass"
 
 [[endpoint_sources.static_bmc_endpoints]]
+ip = "10.0.1.2"
+mac = "11:22:33:44:55:11"
+username = "cumulus"
+password = "pass"
+machine = { id = "fm100htjtiaehv1n5vh67tbmqq4eabcjdng40f7jupsadbedhruh6rag1l0", serial = "MN-001" }
+
+[[endpoint_sources.static_bmc_endpoints]]
 ip = "10.0.1.1"
 mac = "11:22:33:44:55:66"
 username = "cumulus"
 password = "pass"
-switch_serial = "SN-SW-001"
+switch = { id = "fsw100htjtiaehv1n5vh67tbmqq4eabcjdng40f7jupsadbedhruh6rag1l0", serial = "SN-SW-001", slot_number = 7, tray_index = 3 }
+
+[[endpoint_sources.static_bmc_endpoints]]
+ip = "10.0.2.1"
+mac = "22:33:44:55:66:77"
+username = "admin"
+password = "pass"
+power_shelf = { id = "fps100htjtiaehv1n5vh67tbmqq4eabcjdng40f7jupsadbedhruh6rag1l0", serial = "SN-PS-001" }
 "#;
 
         let config: Config = Figment::new()
@@ -1144,18 +1777,236 @@ switch_serial = "SN-SW-001"
             .extract()
             .expect("failed to parse static switch endpoint config");
 
-        assert_eq!(config.endpoint_sources.static_bmc_endpoints.len(), 2);
+        assert_eq!(config.endpoint_sources.static_bmc_endpoints.len(), 4);
         assert!(
             config.endpoint_sources.static_bmc_endpoints[0]
-                .switch_serial
+                .machine
                 .is_none()
+                && config.endpoint_sources.static_bmc_endpoints[0]
+                    .switch
+                    .is_none()
+                && config.endpoint_sources.static_bmc_endpoints[0]
+                    .power_shelf
+                    .is_none()
         );
         assert_eq!(
             config.endpoint_sources.static_bmc_endpoints[1]
-                .switch_serial
-                .as_deref(),
+                .machine
+                .as_ref()
+                .map(|machine| machine.id.as_ref()),
+            Some("fm100htjtiaehv1n5vh67tbmqq4eabcjdng40f7jupsadbedhruh6rag1l0")
+        );
+        assert_eq!(
+            config.endpoint_sources.static_bmc_endpoints[1]
+                .machine
+                .as_ref()
+                .and_then(|machine| machine.serial.as_deref()),
+            Some("MN-001")
+        );
+        assert_eq!(
+            config.endpoint_sources.static_bmc_endpoints[2]
+                .switch
+                .as_ref()
+                .and_then(|switch| switch.id.as_deref()),
+            Some("fsw100htjtiaehv1n5vh67tbmqq4eabcjdng40f7jupsadbedhruh6rag1l0")
+        );
+        assert_eq!(
+            config.endpoint_sources.static_bmc_endpoints[2]
+                .switch
+                .as_ref()
+                .and_then(|switch| switch.serial.as_deref()),
             Some("SN-SW-001")
         );
+        assert_eq!(
+            config.endpoint_sources.static_bmc_endpoints[2]
+                .switch
+                .as_ref()
+                .and_then(|switch| switch.slot_number),
+            Some(7)
+        );
+        assert_eq!(
+            config.endpoint_sources.static_bmc_endpoints[2]
+                .switch
+                .as_ref()
+                .and_then(|switch| switch.tray_index),
+            Some(3)
+        );
+        assert_eq!(
+            config.endpoint_sources.static_bmc_endpoints[3]
+                .power_shelf
+                .as_ref()
+                .and_then(|power_shelf| power_shelf.id.as_deref()),
+            Some("fps100htjtiaehv1n5vh67tbmqq4eabcjdng40f7jupsadbedhruh6rag1l0")
+        );
+        assert_eq!(
+            config.endpoint_sources.static_bmc_endpoints[3]
+                .power_shelf
+                .as_ref()
+                .and_then(|power_shelf| power_shelf.serial.as_deref()),
+            Some("SN-PS-001")
+        );
+    }
+
+    #[test]
+    fn test_static_switch_host_accepts_primary_without_nmxt_override() {
+        let toml_content = r#"
+[endpoint_sources.carbide_api]
+enabled = false
+
+[[endpoint_sources.static_bmc_endpoints]]
+ip = "10.0.1.1"
+mac = "11:22:33:44:55:66"
+username = "admin"
+password = "pass"
+switch = { id = "fsw100htjtiaehv1n5vh67tbmqq4eabcjdng40f7jupsadbedhruh6rag1l0", serial = "SN-SW-001", endpoint_role = "host", is_primary = true }
+"#;
+
+        let config: Config = Figment::new()
+            .merge(Serialized::defaults(Config::default()))
+            .merge(Toml::string(toml_content))
+            .extract()
+            .expect("static switch host config should parse");
+
+        let switch = config.endpoint_sources.static_bmc_endpoints[0]
+            .switch
+            .as_ref()
+            .expect("switch metadata");
+
+        assert_eq!(switch.endpoint_role, StaticSwitchEndpointRole::Host);
+        assert!(switch.is_primary);
+        assert_eq!(switch.nmxt_enabled, None);
+    }
+
+    #[test]
+    fn test_static_switch_host_accepts_nmxt_override() {
+        let toml_content = r#"
+[endpoint_sources.carbide_api]
+enabled = false
+
+[[endpoint_sources.static_bmc_endpoints]]
+ip = "10.0.1.2"
+mac = "11:22:33:44:55:77"
+username = "admin"
+password = "pass"
+switch = { id = "fsw100htjtiaehv1n5vh67tbmqq4eabcjdng40f7jupsadbedhruh6rag1l0", serial = "SN-SW-002", endpoint_role = "host", is_primary = false, nmxt_enabled = true }
+"#;
+
+        let config: Config = Figment::new()
+            .merge(Serialized::defaults(Config::default()))
+            .merge(Toml::string(toml_content))
+            .extract()
+            .expect("static switch host config should parse");
+
+        let switch = config.endpoint_sources.static_bmc_endpoints[0]
+            .switch
+            .as_ref()
+            .expect("switch metadata");
+
+        assert_eq!(switch.endpoint_role, StaticSwitchEndpointRole::Host);
+        assert!(!switch.is_primary);
+        assert_eq!(switch.nmxt_enabled, Some(true));
+    }
+
+    #[test]
+    fn test_static_machine_endpoint_accepts_placement_and_nvlink_metadata() {
+        let toml_content = r#"
+[endpoint_sources.carbide_api]
+enabled = false
+
+[[endpoint_sources.static_bmc_endpoints]]
+ip = "10.0.1.2"
+mac = "11:22:33:44:55:11"
+username = "admin"
+password = "pass"
+machine = { id = "fm100htjtiaehv1n5vh67tbmqq4eabcjdng40f7jupsadbedhruh6rag1l0", serial = "MN-001", slot_number = 15, tray_index = 5, nvlink_domain_uuid = "00000000-0000-0000-0000-000000000000" }
+"#;
+
+        let config: Config = Figment::new()
+            .merge(Serialized::defaults(Config::default()))
+            .merge(Toml::string(toml_content))
+            .extract()
+            .expect("failed to parse static machine endpoint config");
+
+        let machine = config.endpoint_sources.static_bmc_endpoints[0]
+            .machine
+            .as_ref()
+            .expect("machine metadata");
+
+        assert_eq!(machine.slot_number, Some(15));
+        assert_eq!(machine.tray_index, Some(5));
+        assert_eq!(
+            machine.nvlink_domain_uuid.as_deref(),
+            Some("00000000-0000-0000-0000-000000000000")
+        );
+    }
+
+    #[test]
+    fn test_static_endpoints_accept_position_field_aliases() {
+        let toml_content = r#"
+[endpoint_sources.carbide_api]
+enabled = false
+
+[[endpoint_sources.static_bmc_endpoints]]
+ip = "10.0.1.2"
+mac = "11:22:33:44:55:11"
+username = "admin"
+password = "pass"
+machine = { id = "fm100htjtiaehv1n5vh67tbmqq4eabcjdng40f7jupsadbedhruh6rag1l0", physical_slot_number = 15, compute_tray_index = 5 }
+
+[[endpoint_sources.static_bmc_endpoints]]
+ip = "10.0.1.1"
+mac = "11:22:33:44:55:66"
+username = "cumulus"
+password = "pass"
+switch = { serial = "SN-SW-001", physical_slot_number = 7, compute_tray_index = 3 }
+"#;
+
+        let config: Config = Figment::new()
+            .merge(Serialized::defaults(Config::default()))
+            .merge(Toml::string(toml_content))
+            .extract()
+            .expect("failed to parse static endpoint config");
+
+        let machine = config.endpoint_sources.static_bmc_endpoints[0]
+            .machine
+            .as_ref()
+            .expect("machine metadata");
+        assert_eq!(machine.slot_number, Some(15));
+        assert_eq!(machine.tray_index, Some(5));
+
+        let switch = config.endpoint_sources.static_bmc_endpoints[1]
+            .switch
+            .as_ref()
+            .expect("switch metadata");
+        assert_eq!(switch.slot_number, Some(7));
+        assert_eq!(switch.tray_index, Some(3));
+    }
+
+    #[test]
+    fn test_static_endpoint_rejects_multiple_identity_types() {
+        let toml_content = r#"
+[endpoint_sources.carbide_api]
+enabled = false
+
+[sinks.health_report]
+enabled = false
+
+[[endpoint_sources.static_bmc_endpoints]]
+ip = "10.0.0.1"
+mac = "aa:bb:cc:dd:ee:ff"
+username = "admin"
+password = "pass"
+machine = { id = "fm100htjtiaehv1n5vh67tbmqq4eabcjdng40f7jupsadbedhruh6rag1l0" }
+switch = { serial = "SN-SW-001" }
+"#;
+
+        let config: Config = Figment::new()
+            .merge(Serialized::defaults(Config::default()))
+            .merge(Toml::string(toml_content))
+            .extract()
+            .expect("config should parse before validation");
+
+        assert!(config.validate().is_err());
     }
 
     #[test]
@@ -1166,22 +2017,76 @@ switch_serial = "SN-SW-001"
             .extract()
             .expect("could not parse config toml file");
 
-        assert_eq!(config.endpoint_sources.static_bmc_endpoints.len(), 2);
+        assert_eq!(config.endpoint_sources.static_bmc_endpoints.len(), 4);
         assert!(
             config.endpoint_sources.static_bmc_endpoints[0]
-                .switch_serial
+                .switch
                 .is_none()
+        );
+        let machine = config.endpoint_sources.static_bmc_endpoints[0]
+            .machine
+            .as_ref()
+            .expect("machine metadata");
+        assert_eq!(machine.serial.as_deref(), Some("MN-001"));
+        assert_eq!(machine.slot_number, Some(15));
+        assert_eq!(machine.tray_index, Some(5));
+        assert_eq!(
+            machine.nvlink_domain_uuid.as_deref(),
+            Some("00000000-0000-0000-0000-000000000000")
         );
         assert_eq!(
             config.endpoint_sources.static_bmc_endpoints[1]
-                .switch_serial
-                .as_deref(),
-            Some("SN-SWITCH-001")
+                .switch
+                .as_ref()
+                .and_then(|switch| switch.id.as_deref()),
+            Some("fsw100htjtiaehv1n5vh67tbmqq4eabcjdng40f7jupsadbedhruh6rag1l0")
         );
-        if let Configurable::Enabled(ref health_override) = config.sinks.health_override {
-            assert_eq!(health_override.workers, 8);
+        assert_eq!(
+            config.endpoint_sources.static_bmc_endpoints[1]
+                .switch
+                .as_ref()
+                .and_then(|switch| switch.serial.as_deref()),
+            Some("SN-SWITCH-BMC-001")
+        );
+        assert_eq!(
+            config.endpoint_sources.static_bmc_endpoints[1]
+                .switch
+                .as_ref()
+                .map(|switch| switch.endpoint_role),
+            Some(StaticSwitchEndpointRole::Bmc)
+        );
+        assert_eq!(
+            config.endpoint_sources.static_bmc_endpoints[2]
+                .switch
+                .as_ref()
+                .and_then(|switch| switch.serial.as_deref()),
+            Some("SN-SWITCH-HOST-001")
+        );
+        assert_eq!(
+            config.endpoint_sources.static_bmc_endpoints[2]
+                .switch
+                .as_ref()
+                .map(|switch| switch.endpoint_role),
+            Some(StaticSwitchEndpointRole::Host)
+        );
+        assert_eq!(
+            config.endpoint_sources.static_bmc_endpoints[3]
+                .power_shelf
+                .as_ref()
+                .and_then(|power_shelf| power_shelf.id.as_deref()),
+            Some("fps100htjtiaehv1n5vh67tbmqq4eabcjdng40f7jupsadbedhruh6rag1l0")
+        );
+        assert_eq!(
+            config.endpoint_sources.static_bmc_endpoints[3]
+                .power_shelf
+                .as_ref()
+                .and_then(|power_shelf| power_shelf.serial.as_deref()),
+            Some("SN-POWER-SHELF-001")
+        );
+        if let Configurable::Enabled(ref health_report) = config.sinks.health_report {
+            assert_eq!(health_report.workers, 8);
         } else {
-            panic!("health override sink is disabled");
+            panic!("health report sink is disabled");
         }
     }
 
@@ -1238,10 +2143,209 @@ switch_serial = "SN-SW-001"
     }
 
     #[test]
-    fn test_log_config_default_is_sse() {
+    fn test_log_config_default_is_auto() {
         let config = LogsCollectorConfig::default();
-        assert_eq!(config.mode, LogCollectionMode::Sse);
+        assert_eq!(config.mode, LogCollectionMode::Auto);
+        assert!(config.sse.is_none());
         assert!(config.periodic.is_none());
+        assert!(config.auto.is_none());
+        let sse = config.sse_or_default();
+        assert_eq!(sse.initial_backoff, Duration::from_secs(1));
+        assert_eq!(sse.max_backoff, Duration::from_secs(30));
         assert!(config.validate().is_ok());
+    }
+
+    #[test]
+    fn test_log_config_auto_mode_without_periodic_is_valid() {
+        let toml = r#"
+            mode = "auto"
+        "#;
+        let config: LogsCollectorConfig = Figment::new()
+            .merge(Toml::string(toml))
+            .extract()
+            .expect("should parse");
+        assert!(config.validate().is_ok());
+    }
+
+    #[test]
+    fn test_log_config_auto_mode_with_periodic_valid() {
+        let toml = r#"
+            mode = "auto"
+            [periodic]
+            logs_collection_interval = "5m"
+        "#;
+        let config: LogsCollectorConfig = Figment::new()
+            .merge(Toml::string(toml))
+            .extract()
+            .expect("should parse");
+        assert!(config.validate().is_ok());
+        assert_eq!(config.mode, LogCollectionMode::Auto);
+    }
+
+    #[test]
+    fn test_log_config_auto_mode_with_periodic_and_auto_knobs() {
+        let toml = r#"
+            mode = "auto"
+            [periodic]
+            logs_collection_interval = "5m"
+            [auto]
+            sse_not_available_threshold = 2
+            connect_failure_window = "10m"
+            connect_failure_threshold = 8
+        "#;
+        let config: LogsCollectorConfig = Figment::new()
+            .merge(Toml::string(toml))
+            .extract()
+            .expect("should parse");
+        assert!(config.validate().is_ok());
+        let auto = config.auto.expect("auto knobs should be present");
+        assert_eq!(auto.sse_not_available_threshold, 2);
+        assert_eq!(auto.connect_failure_window, Duration::from_secs(600));
+        assert_eq!(auto.connect_failure_threshold, 8);
+    }
+
+    #[test]
+    fn test_log_config_auto_mode_with_auto_fallback_periodic_config() {
+        let toml = r#"
+            mode = "auto"
+            [auto]
+            sse_not_available_threshold = 2
+            connect_failure_window = "10m"
+            connect_failure_threshold = 8
+            logs_collection_interval = "2m"
+            state_refresh_interval = "20m"
+            logs_state_file = "/tmp/auto_{machine_id}.json"
+        "#;
+        let config: LogsCollectorConfig = Figment::new()
+            .merge(Toml::string(toml))
+            .extract()
+            .expect("should parse");
+        assert!(config.validate().is_ok());
+        let periodic = config.auto_periodic_or_default();
+        assert_eq!(periodic.logs_collection_interval, Duration::from_secs(120));
+        assert_eq!(periodic.state_refresh_interval, Duration::from_secs(1200));
+        assert_eq!(periodic.logs_state_file, "/tmp/auto_{machine_id}.json");
+    }
+
+    #[test]
+    fn test_log_config_sse_mode_with_sse_config_valid() {
+        let toml = r#"
+            mode = "sse"
+            [sse]
+            initial_backoff = "2s"
+            max_backoff = "1m"
+        "#;
+        let config: LogsCollectorConfig = Figment::new()
+            .merge(Toml::string(toml))
+            .extract()
+            .expect("should parse");
+        assert!(config.validate().is_ok());
+        let sse = config.sse.expect("sse config should be present");
+        assert_eq!(sse.initial_backoff, Duration::from_secs(2));
+        assert_eq!(sse.max_backoff, Duration::from_secs(60));
+    }
+
+    #[test]
+    fn test_log_config_auto_mode_with_sse_config_valid() {
+        let toml = r#"
+            mode = "auto"
+            [sse]
+            initial_backoff = "3s"
+            max_backoff = "45s"
+        "#;
+        let config: LogsCollectorConfig = Figment::new()
+            .merge(Toml::string(toml))
+            .extract()
+            .expect("should parse");
+        assert!(config.validate().is_ok());
+        let sse = config.sse_or_default();
+        assert_eq!(sse.initial_backoff, Duration::from_secs(3));
+        assert_eq!(sse.max_backoff, Duration::from_secs(45));
+    }
+
+    #[test]
+    fn test_log_config_periodic_mode_rejects_sse_config() {
+        let toml = r#"
+            mode = "periodic"
+            [periodic]
+            logs_collection_interval = "5m"
+            [sse]
+            initial_backoff = "1s"
+        "#;
+        let config: LogsCollectorConfig = Figment::new()
+            .merge(Toml::string(toml))
+            .extract()
+            .expect("should parse");
+        assert!(config.validate().is_err());
+    }
+
+    #[test]
+    fn test_log_config_periodic_mode_rejects_auto_config() {
+        let toml = r#"
+            mode = "periodic"
+            [periodic]
+            logs_collection_interval = "5m"
+            [auto]
+            connect_failure_threshold = 2
+        "#;
+        let config: LogsCollectorConfig = Figment::new()
+            .merge(Toml::string(toml))
+            .extract()
+            .expect("should parse");
+        assert_eq!(
+            config.validate(),
+            Err("[collectors.logs.auto] should not be set when mode = \"periodic\"".to_string())
+        );
+    }
+
+    #[test]
+    fn test_log_config_sse_mode_rejects_auto_config() {
+        let toml = r#"
+            mode = "sse"
+            [auto]
+            connect_failure_threshold = 2
+        "#;
+        let config: LogsCollectorConfig = Figment::new()
+            .merge(Toml::string(toml))
+            .extract()
+            .expect("should parse");
+        assert_eq!(
+            config.validate(),
+            Err("[collectors.logs.auto] should not be set when mode = \"sse\"".to_string())
+        );
+    }
+
+    #[test]
+    fn test_log_config_sse_mode_rejects_invalid_sse_backoff() {
+        let toml = r#"
+            mode = "sse"
+            [sse]
+            initial_backoff = "30s"
+            max_backoff = "1s"
+        "#;
+        let config: LogsCollectorConfig = Figment::new()
+            .merge(Toml::string(toml))
+            .extract()
+            .expect("should parse");
+        assert!(config.validate().is_err());
+    }
+
+    #[test]
+    fn test_auto_mode_config_defaults() {
+        let defaults = AutoModeConfig::default();
+        assert_eq!(defaults.sse_not_available_threshold, 1);
+        assert_eq!(defaults.connect_failure_window, Duration::from_secs(300));
+        assert_eq!(defaults.connect_failure_threshold, 5);
+        assert_eq!(
+            defaults.periodic.logs_collection_interval,
+            Duration::from_secs(300)
+        );
+    }
+
+    #[test]
+    fn test_sse_log_config_defaults() {
+        let defaults = SseLogConfig::default();
+        assert_eq!(defaults.initial_backoff, Duration::from_secs(1));
+        assert_eq!(defaults.max_backoff, Duration::from_secs(30));
     }
 }

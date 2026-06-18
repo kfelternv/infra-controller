@@ -18,8 +18,7 @@ use std::fmt::{Display, Formatter};
 use std::net::IpAddr;
 use std::str::FromStr;
 
-use ::rpc::errors::RpcDataConversionError;
-use ::rpc::forge as rpc;
+use carbide_uuid::machine::MachineInterfaceId;
 use eyre::{Report, eyre};
 use mac_address::MacAddress;
 use serde::{Deserialize, Serialize};
@@ -28,13 +27,10 @@ use sqlx::{FromRow, Row};
 use version_compare::Cmp;
 
 use crate::errors::{ModelError, ModelResult};
-// TODO(chet): Once SocketAddr::parse_ascii is no longer an experimental
-// feature, it would be good to parse bmc_info.ip to verify it's a valid IP
-// address.
-
 #[derive(Debug, Default, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct BmcInfo {
-    pub ip: Option<String>,
+    pub machine_interface_id: Option<MachineInterfaceId>,
+    pub ip: Option<IpAddr>,
     pub port: Option<u16>,
     pub mac: Option<MacAddress>,
     pub version: Option<String>,
@@ -60,50 +56,9 @@ impl<'r> FromRow<'r, PgRow> for BmcInfo {
     }
 }
 
-impl TryFrom<rpc::BmcInfo> for BmcInfo {
-    type Error = RpcDataConversionError;
-    fn try_from(value: rpc::BmcInfo) -> Result<Self, RpcDataConversionError> {
-        let mac: Option<MacAddress> = if let Some(mac_address) = value.mac {
-            Some(
-                mac_address
-                    .parse()
-                    .map_err(|_| RpcDataConversionError::InvalidMacAddress(mac_address))?,
-            )
-        } else {
-            None
-        };
-
-        Ok(BmcInfo {
-            ip: value.ip,
-            port: value.port.map(|p| p as u16),
-            mac,
-            version: value.version,
-            firmware_version: value.firmware_version,
-        })
-    }
-}
-
 impl BmcInfo {
     pub fn ip_addr(&self) -> Result<IpAddr, Report> {
-        self.ip
-            .as_ref()
-            .ok_or(eyre! {"Missing BMC address"})?
-            .parse()
-            .map_err(|e| {
-                eyre! {"Bad address {:?} {e}", self.ip }
-            })
-    }
-}
-
-impl From<BmcInfo> for rpc::BmcInfo {
-    fn from(value: BmcInfo) -> Self {
-        rpc::BmcInfo {
-            ip: value.ip,
-            port: value.port.map(|p| p as u32),
-            mac: value.mac.map(|mac| mac.to_string()),
-            version: value.version,
-            firmware_version: value.firmware_version,
-        }
+        self.ip.ok_or(eyre! {"Missing BMC address"})
     }
 }
 
@@ -127,28 +82,6 @@ impl Display for UserRoles {
         };
 
         write!(f, "{string}")
-    }
-}
-
-impl From<rpc::UserRoles> for UserRoles {
-    fn from(action: rpc::UserRoles) -> Self {
-        match action {
-            rpc::UserRoles::User => UserRoles::User,
-            rpc::UserRoles::Administrator => UserRoles::Administrator,
-            rpc::UserRoles::Operator => UserRoles::Operator,
-            rpc::UserRoles::Noaccess => UserRoles::Noaccess,
-        }
-    }
-}
-
-impl From<UserRoles> for rpc::UserRoles {
-    fn from(action: UserRoles) -> Self {
-        match action {
-            UserRoles::User => rpc::UserRoles::User,
-            UserRoles::Administrator => rpc::UserRoles::Administrator,
-            UserRoles::Operator => rpc::UserRoles::Operator,
-            UserRoles::Noaccess => rpc::UserRoles::Noaccess,
-        }
     }
 }
 

@@ -1,19 +1,27 @@
 /*
  * SPDX-FileCopyrightText: Copyright (c) 2021-2024 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
- * SPDX-License-Identifier: LicenseRef-NvidiaProprietary
+ * SPDX-License-Identifier: Apache-2.0
  *
- * NVIDIA CORPORATION, its affiliates and licensors retain all intellectual
- * property and proprietary rights in and to this material, related
- * documentation and any modifications thereto. Any use, reproduction,
- * disclosure or distribution of this material and related documentation
- * without an express license agreement from NVIDIA CORPORATION or
- * its affiliates is strictly prohibited.
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ * http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
  */
 
 use std::collections::HashMap;
 
 use serde::Deserialize;
 use sha2::{Digest, Sha256};
+
+const STATIC_IPXE_MENU_TEMPLATE_ID: &str = "c816a939-0993-5ebf-82dd-5227ad215703";
+const STATIC_IPXE_MENU_TEMPLATE: &str = include_str!("../../../pxe/ipxe/local/embed.ipxe");
 
 /// iPXE OS definition with template-based rendering support
 #[derive(Debug, Clone)]
@@ -59,7 +67,7 @@ pub struct IpxeTemplateArtifact {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum IpxeTemplateScope {
-    /// Carbide-core usage only.
+    /// NICo Core usage only.
     #[default]
     Internal,
     /// Usable by tenant.
@@ -130,7 +138,7 @@ pub trait IpxeScriptRenderer {
     /// Render generates the final iPXE script from an IpxeScript object.
     /// Artifact URLs are replaced by local cached URLs when available (cached_url).
     /// `reserved_params` must contain exactly the reserved parameters defined
-    /// in the template (provided by carbide-core).
+    /// in the template (provided by NICo Core).
     fn render(
         &self,
         ipxeos: &IpxeScript,
@@ -185,7 +193,13 @@ impl DefaultIpxeScriptRenderer {
         let templates = template_collection
             .templates
             .into_iter()
-            .map(|t| (t.name.clone(), t))
+            .map(|mut t| {
+                if t.id == STATIC_IPXE_MENU_TEMPLATE_ID {
+                    t.template = STATIC_IPXE_MENU_TEMPLATE.to_string();
+                }
+
+                (t.name.clone(), t)
+            })
             .collect();
 
         Self { templates }
@@ -526,7 +540,7 @@ impl IpxeScriptRenderer for DefaultIpxeScriptRenderer {
             }
         }
 
-        format!("{:x}", hasher.finalize())
+        hex::encode(hasher.finalize())
     }
 
     fn fabricate_cached_urls(&self, ipxeos: &IpxeScript) -> IpxeScript {
@@ -552,7 +566,7 @@ impl IpxeScriptRenderer for DefaultIpxeScriptRenderer {
                 let mut hasher = Sha256::new();
                 hasher.update(artifact.name.as_bytes());
                 hasher.update(artifact.url.as_bytes());
-                format!("{:x}", hasher.finalize())
+                hex::encode(hasher.finalize())
             };
 
             artifact.cached_url = Some(format!("${{base_url}}/{}", hash));
@@ -1042,6 +1056,47 @@ mod tests {
         assert!(templates.contains(&"carbide-menu-static-ipxe".to_string()));
         // Only assert minimum count (templates referenced in tests); new entries in templates.yaml are allowed
         assert!(templates.len() >= 11);
+    }
+
+    #[test]
+    fn test_static_ipxe_menu_uses_nico_branding() {
+        const BRANDING_H: &str = include_str!("../../../pxe/ipxe/local/branding.h");
+
+        let renderer = DefaultIpxeScriptRenderer::new();
+        let menu_template = renderer
+            .get_template_by_id(STATIC_IPXE_MENU_TEMPLATE_ID)
+            .expect("static iPXE menu template should exist");
+
+        assert_eq!(menu_template.template, STATIC_IPXE_MENU_TEMPLATE);
+
+        for (name, contents) in [
+            ("embedded iPXE script", STATIC_IPXE_MENU_TEMPLATE),
+            ("iPXE branding header", BRANDING_H),
+            (
+                "renderer static menu description",
+                menu_template.description.as_str(),
+            ),
+        ] {
+            assert!(contents.contains("NICo"), "{name} should mention NICo");
+        }
+
+        for (name, contents) in [
+            ("embedded iPXE script", STATIC_IPXE_MENU_TEMPLATE),
+            ("iPXE branding header", BRANDING_H),
+            (
+                "renderer static menu description",
+                menu_template.description.as_str(),
+            ),
+        ] {
+            assert!(
+                !contents.contains("Carbide") && !contents.contains("carbide"),
+                "{name} should not mention Carbide"
+            );
+            assert!(
+                !contents.contains("Forge") && !contents.contains("forge"),
+                "{name} should not mention Forge"
+            );
+        }
     }
 
     #[test]
@@ -1963,7 +2018,7 @@ mod tests {
         // Compute checksum of rendered script
         let mut hasher_rendered = Sha256::new();
         hasher_rendered.update(rendered_script.as_bytes());
-        let rendered_hash = format!("{:x}", hasher_rendered.finalize());
+        let rendered_hash = hex::encode(hasher_rendered.finalize());
 
         // Compute checksum of template text (normalized - trailing spaces removed per line)
         let normalized_template = template
@@ -1974,7 +2029,7 @@ mod tests {
             .join("\n");
         let mut hasher_template = Sha256::new();
         hasher_template.update(normalized_template.as_bytes());
-        let template_hash = format!("{:x}", hasher_template.finalize());
+        let template_hash = hex::encode(hasher_template.finalize());
 
         // Checksums should match - template rendered as-is with no alterations
         assert_eq!(

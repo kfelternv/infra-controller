@@ -22,14 +22,17 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use carbide_network::deserialize_input_mac_to_address;
+use carbide_redfish::boot_interface::BootInterfaceTarget;
+use carbide_redfish::libredfish::conv::{IntoModel, bmc_vendor};
+use carbide_redfish::libredfish::dpu_bios::is_dpu_bios_attributes_not_ready;
 use carbide_redfish::libredfish::{
     RedfishAuth, RedfishClientCreationError, RedfishClientPool, redact_password,
 };
 use carbide_redfish::nv_redfish::NvRedfishClientPool;
-use forge_secrets::credentials::Credentials;
+use carbide_secrets::credentials::Credentials;
 use libredfish::model::oem::nvidia_dpu::NicMode;
 use libredfish::model::service_root::RedfishVendor;
-use libredfish::{Redfish, RedfishError};
+use libredfish::{BootInterfaceRef, Redfish, RedfishError};
 use mac_address::MacAddress;
 use model::site_explorer::{
     BootOption, BootOrder, Chassis, ComputerSystem, ComputerSystemAttributes,
@@ -116,7 +119,7 @@ impl RedfishClient {
             .await
     }
 
-    pub async fn probe_redfish_endpoint(
+    pub async fn get_redfish_vendor(
         &self,
         bmc_ip_address: SocketAddr,
     ) -> Result<RedfishVendor, EndpointExplorationError> {
@@ -127,12 +130,31 @@ impl RedfishClient {
 
         let service_root = client.get_service_root().await.map_err(map_redfish_error)?;
 
+        if service_root.vendor.is_none() {
+            return Err(EndpointExplorationError::MissingVendor);
+        }
+
         let Some(vendor) = service_root.vendor() else {
             tracing::info!("No vendor found for BMC at {bmc_ip_address}");
             return Err(EndpointExplorationError::MissingVendor);
         };
 
         Ok(vendor)
+    }
+
+    pub async fn validate_bmc_credentials(
+        &self,
+        bmc_ip_address: SocketAddr,
+        credentials: Credentials,
+    ) -> Result<(), EndpointExplorationError> {
+        let client = self
+            .create_direct_redfish_client(bmc_ip_address, credentials, Some(RedfishVendor::Unknown))
+            .await
+            .map_err(map_redfish_client_creation_error)?;
+
+        client.get_systems().await.map_err(map_redfish_error)?;
+
+        Ok(())
     }
 
     pub async fn set_bmc_root_password(
@@ -145,19 +167,28 @@ impl RedfishClient {
         let (curr_user, curr_password) = match &current_bmc_root_credentials {
             Credentials::UsernamePassword { username, password } => (username, password),
         };
-        // Create a vendor-specific client based on the provided
-        // vendor hardware attempting to set the BMC root password.
-        // NOTE(chet): This used to use a "standard"/Unknown client,
-        // but after adding support for vendored clients, I was able
-        // to change it. If this ends up causing problems in some
-        // way, presumably the "fix" should end up being a libredfish
-        // (or eventually nv-redfish) vendor implementation change (I
-        // would think).
+        // We're about to PATCH /AccountService to rotate the BMC password.
+        // That's the only Redfish endpoint we need at this stage, so use an
+        // uninitialized "Unknown" client to skip libredfish's full init
+        // path (which fetches /Systems, /Managers, /Chassis up front).
+        //
+        // Those fetches are unnecessary here, and they actively break
+        // rotation on factory BMCs that refuse reads until the password
+        // has been changed. Notably, NVIDIA GBx00 in factory state
+        // authenticates the supplied creds just fine, but returns HTTP 403
+        // with "Base.1.18.1.PasswordChangeRequired" on /Systems -- so if
+        // we let libredfish initialize first, we never reach the PATCH
+        // that would actually unblock us.
+        //
+        // The vendor-specific client is created below, *after* the rotation
+        // has succeeded, so set_machine_password_policy gets the right
+        // vendor impl (e.g. Lite-On's, which omits
+        // AccountLockoutCounterResetAfter).
         let client = self
             .create_direct_redfish_client(
                 bmc_ip_address,
                 current_bmc_root_credentials.clone(),
-                Some(vendor),
+                Some(RedfishVendor::Unknown),
             )
             .await
             .map_err(|e| {
@@ -185,6 +216,7 @@ impl RedfishClient {
             | RedfishVendor::NvidiaGBSwitch
             | RedfishVendor::P3809
             | RedfishVendor::LiteOnPowerShelf
+            | RedfishVendor::DeltaPowerShelf
             | RedfishVendor::NvidiaGBx00 => {
                 // change_password does things that require a password and DPUs need a first
                 // password use to be change, so just change it directly
@@ -262,7 +294,7 @@ impl RedfishClient {
             .map_err(map_redfish_client_creation_error)?;
 
         let service_root = client.get_service_root().await.map_err(map_redfish_error)?;
-        let vendor = service_root.vendor().map(|v| v.into());
+        let vendor = service_root.vendor().map(bmc_vendor);
 
         let manager = fetch_manager(client.as_ref())
             .await
@@ -278,10 +310,33 @@ impl RedfishClient {
         let service = fetch_service(client.as_ref())
             .await
             .map_err(map_redfish_error)?;
-        let machine_setup_status = fetch_machine_setup_status(client.as_ref(), boot_interface_mac)
-            .await
-            .inspect_err(|error| tracing::warn!(%error, "Failed to fetch machine setup status."))
-            .ok();
+        let is_dpu = system.id.to_lowercase().contains("bluefield");
+        let (machine_setup_status, remediation_error) = match fetch_machine_setup_status(
+            client.as_ref(),
+            boot_interface_mac,
+        )
+        .await
+        {
+            Ok(status) => (Some(status), None),
+            Err(error) if is_dpu && is_dpu_bios_attributes_not_ready(&error) => {
+                let details = format!(
+                    "DPU BMC BIOS attributes not ready ({error}); scheduling a force-restart to mitigate the known UEFI POST/BMC race"
+                );
+                tracing::warn!("{details}");
+                (
+                    None,
+                    Some(EndpointExplorationError::InvalidDpuRedfishBiosResponse {
+                        details,
+                        response_body: None,
+                        response_code: None,
+                    }),
+                )
+            }
+            Err(error) => {
+                tracing::warn!(%error, "Failed to fetch machine setup status.");
+                (None, None)
+            }
+        };
 
         let secure_boot_status = fetch_secure_boot_status(client.as_ref())
             .await
@@ -320,6 +375,7 @@ impl RedfishClient {
             compute_tray_index: None,
             topology_id: None,
             revision_id: None,
+            remediation_error,
         })
     }
 
@@ -477,7 +533,7 @@ impl RedfishClient {
         &self,
         bmc_ip_address: SocketAddr,
         credentials: Credentials,
-        boot_interface_mac: Option<&str>,
+        boot_interface: Option<&BootInterfaceTarget>,
     ) -> Result<(), EndpointExplorationError> {
         let client = self
             .create_authenticated_redfish_client(bmc_ip_address, credentials)
@@ -485,15 +541,33 @@ impl RedfishClient {
             .map_err(map_redfish_client_creation_error)?;
 
         // We will be redoing machine_setup later and can worry about getting the profile right then.
-        client
-            .machine_setup(
-                boot_interface_mac,
-                &HashMap::default(),
-                libredfish::BiosProfileType::Performance,
-                &HashMap::default(),
-            )
-            .await
-            .map_err(map_redfish_error)?;
+        // Bind the empty profiles outside the fallback closure so they outlive both attempts.
+        let empty_profiles: libredfish::BiosProfileVendor = HashMap::default();
+        let result = match boot_interface {
+            Some(target) => {
+                target
+                    .run(|bi| {
+                        client.machine_setup(
+                            Some(bi),
+                            &empty_profiles,
+                            libredfish::BiosProfileType::Performance,
+                            &empty_profiles,
+                        )
+                    })
+                    .await
+            }
+            None => {
+                client
+                    .machine_setup(
+                        None,
+                        &empty_profiles,
+                        libredfish::BiosProfileType::Performance,
+                        &empty_profiles,
+                    )
+                    .await
+            }
+        };
+        result.map_err(map_redfish_error)?;
 
         Ok(())
     }
@@ -502,15 +576,15 @@ impl RedfishClient {
         &self,
         bmc_ip_address: SocketAddr,
         credentials: Credentials,
-        boot_interface_mac: &str,
+        boot_interface: &BootInterfaceTarget,
     ) -> Result<(), EndpointExplorationError> {
         let client = self
             .create_authenticated_redfish_client(bmc_ip_address, credentials)
             .await
             .map_err(map_redfish_client_creation_error)?;
 
-        client
-            .set_boot_order_dpu_first(boot_interface_mac)
+        boot_interface
+            .run(|bi| client.set_boot_order_dpu_first(bi))
             .await
             .map_err(map_redfish_error)?;
 
@@ -648,10 +722,10 @@ async fn is_powershelf(client: &dyn Redfish) -> Result<bool, RedfishError> {
             return Ok(true);
         }
         if let Ok(chassis) = client.get_chassis(chassis_id).await
-            && chassis
-                .manufacturer
-                .as_ref()
-                .is_some_and(|m| m.to_lowercase().contains("lite-on"))
+            && chassis.manufacturer.as_ref().is_some_and(|m| {
+                let m = m.to_lowercase();
+                m.contains("lite-on") || m.contains("delta")
+            })
         {
             return Ok(true);
         }
@@ -761,12 +835,12 @@ async fn fetch_system(client: &dyn Redfish) -> Result<ComputerSystem, EndpointEx
         model: system.model,
         serial_number: system.serial_number,
         attributes: ComputerSystemAttributes {
-            nic_mode,
+            nic_mode: nic_mode.map(IntoModel::into_model),
             is_infinite_boot_enabled,
         },
         pcie_devices,
         base_mac,
-        power_state: system.power_state.into(),
+        power_state: system.power_state.into_model(),
         sku: system.sku,
         boot_order,
     })
@@ -833,7 +907,8 @@ async fn fetch_ethernet_interfaces(
         }?;
 
         let uefi_device_path = if let Some(uefi_device_path) = iface.uefi_device_path {
-            let path_as_version_string = UefiDevicePath::from_str(&uefi_device_path)?;
+            let path_as_version_string = UefiDevicePath::from_str(&uefi_device_path)
+                .map_err(|error| RedfishError::GenericError { error })?;
             Some(path_as_version_string)
         } else {
             None
@@ -1053,7 +1128,7 @@ async fn fetch_boot_order(
                 .iter()
                 .find(|opt| opt.boot_option_reference == *ref_id)
                 .cloned()
-                .map(Into::into)
+                .map(IntoModel::into_model)
         })
         .collect();
 
@@ -1074,7 +1149,7 @@ async fn fetch_pcie_devices(client: &dyn Redfish) -> Result<Vec<PCIeDevice>, Red
             name: pci_device.name,
             part_number: pci_device.part_number,
             serial_number: pci_device.serial_number,
-            status: pci_device.status.map(|s| s.into()),
+            status: pci_device.status.map(IntoModel::into_model),
         });
     }
     Ok(pci_devices)
@@ -1113,7 +1188,7 @@ async fn fetch_machine_setup_status(
     boot_interface_mac: Option<MacAddress>,
 ) -> Result<MachineSetupStatus, RedfishError> {
     let status = client
-        .machine_setup_status(boot_interface_mac.map(|mac| mac.to_string()).as_deref())
+        .machine_setup_status(boot_interface_mac.map(BootInterfaceRef::Mac))
         .await?;
     let mut diffs: Vec<MachineSetupDiff> = Vec::new();
 
@@ -1189,19 +1264,9 @@ pub(crate) fn map_redfish_client_creation_error(
                 details: format!("RedfishClientError::InvalidHeader: {original_error}"),
             }
         }
-        RedfishClientCreationError::MissingBmcEndpoint(argument)
-        | RedfishClientCreationError::MissingArgument(argument) => {
-            EndpointExplorationError::Other {
-                details: format!("Missing argument to RedFish client: {argument}"),
-            }
-        }
-        RedfishClientCreationError::MachineInterfaceLoadError(db_error) => {
-            EndpointExplorationError::Other {
-                details: format!(
-                    "Database error loading the machine interface for the redfish client: {db_error}"
-                ),
-            }
-        }
+        RedfishClientCreationError::MissingArgument(argument) => EndpointExplorationError::Other {
+            details: format!("Missing argument to RedFish client: {argument}"),
+        },
     }
 }
 
@@ -1275,10 +1340,13 @@ fn nv_error_classifier(
 ) -> Option<bmc_explorer::ErrorClass> {
     type BmcError = carbide_redfish::nv_redfish::BmcError;
     match err {
-        BmcError::InvalidResponse {
-            status: http::StatusCode::NOT_FOUND,
-            ..
-        } => Some(bmc_explorer::ErrorClass::HttpNotFound),
+        BmcError::InvalidResponse { status, .. } => match *status {
+            http::StatusCode::NOT_FOUND => Some(bmc_explorer::ErrorClass::NotFound),
+            http::StatusCode::INTERNAL_SERVER_ERROR => {
+                Some(bmc_explorer::ErrorClass::InternalServerError)
+            }
+            _ => None,
+        },
         _ => None,
     }
 }
@@ -1375,5 +1443,107 @@ fn map_nv_redfish_explore_error(
         err => EndpointExplorationError::Other {
             details: err.to_string(),
         },
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::net::{IpAddr, Ipv4Addr, SocketAddr};
+    use std::sync::Arc;
+
+    use arc_swap::ArcSwap;
+    use carbide_redfish::libredfish::test_support::RedfishSim;
+    use carbide_redfish::nv_redfish::NvRedfishClientPool;
+    use carbide_secrets::credentials::Credentials;
+    use carbide_test_support::Outcome::*;
+    use carbide_test_support::{Case, check_cases_async};
+    use libredfish::model::service_root::RedfishVendor;
+
+    use super::{EndpointExplorationError, RedfishClient};
+
+    fn test_addr() -> SocketAddr {
+        SocketAddr::new(IpAddr::V4(Ipv4Addr::new(127, 0, 0, 1)), 443)
+    }
+
+    fn build_redfish_client(sim: Arc<RedfishSim>) -> RedfishClient {
+        let proxy_address = Arc::new(ArcSwap::new(Arc::new(None)));
+        let nv_pool = Arc::new(NvRedfishClientPool::new(proxy_address));
+        RedfishClient::new(sim, nv_pool)
+    }
+
+    /// Rotate a BMC's root password against the sim and report the vendor
+    /// each `create_client` call was made with, in order.
+    ///
+    /// This is what the password-rotation contract is asserted against: the
+    /// FIRST client (which makes the actual `change_password_by_id` PATCH to
+    /// `/AccountService`) must be uninitialized (`Some(RedfishVendor::Unknown)`),
+    /// and only the SECOND client (which sets the password policy afterward)
+    /// should carry the real `vendor`.
+    async fn password_change_client_vendors(
+        vendor: RedfishVendor,
+    ) -> Result<Vec<Option<RedfishVendor>>, EndpointExplorationError> {
+        let sim = Arc::new(RedfishSim::default());
+        sim.seed_user("root", "factory_pass");
+
+        let redfish = build_redfish_client(sim.clone());
+
+        let factory_creds = Credentials::UsernamePassword {
+            username: "root".to_string(),
+            password: "factory_pass".to_string(),
+        };
+
+        redfish
+            .set_bmc_root_password(test_addr(), vendor, factory_creds, "site_pass".to_string())
+            .await?;
+
+        Ok(sim
+            .create_client_calls()
+            .into_iter()
+            .map(|call| call.vendor)
+            .collect())
+    }
+
+    /// When site-explorer rotates a BMC's root password it must make the
+    /// rotation PATCH with an uninitialized `Unknown` client and only use the
+    /// real vendor on the follow-up policy client.
+    ///
+    /// The vendor-specific client triggers libredfish's full init path
+    /// (fetches `/Systems`, `/Managers`, `/Chassis`) which is unnecessary just
+    /// to PATCH `/AccountService`. Worse, factory BMCs like NVIDIA GBx00
+    /// authenticate the supplied creds but return HTTP 403
+    /// `Base.1.18.1.PasswordChangeRequired` on `/Systems` until the password is
+    /// rotated -- so an init-first flow blocks the very PATCH that would unblock
+    /// it. Only the SECOND client (set after the rotation succeeds) should be
+    /// vendor-specific, so `set_machine_password_policy` gets the right impl
+    /// (e.g. Lite-On omits `AccountLockoutCounterResetAfter`).
+    ///
+    /// Asserted as a table over vendors: each yields exactly two
+    /// `create_client` calls -- always `Unknown` first, then the real vendor --
+    /// which pins the call count, the uninitialized rotation client, and the
+    /// vendor-specific policy client all at once.
+    #[tokio::test]
+    async fn set_bmc_root_password_rotates_with_unknown_then_real_vendor() {
+        check_cases_async(
+            [
+                Case {
+                    scenario: "Lite-On power shelf gets a vendor-specific policy client",
+                    input: RedfishVendor::LiteOnPowerShelf,
+                    expect: Yields(vec![
+                        Some(RedfishVendor::Unknown),
+                        Some(RedfishVendor::LiteOnPowerShelf),
+                    ]),
+                },
+                Case {
+                    scenario: "NVIDIA DPU gets a vendor-specific policy client too",
+                    input: RedfishVendor::NvidiaDpu,
+                    expect: Yields(vec![
+                        Some(RedfishVendor::Unknown),
+                        Some(RedfishVendor::NvidiaDpu),
+                    ]),
+                },
+            ],
+            password_change_client_vendors,
+        )
+        .await;
     }
 }

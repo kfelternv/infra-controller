@@ -16,12 +16,19 @@
  */
 
 use clap::Parser;
-use rpc::admin_cli::{CarbideCliError, CarbideCliResult};
 use rpc::{CredentialType, forge as forgerpc};
 
 use crate::credential::common::url_validator;
+use crate::errors::{CarbideCliError, CarbideCliResult};
 
 #[derive(Parser, Debug, Clone)]
+#[command(after_long_help = "\
+EXAMPLES:
+
+Delete a UFM credential by its URL:
+    $ nico-admin-cli credential delete-ufm --url https://192.0.2.10
+
+")]
 pub struct Args {
     #[clap(long, required(true), help = "The UFM url")]
     pub url: String,

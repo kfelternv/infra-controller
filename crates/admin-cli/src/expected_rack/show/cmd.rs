@@ -16,10 +16,11 @@
  */
 
 use prettytable::{Table, row};
-use rpc::admin_cli::{CarbideCliResult, OutputFormat};
+use rpc::admin_cli::OutputFormat;
 use rpc::forge::ExpectedRackRequest;
 
 use super::args::Args;
+use crate::errors::CarbideCliResult;
 use crate::rpc::ApiClient;
 
 pub async fn show(
@@ -60,20 +61,7 @@ fn convert_and_print_into_nice_table(
     ]);
 
     for expected_rack in &expected_racks.expected_racks {
-        let labels = expected_rack
-            .metadata
-            .as_ref()
-            .map(|m| {
-                m.labels
-                    .iter()
-                    .map(|label| {
-                        let key = label.key.as_str();
-                        let value = label.value.as_deref().unwrap_or_default();
-                        format!("\"{}:{}\"", key, value)
-                    })
-                    .collect::<Vec<_>>()
-            })
-            .unwrap_or_default();
+        let labels = crate::metadata::fmt_labels_as_kv_pairs(expected_rack.metadata.as_ref());
 
         table.add_row(row![
             expected_rack

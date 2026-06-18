@@ -17,8 +17,21 @@
 
 use carbide_uuid::machine::MachineId;
 use clap::Parser;
+use rpc::forge::DpaInterfaceType;
 
 #[derive(Parser, Debug)]
+#[command(after_long_help = "\
+EXAMPLES:
+
+Create/ensure a DPA interface for a machine:
+    $ nico-admin-cli dpa ensure 12345678-1234-5678-90ab-cdef01234567 \
+    00:11:22:33:44:55 BlueField3 5e:00.0
+
+Create/ensure a DPA interface with a device description:
+    $ nico-admin-cli dpa ensure 12345678-1234-5678-90ab-cdef01234567 \
+    00:11:22:33:44:55 BlueField3 5e:00.0 \"NVIDIA BlueField-3 B3140L E-Series FHHL SuperNIC\"
+
+")]
 pub struct Args {
     #[clap(help = "Machine ID")]
     pub machine_id: MachineId,
@@ -28,6 +41,10 @@ pub struct Args {
     pub device_type: String,
     #[clap(help = "PCI name (e.g. 5e:00.0)")]
     pub pci_name: String,
+    #[clap(help = "Interface type (e.g. SVPC or ASTRA)", value_enum)]
+    pub interface_type: DpaInterfaceType,
+    #[clap(help = "Device description (e.g. NVIDIA BlueField-3 B3140L E-Series FHHL SuperNIC)")]
+    pub device_description: Option<String>,
 }
 
 impl From<Args> for ::rpc::forge::DpaInterfaceCreationRequest {
@@ -37,6 +54,8 @@ impl From<Args> for ::rpc::forge::DpaInterfaceCreationRequest {
             mac_addr: args.mac_addr,
             device_type: args.device_type,
             pci_name: args.pci_name,
+            device_description: args.device_description,
+            interface_type: args.interface_type.into(),
         }
     }
 }

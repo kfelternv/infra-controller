@@ -19,53 +19,18 @@
 
 use std::fmt;
 use std::fmt::{Display, Formatter};
+use std::net::IpAddr;
 use std::str::FromStr;
 
-use ::rpc::errors::RpcDataConversionError;
 use base64::prelude::*;
-use carbide_host_support::cpu::aggregate_cpus;
-use carbide_network::{MELLANOX_SF_VF_MAC_ADDRESS_IN, MELLANOX_SF_VF_MAC_ADDRESS_OUT};
+use carbide_utils::arch::CpuArchitecture;
 use carbide_uuid::nvlink::NvLinkDomainId;
 use mac_address::{MacAddress, MacParseError};
 use serde::{Deserialize, Serialize};
-use utils::models::arch::CpuArchitecture;
 
 use crate::machine::machine_id::MissingHardwareInfo;
-use crate::try_convert_vec;
-
-// TODO: Remove when there's no longer a need to handle the old topology format
-#[derive(Deserialize)]
-struct HardwareInfoDeserialized {
-    #[serde(default)]
-    network_interfaces: Vec<NetworkInterface>,
-    #[serde(default)]
-    infiniband_interfaces: Vec<InfinibandInterface>,
-    #[serde(default)]
-    cpu_info: Vec<CpuInfo>,
-    #[serde(default)]
-    block_devices: Vec<BlockDevice>,
-    // This should be called machine_arch, but it's serialized directly in/out of a JSONB field in
-    // the DB, so renaming it requires a migration or custom Serialize impl.
-    machine_type: CpuArchitecture,
-    #[serde(default)]
-    nvme_devices: Vec<NvmeDevice>,
-    #[serde(default)]
-    dmi_data: Option<DmiData>,
-    tpm_ek_certificate: Option<TpmEkCertificate>,
-    #[serde(default)]
-    dpu_info: Option<DpuData>,
-    #[serde(default)]
-    gpus: Vec<Gpu>,
-    #[serde(default)]
-    memory_devices: Vec<MemoryDevice>,
-    #[serde(default)]
-    cpus: Vec<Cpu>, // Deprecated in favor of `cpu_info`
-    #[serde(default)]
-    tpm_description: Option<TpmDescription>,
-}
 
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(try_from = "HardwareInfoDeserialized")]
 pub struct HardwareInfo {
     #[serde(default)]
     pub network_interfaces: Vec<NetworkInterface>,
@@ -107,25 +72,6 @@ pub struct InfinibandInterface {
 
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub pci_properties: Option<PciDeviceProperties>,
-}
-
-// TODO: Remove when there's no longer a need to handle the old topology format
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-pub struct Cpu {
-    #[serde(default)]
-    pub vendor: String,
-    #[serde(default)]
-    pub model: String,
-    #[serde(default)]
-    pub frequency: String,
-    #[serde(default)]
-    pub number: u32,
-    #[serde(default)]
-    pub core: u32,
-    #[serde(default)]
-    pub node: i32,
-    #[serde(default)]
-    pub socket: u32,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -214,10 +160,25 @@ pub struct LldpSwitchData {
     pub description: String,
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub local_port: String,
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub ip_address: Vec<String>,
+    #[serde(
+        default,
+        deserialize_with = "deserialize_ip_addr_vec_lossy",
+        skip_serializing_if = "Vec::is_empty"
+    )]
+    pub ip_address: Vec<IpAddr>,
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub remote_port: String,
+}
+
+fn deserialize_ip_addr_vec_lossy<'de, D>(deserializer: D) -> Result<Vec<IpAddr>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    Ok(Option::<Vec<String>>::deserialize(deserializer)?
+        .unwrap_or_default()
+        .into_iter()
+        .filter_map(|address| address.parse::<IpAddr>().ok())
+        .collect())
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -319,584 +280,6 @@ pub struct TpmDescription {
     pub tpm_spec: String,
 }
 
-impl From<rpc::machine_discovery::TpmDescription> for TpmDescription {
-    fn from(value: rpc::machine_discovery::TpmDescription) -> Self {
-        TpmDescription {
-            vendor: value.vendor.trim_matches('\0').to_string(),
-            firmware_version: value.firmware_version.trim_matches('\0').to_string(),
-            tpm_spec: value.tpm_spec.trim_matches('\0').to_string(),
-        }
-    }
-}
-
-impl From<TpmDescription> for rpc::machine_discovery::TpmDescription {
-    fn from(value: TpmDescription) -> Self {
-        rpc::machine_discovery::TpmDescription {
-            vendor: value.vendor,
-            firmware_version: value.firmware_version,
-            tpm_spec: value.tpm_spec,
-        }
-    }
-}
-
-// These defines conversions functions from the RPC data model into the internal
-// data model (which might also be used in the database).
-// It might actually be nicer to have those closer to the rpc crate to avoid
-// polluting the internal data model with API concerns, but since this is a
-// separate crate we can't have it there (unless we also make the model a
-// separate crate).
-//
-
-// The reverse, rpc::machine_discovery::Cpu -> Cpu, isn't needed going forward because
-// rpc::machine_discovery::Cpu instances parsed from /proc/cpuinfo are now aggregated directly into
-// CpuInfo rather than converted to Cpu. Only when reading the old format back from the
-// machine_topologies table in the database do we need this conversion to leverage that same
-// aggregation logic as if parsing from /proc/cpuinfo.
-// TODO: Remove when there's no longer a need to handle the old topology format
-impl TryFrom<&Cpu> for rpc::machine_discovery::Cpu {
-    type Error = RpcDataConversionError;
-
-    fn try_from(cpu: &Cpu) -> Result<Self, Self::Error> {
-        Ok(Self {
-            vendor: cpu.vendor.clone(),
-            model: cpu.model.clone(),
-            frequency: cpu.frequency.clone(),
-            number: cpu.number,
-            core: cpu.core,
-            node: cpu.node,
-            socket: cpu.socket,
-        })
-    }
-}
-
-impl TryFrom<rpc::machine_discovery::CpuInfo> for CpuInfo {
-    type Error = RpcDataConversionError;
-
-    fn try_from(cpu_info: rpc::machine_discovery::CpuInfo) -> Result<Self, Self::Error> {
-        Ok(Self {
-            model: cpu_info.model,
-            vendor: cpu_info.vendor,
-            sockets: cpu_info.sockets,
-            cores: cpu_info.cores,
-            threads: cpu_info.threads,
-        })
-    }
-}
-
-impl TryFrom<CpuInfo> for rpc::machine_discovery::CpuInfo {
-    type Error = RpcDataConversionError;
-
-    fn try_from(cpu_info: CpuInfo) -> Result<Self, Self::Error> {
-        Ok(Self {
-            model: cpu_info.model,
-            vendor: cpu_info.vendor,
-            sockets: cpu_info.sockets,
-            cores: cpu_info.cores,
-            threads: cpu_info.threads,
-        })
-    }
-}
-
-impl TryFrom<rpc::machine_discovery::BlockDevice> for BlockDevice {
-    type Error = RpcDataConversionError;
-
-    fn try_from(dev: rpc::machine_discovery::BlockDevice) -> Result<Self, Self::Error> {
-        Ok(Self {
-            model: dev.model,
-            revision: dev.revision,
-            serial: dev.serial,
-            device_type: dev.device_type,
-        })
-    }
-}
-
-impl TryFrom<BlockDevice> for rpc::machine_discovery::BlockDevice {
-    type Error = RpcDataConversionError;
-
-    fn try_from(dev: BlockDevice) -> Result<Self, Self::Error> {
-        Ok(Self {
-            model: dev.model,
-            revision: dev.revision,
-            serial: dev.serial,
-            device_type: dev.device_type,
-        })
-    }
-}
-
-impl TryFrom<rpc::machine_discovery::NvmeDevice> for NvmeDevice {
-    type Error = RpcDataConversionError;
-
-    fn try_from(dev: rpc::machine_discovery::NvmeDevice) -> Result<Self, Self::Error> {
-        Ok(Self {
-            model: dev.model,
-            firmware_rev: dev.firmware_rev,
-            serial: dev.serial,
-        })
-    }
-}
-
-impl TryFrom<NvmeDevice> for rpc::machine_discovery::NvmeDevice {
-    type Error = RpcDataConversionError;
-
-    fn try_from(dev: NvmeDevice) -> Result<Self, Self::Error> {
-        Ok(Self {
-            model: dev.model,
-            firmware_rev: dev.firmware_rev,
-            serial: dev.serial,
-        })
-    }
-}
-
-impl TryFrom<rpc::machine_discovery::DmiData> for DmiData {
-    type Error = RpcDataConversionError;
-
-    fn try_from(data: rpc::machine_discovery::DmiData) -> Result<Self, Self::Error> {
-        Ok(Self {
-            board_name: data.board_name,
-            board_version: data.board_version,
-            bios_version: data.bios_version,
-            bios_date: data.bios_date,
-            product_serial: data.product_serial,
-            board_serial: data.board_serial,
-            chassis_serial: data.chassis_serial,
-            product_name: data.product_name,
-            sys_vendor: data.sys_vendor,
-        })
-    }
-}
-
-impl TryFrom<DmiData> for rpc::machine_discovery::DmiData {
-    type Error = RpcDataConversionError;
-
-    fn try_from(data: DmiData) -> Result<Self, Self::Error> {
-        Ok(Self {
-            board_name: data.board_name,
-            board_version: data.board_version,
-            bios_version: data.bios_version,
-            bios_date: data.bios_date,
-            product_serial: data.product_serial,
-            board_serial: data.board_serial,
-            chassis_serial: data.chassis_serial,
-            product_name: data.product_name,
-            sys_vendor: data.sys_vendor,
-        })
-    }
-}
-
-impl TryFrom<rpc::machine_discovery::LldpSwitchData> for LldpSwitchData {
-    type Error = RpcDataConversionError;
-
-    fn try_from(data: rpc::machine_discovery::LldpSwitchData) -> Result<Self, Self::Error> {
-        Ok(Self {
-            name: data.name,
-            id: data.id,
-            description: data.description,
-            local_port: data.local_port,
-            ip_address: data.ip_address,
-            remote_port: data.remote_port,
-        })
-    }
-}
-
-impl TryFrom<LldpSwitchData> for rpc::machine_discovery::LldpSwitchData {
-    type Error = RpcDataConversionError;
-
-    fn try_from(data: LldpSwitchData) -> Result<Self, Self::Error> {
-        Ok(Self {
-            name: data.name,
-            id: data.id,
-            description: data.description,
-            local_port: data.local_port,
-            ip_address: data.ip_address,
-            remote_port: data.remote_port,
-        })
-    }
-}
-
-impl TryFrom<rpc::machine_discovery::DpuData> for DpuData {
-    type Error = RpcDataConversionError;
-
-    fn try_from(data: rpc::machine_discovery::DpuData) -> Result<Self, Self::Error> {
-        Ok(Self {
-            part_number: data.part_number,
-            part_description: data.part_description,
-            product_version: data.product_version,
-            factory_mac_address: data.factory_mac_address,
-            firmware_version: data.firmware_version,
-            firmware_date: data.firmware_date,
-            switches: try_convert_vec(data.switches)?,
-        })
-    }
-}
-
-impl TryFrom<DpuData> for rpc::machine_discovery::DpuData {
-    type Error = RpcDataConversionError;
-
-    fn try_from(data: DpuData) -> Result<Self, Self::Error> {
-        Ok(Self {
-            part_number: data.part_number,
-            part_description: data.part_description,
-            product_version: data.product_version,
-            factory_mac_address: data.factory_mac_address,
-            firmware_version: data.firmware_version,
-            firmware_date: data.firmware_date,
-            switches: try_convert_vec(data.switches)?,
-        })
-    }
-}
-
-impl TryFrom<rpc::machine_discovery::NetworkInterface> for NetworkInterface {
-    type Error = RpcDataConversionError;
-
-    fn try_from(iface: rpc::machine_discovery::NetworkInterface) -> Result<Self, Self::Error> {
-        let pci_properties = match iface.pci_properties.map(PciDeviceProperties::try_from) {
-            Some(Err(e)) => return Err(e),
-            Some(Ok(props)) => Some(props),
-            None => None,
-        };
-
-        // Do what deserialize_ch_64 does in this case.
-        let mac_string = if iface.mac_address == MELLANOX_SF_VF_MAC_ADDRESS_IN {
-            MELLANOX_SF_VF_MAC_ADDRESS_OUT.to_string()
-        } else {
-            iface.mac_address
-        };
-
-        let mac_address: MacAddress = mac_string
-            .parse()
-            .map_err(|_| RpcDataConversionError::InvalidMacAddress(mac_string.clone()))?;
-
-        Ok(Self {
-            mac_address,
-            pci_properties,
-        })
-    }
-}
-
-impl TryFrom<NetworkInterface> for rpc::machine_discovery::NetworkInterface {
-    type Error = RpcDataConversionError;
-
-    fn try_from(iface: NetworkInterface) -> Result<Self, Self::Error> {
-        let pci_properties = match iface
-            .pci_properties
-            .map(rpc::machine_discovery::PciDeviceProperties::try_from)
-        {
-            Some(Err(e)) => return Err(e),
-            Some(Ok(props)) => Some(props),
-            None => None,
-        };
-
-        Ok(Self {
-            mac_address: iface.mac_address.to_string(),
-            pci_properties,
-        })
-    }
-}
-
-impl TryFrom<rpc::machine_discovery::InfinibandInterface> for InfinibandInterface {
-    type Error = RpcDataConversionError;
-
-    fn try_from(ibface: rpc::machine_discovery::InfinibandInterface) -> Result<Self, Self::Error> {
-        let pci_properties = match ibface.pci_properties.map(PciDeviceProperties::try_from) {
-            Some(Err(e)) => return Err(e),
-            Some(Ok(props)) => Some(props),
-            None => None,
-        };
-
-        Ok(Self {
-            guid: ibface.guid,
-            pci_properties,
-        })
-    }
-}
-
-impl TryFrom<InfinibandInterface> for rpc::machine_discovery::InfinibandInterface {
-    type Error = RpcDataConversionError;
-
-    fn try_from(ibface: InfinibandInterface) -> Result<Self, Self::Error> {
-        let pci_properties = match ibface
-            .pci_properties
-            .map(rpc::machine_discovery::PciDeviceProperties::try_from)
-        {
-            Some(Err(e)) => return Err(e),
-            Some(Ok(props)) => Some(props),
-            None => None,
-        };
-
-        Ok(Self {
-            guid: ibface.guid,
-            pci_properties,
-        })
-    }
-}
-
-impl TryFrom<rpc::machine_discovery::PciDeviceProperties> for PciDeviceProperties {
-    type Error = RpcDataConversionError;
-
-    fn try_from(props: rpc::machine_discovery::PciDeviceProperties) -> Result<Self, Self::Error> {
-        Ok(Self {
-            vendor: props.vendor,
-            device: props.device,
-            path: props.path,
-            numa_node: props.numa_node,
-            description: props.description,
-            slot: props.slot,
-        })
-    }
-}
-
-impl TryFrom<PciDeviceProperties> for rpc::machine_discovery::PciDeviceProperties {
-    type Error = RpcDataConversionError;
-
-    fn try_from(props: PciDeviceProperties) -> Result<Self, Self::Error> {
-        Ok(Self {
-            vendor: props.vendor,
-            device: props.device,
-            path: props.path,
-            numa_node: props.numa_node,
-            description: props.description,
-            slot: props.slot,
-        })
-    }
-}
-
-impl TryFrom<GpuPlatformInfo> for rpc::machine_discovery::GpuPlatformInfo {
-    type Error = RpcDataConversionError;
-
-    fn try_from(info: GpuPlatformInfo) -> Result<Self, Self::Error> {
-        Ok(Self {
-            chassis_serial: info.chassis_serial,
-            slot_number: info.slot_number,
-            tray_index: info.tray_index,
-            host_id: info.host_id,
-            module_id: info.module_id,
-            fabric_guid: info.fabric_guid,
-        })
-    }
-}
-
-impl TryFrom<rpc::machine_discovery::GpuPlatformInfo> for GpuPlatformInfo {
-    type Error = RpcDataConversionError;
-
-    fn try_from(info: rpc::machine_discovery::GpuPlatformInfo) -> Result<Self, Self::Error> {
-        Ok(Self {
-            chassis_serial: info.chassis_serial,
-            slot_number: info.slot_number,
-            tray_index: info.tray_index,
-            host_id: info.host_id,
-            module_id: info.module_id,
-            fabric_guid: info.fabric_guid,
-        })
-    }
-}
-
-impl TryFrom<Gpu> for rpc::machine_discovery::Gpu {
-    type Error = RpcDataConversionError;
-
-    fn try_from(gpu: Gpu) -> Result<Self, Self::Error> {
-        let platform_info = match gpu
-            .platform_info
-            .map(rpc::machine_discovery::GpuPlatformInfo::try_from)
-        {
-            Some(Err(e)) => return Err(e),
-            Some(Ok(info)) => Some(info),
-            None => None,
-        };
-
-        Ok(Self {
-            name: gpu.name,
-            serial: gpu.serial,
-            driver_version: gpu.driver_version,
-            vbios_version: gpu.vbios_version,
-            inforom_version: gpu.inforom_version,
-            total_memory: gpu.total_memory,
-            frequency: gpu.frequency,
-            pci_bus_id: gpu.pci_bus_id,
-            platform_info,
-        })
-    }
-}
-
-impl TryFrom<rpc::machine_discovery::Gpu> for Gpu {
-    type Error = RpcDataConversionError;
-
-    fn try_from(gpu: rpc::machine_discovery::Gpu) -> Result<Self, Self::Error> {
-        let platform_info = match gpu.platform_info.map(GpuPlatformInfo::try_from) {
-            Some(Err(e)) => return Err(e),
-            Some(Ok(info)) => Some(info),
-            None => None,
-        };
-
-        Ok(Self {
-            name: gpu.name,
-            serial: gpu.serial,
-            driver_version: gpu.driver_version,
-            vbios_version: gpu.vbios_version,
-            inforom_version: gpu.inforom_version,
-            total_memory: gpu.total_memory,
-            frequency: gpu.frequency,
-            pci_bus_id: gpu.pci_bus_id,
-            platform_info,
-        })
-    }
-}
-
-impl From<rpc::machine_discovery::MemoryDevice> for MemoryDevice {
-    fn from(value: rpc::machine_discovery::MemoryDevice) -> Self {
-        MemoryDevice {
-            size_mb: value.size_mb,
-            mem_type: value.mem_type,
-        }
-    }
-}
-
-impl From<MemoryDevice> for rpc::machine_discovery::MemoryDevice {
-    fn from(value: MemoryDevice) -> Self {
-        rpc::machine_discovery::MemoryDevice {
-            size_mb: value.size_mb,
-            mem_type: value.mem_type,
-        }
-    }
-}
-
-// TODO: Remove when there's no longer a need to handle the old topology format
-impl TryFrom<HardwareInfoDeserialized> for HardwareInfo {
-    type Error = RpcDataConversionError;
-
-    fn try_from(info: HardwareInfoDeserialized) -> Result<Self, Self::Error> {
-        let cpu_info: Vec<CpuInfo> = if info.cpu_info.is_empty() {
-            // Convert V1 -> V2 format
-            let cpus: Vec<rpc::machine_discovery::Cpu> = info
-                .cpus
-                .iter()
-                .map(rpc::machine_discovery::Cpu::try_from)
-                .collect::<Result<Vec<_>, _>>()?;
-            aggregate_cpus(&cpus)
-                .into_iter()
-                .map(CpuInfo::try_from)
-                .collect::<Result<Vec<_>, _>>()?
-        } else {
-            info.cpu_info
-        };
-
-        Ok(HardwareInfo {
-            network_interfaces: info.network_interfaces,
-            infiniband_interfaces: info.infiniband_interfaces,
-            cpu_info,
-            block_devices: info.block_devices,
-            machine_type: info.machine_type,
-            nvme_devices: info.nvme_devices,
-            dmi_data: info.dmi_data,
-            tpm_ek_certificate: info.tpm_ek_certificate,
-            dpu_info: info.dpu_info,
-            gpus: info.gpus,
-            memory_devices: info.memory_devices,
-            tpm_description: info.tpm_description,
-        })
-    }
-}
-
-impl TryFrom<rpc::machine_discovery::DiscoveryInfo> for HardwareInfo {
-    type Error = RpcDataConversionError;
-
-    #[allow(deprecated)]
-    fn try_from(info: rpc::machine_discovery::DiscoveryInfo) -> Result<Self, Self::Error> {
-        let tpm_ek_certificate = info
-            .tpm_ek_certificate
-            .map(|base64| {
-                BASE64_STANDARD
-                    .decode(base64)
-                    .map_err(|_| RpcDataConversionError::InvalidBase64Data("tpm_ek_certificate"))
-            })
-            .transpose()?;
-
-        let machine_arch = match info.machine_arch {
-            // new
-            Some(arch) => arch.into(),
-            // old
-            None => {
-                tracing::warn!("DiscoveryInfo missing machine_arch.");
-                info.machine_type.parse().unwrap_or_else(|e| {
-                    // Unfortunately we don't have the machine_id here.
-                    tracing::error!(error = %e, "Error parsing grpc DiscoveryInfo");
-                    CpuArchitecture::Unknown
-                })
-            }
-        };
-
-        // TODO: Remove "cpus" when there's no longer a need to handle the old topology format
-        let cpu_info: Vec<CpuInfo> = if info.cpu_info.is_empty() {
-            match try_convert_vec(info.cpus) {
-                Ok(v1_cpus) => aggregate_cpus(&v1_cpus)
-                    .into_iter()
-                    .map(CpuInfo::try_from)
-                    .collect::<Result<Vec<_>, _>>()?,
-                Err(_) => Vec::new(),
-            }
-        } else {
-            try_convert_vec(info.cpu_info)?
-        };
-
-        Ok(Self {
-            network_interfaces: try_convert_vec(info.network_interfaces)?,
-            infiniband_interfaces: try_convert_vec(info.infiniband_interfaces)?,
-            cpu_info,
-            block_devices: try_convert_vec(info.block_devices)?,
-            machine_type: machine_arch,
-            nvme_devices: try_convert_vec(info.nvme_devices)?,
-            dmi_data: info.dmi_data.map(DmiData::try_from).transpose()?,
-            tpm_ek_certificate: tpm_ek_certificate.map(TpmEkCertificate::from),
-            dpu_info: info.dpu_info.map(DpuData::try_from).transpose()?,
-            gpus: try_convert_vec(info.gpus)?,
-            memory_devices: info
-                .memory_devices
-                .into_iter()
-                .map(MemoryDevice::from)
-                .collect(),
-            tpm_description: info.tpm_description.map(std::convert::Into::into),
-        })
-    }
-}
-
-impl TryFrom<HardwareInfo> for rpc::machine_discovery::DiscoveryInfo {
-    type Error = RpcDataConversionError;
-
-    // TODO: Remove this directive when there's no longer a need to handle the old topology format
-    #[allow(deprecated)]
-    fn try_from(info: HardwareInfo) -> Result<Self, Self::Error> {
-        Ok(Self {
-            network_interfaces: try_convert_vec(info.network_interfaces)?,
-            infiniband_interfaces: try_convert_vec(info.infiniband_interfaces)?,
-            cpu_info: try_convert_vec(info.cpu_info)?,
-            block_devices: try_convert_vec(info.block_devices)?,
-            machine_type: info.machine_type.to_string(),
-            machine_arch: Some(info.machine_type.into()),
-            nvme_devices: try_convert_vec(info.nvme_devices)?,
-            dmi_data: info
-                .dmi_data
-                .map(rpc::machine_discovery::DmiData::try_from)
-                .transpose()?,
-            tpm_ek_certificate: info
-                .tpm_ek_certificate
-                .map(|cert| BASE64_STANDARD.encode(cert.into_bytes())),
-            dpu_info: info
-                .dpu_info
-                .map(rpc::machine_discovery::DpuData::try_from)
-                .transpose()?,
-            gpus: try_convert_vec(info.gpus)?,
-            memory_devices: info
-                .memory_devices
-                .into_iter()
-                .map(rpc::machine_discovery::MemoryDevice::from)
-                .collect(),
-            tpm_description: info.tpm_description.map(std::convert::Into::into),
-            attest_key_info: None,
-            // TODO: Remove cpus when there's no longer a need to handle the old topology format
-            cpus: vec![],
-        })
-    }
-}
-
 #[derive(thiserror::Error, Debug)]
 pub enum HardwareInfoError {
     #[error("DPU Info is missing.")]
@@ -949,6 +332,12 @@ impl HardwareInfo {
             .as_ref()
             .is_some_and(|dmi| dmi.product_name.contains("GB200")) // TODO: for now just do GB200
     }
+
+    pub fn is_dgx_h100(&self) -> bool {
+        self.dmi_data
+            .as_ref()
+            .is_some_and(|dmi| dmi.sys_vendor == "NVIDIA" && dmi.product_name == "DGXH100")
+    }
 }
 
 #[derive(Debug, Default, Clone, Eq, PartialEq, Serialize, Deserialize)]
@@ -969,109 +358,16 @@ impl Display for MachineInventorySoftwareComponent {
     }
 }
 
-impl TryFrom<::rpc::forge::MachineInventory> for MachineInventory {
-    type Error = RpcDataConversionError;
-
-    fn try_from(value: rpc::forge::MachineInventory) -> Result<Self, Self::Error> {
-        Ok(MachineInventory {
-            components: value
-                .components
-                .into_iter()
-                .map(MachineInventorySoftwareComponent::try_from)
-                .collect::<Result<_, _>>()?,
-        })
-    }
-}
-
-impl TryFrom<::rpc::forge::MachineInventorySoftwareComponent>
-    for MachineInventorySoftwareComponent
-{
-    type Error = RpcDataConversionError;
-
-    fn try_from(value: rpc::forge::MachineInventorySoftwareComponent) -> Result<Self, Self::Error> {
-        Ok(MachineInventorySoftwareComponent {
-            name: value.name,
-            version: value.version,
-            url: value.url,
-        })
-    }
-}
-
-impl From<MachineInventory> for rpc::forge::MachineInventory {
-    fn from(value: MachineInventory) -> Self {
-        rpc::forge::MachineInventory {
-            components: value
-                .components
-                .into_iter()
-                .map(|c| rpc::forge::MachineInventorySoftwareComponent {
-                    name: c.name,
-                    version: c.version,
-                    url: c.url,
-                })
-                .collect(),
-        }
-    }
-}
-
 #[derive(Debug, Default, Clone, Eq, PartialEq, Serialize, Deserialize)]
 pub struct MachineNvLinkInfo {
     pub domain_uuid: NvLinkDomainId,
+    /// Chassis serial from the first GPU `GpuPlatformInfo` at discovery (or operator RPC).
+    pub chassis_serial: String,
     pub gpus: Vec<NvLinkGpu>,
-}
-
-impl From<MachineNvLinkInfo> for rpc::forge::MachineNvLinkInfo {
-    fn from(value: MachineNvLinkInfo) -> Self {
-        rpc::forge::MachineNvLinkInfo {
-            domain_uuid: Some(value.domain_uuid),
-            gpus: value
-                .gpus
-                .into_iter()
-                .map(rpc::forge::NvLinkGpu::from)
-                .collect(),
-        }
-    }
-}
-
-impl From<NvLinkGpu> for rpc::forge::NvLinkGpu {
-    fn from(value: NvLinkGpu) -> Self {
-        rpc::forge::NvLinkGpu {
-            nmx_m_id: value.nmx_m_id,
-            tray_index: value.tray_index,
-            slot_id: value.slot_id,
-            device_id: value.device_id,
-            guid: value.guid,
-        }
-    }
-}
-
-impl TryFrom<rpc::forge::MachineNvLinkInfo> for MachineNvLinkInfo {
-    type Error = rpc::errors::RpcDataConversionError;
-
-    fn try_from(value: rpc::forge::MachineNvLinkInfo) -> Result<Self, Self::Error> {
-        Ok(MachineNvLinkInfo {
-            domain_uuid: value.domain_uuid.ok_or(
-                rpc::errors::RpcDataConversionError::MissingArgument("domain_uuid"),
-            )?,
-            gpus: value.gpus.into_iter().map(NvLinkGpu::from).collect(),
-        })
-    }
-}
-
-impl From<rpc::forge::NvLinkGpu> for NvLinkGpu {
-    fn from(value: rpc::forge::NvLinkGpu) -> Self {
-        NvLinkGpu {
-            nmx_m_id: value.nmx_m_id,
-            tray_index: value.tray_index,
-            slot_id: value.slot_id,
-            device_id: value.device_id,
-            guid: value.guid,
-        }
-    }
 }
 
 #[derive(Debug, Default, Clone, Eq, PartialEq, Serialize, Deserialize)]
 pub struct NvLinkGpu {
-    pub nmx_m_id: String,
     pub tray_index: i32,
     pub slot_id: i32,
     pub device_id: i32, // For GB200s, 1-based index of GPU in compute tray.
@@ -1081,7 +377,6 @@ pub struct NvLinkGpu {
 impl From<libnmxm::nmxm_model::Gpu> for NvLinkGpu {
     fn from(gpu: libnmxm::nmxm_model::Gpu) -> Self {
         NvLinkGpu {
-            nmx_m_id: gpu.id.unwrap_or_default(),
             tray_index: gpu
                 .location_info
                 .as_ref()
@@ -1100,16 +395,25 @@ impl From<libnmxm::nmxm_model::Gpu> for NvLinkGpu {
 
 #[cfg(test)]
 mod tests {
-    use prost::Message;
+
+    use carbide_test_support::Outcome::*;
+    use carbide_test_support::{scenarios, value_scenarios};
 
     use super::*;
+
+    // Build a `HardwareInfo` carrying only the architecture and `DmiData` fields
+    // the classification predicates look at, leaving everything else defaulted.
+    fn info_with_dmi(machine_type: CpuArchitecture, dmi: DmiData) -> HardwareInfo {
+        HardwareInfo {
+            machine_type,
+            dmi_data: Some(dmi),
+            ..Default::default()
+        }
+    }
 
     const DPU_INFO_JSON: &[u8] = include_bytes!("hardware_info/test_data/dpu_info.json");
     const DPU_BF3_INFO_JSON: &[u8] = include_bytes!("hardware_info/test_data/dpu_bf3_info.json");
     const X86_INFO_JSON: &[u8] = include_bytes!("hardware_info/test_data/x86_info.json");
-    // TODO: Remove when there's no longer a need to handle the old topology format
-    const X86_V1_CPU_INFO_JSON: &[u8] =
-        include_bytes!("hardware_info/test_data/x86_v1_cpu_info.json");
 
     #[test]
     fn test_machine_inventory_json_representation() {
@@ -1131,6 +435,37 @@ mod tests {
         assert_eq!(
             json,
             r#"{"components":[{"name":"foo","version":"1.0","url":""},{"name":"bar","version":"2.0","url":"nvidia.com"}]}"#
+        );
+    }
+
+    // Deserialize an LLDP switch entry and project to the management `ip_address`
+    // list: invalid entries are dropped lossily and a null list defaults to empty.
+    #[test]
+    fn lldp_switch_data_management_addresses() {
+        scenarios!(
+            // serde_json::Error is not PartialEq, so deserialization failure would
+            // be Fails; here every row parses, so the error type is irrelevant.
+            run = |json| {
+                serde_json::from_str::<LldpSwitchData>(json)
+                    .map(|switch| switch.ip_address)
+                    .map_err(drop)
+            };
+            "filters invalid management addresses" {
+                r#"{
+                            "ip_address": [
+                                "192.0.2.10",
+                                "not-an-ip",
+                                "2001:db8::1"
+                            ]
+                        }"# => Yields(vec![
+                    "192.0.2.10".parse::<IpAddr>().unwrap(),
+                    "2001:db8::1".parse::<IpAddr>().unwrap(),
+                ]),
+            }
+
+            "defaults null management addresses to empty" {
+                r#"{"ip_address":null}"# => Yields(vec![]),
+            }
         );
     }
 
@@ -1233,16 +568,35 @@ mod tests {
         );
     }
 
+    // Deserialize a HardwareInfo fixture and project to whether it is classified as
+    // a DPU: x86 hardware is not, both BlueField fixtures are.
     #[test]
-    fn deserialize_x86_info() {
-        let info = serde_json::from_slice::<HardwareInfo>(X86_INFO_JSON).unwrap();
-        assert!(!info.is_dpu());
+    fn deserialize_info_is_dpu() {
+        scenarios!(
+            // serde_json::Error is not PartialEq; every fixture parses, so the error
+            // type is irrelevant here.
+            run = |bytes| {
+                serde_json::from_slice::<HardwareInfo>(bytes)
+                    .map(|info| info.is_dpu())
+                    .map_err(drop)
+            };
+            "x86 host is not a DPU" {
+                X86_INFO_JSON => Yields(false),
+            }
+
+            "dpu info is a DPU" {
+                DPU_INFO_JSON => Yields(true),
+            }
+
+            "bf3 dpu info is a DPU" {
+                DPU_BF3_INFO_JSON => Yields(true),
+            }
+        );
     }
 
     #[test]
-    fn deserialize_dpu_info() {
+    fn deserialize_dpu_info_decodes_ch_64_mac() {
         let info = serde_json::from_slice::<HardwareInfo>(DPU_INFO_JSON).unwrap();
-        assert!(info.is_dpu());
 
         // Make sure deserialize_ch_64 works as expected, where
         // the source dpu_info.json file for this has ch:64 as
@@ -1251,12 +605,6 @@ mod tests {
             info.network_interfaces[1].mac_address.to_string(),
             "00:00:00:00:00:64"
         );
-    }
-
-    #[test]
-    fn deserialize_dpu_bf3_info() {
-        let info = serde_json::from_slice::<HardwareInfo>(DPU_BF3_INFO_JSON).unwrap();
-        assert!(info.is_dpu());
     }
 
     #[test]
@@ -1306,25 +654,443 @@ mod tests {
         );
     }
 
-    // TODO: Remove this test when there's no longer a need to handle the old topology format
+    // `is_dpu()` is true only when the architecture is Aarch64 *and* the DMI board
+    // name contains "bluefield" (case-insensitively). Both conditions must hold.
     #[test]
-    #[allow(deprecated)]
-    fn test_v1_discovery_info_decode() -> Result<(), Box<dyn std::error::Error>> {
-        let hardware_info = serde_json::from_slice::<HardwareInfo>(X86_INFO_JSON).unwrap();
-        let mut info =
-            rpc::machine_discovery::DiscoveryInfo::try_from(hardware_info.clone()).unwrap();
-        info.cpus = serde_json::from_slice::<Vec<Cpu>>(X86_V1_CPU_INFO_JSON)
-            .unwrap()
-            .iter()
-            .map(rpc::machine_discovery::Cpu::try_from)
-            .collect::<Result<Vec<_>, _>>()?;
-        info.cpu_info = Vec::new();
+    fn hardware_info_is_dpu() {
+        value_scenarios!(
+            run = |info| info.is_dpu();
+            "aarch64 with bluefield board is a DPU" {
+                info_with_dmi(
+                    CpuArchitecture::Aarch64,
+                    DmiData {
+                        board_name: "BlueField-3".to_string(),
+                        ..Default::default()
+                    },
+                ) => true,
+            }
 
-        let bytes = info.encode_to_vec();
-        let decoded = rpc::machine_discovery::DiscoveryInfo::decode(&*bytes).unwrap();
-        let decoded_hardware_info = HardwareInfo::try_from(decoded).unwrap();
+            "board name match is case-insensitive" {
+                info_with_dmi(
+                    CpuArchitecture::Aarch64,
+                    DmiData {
+                        board_name: "MY-BLUEFIELD-CARD".to_string(),
+                        ..Default::default()
+                    },
+                ) => true,
+            }
 
-        assert_eq!(decoded_hardware_info, hardware_info);
-        Ok(())
+            "bluefield as a lowercase substring still matches" {
+                info_with_dmi(
+                    CpuArchitecture::Aarch64,
+                    DmiData {
+                        board_name: "prefix-bluefield-suffix".to_string(),
+                        ..Default::default()
+                    },
+                ) => true,
+            }
+
+            "aarch64 without bluefield board is not a DPU" {
+                info_with_dmi(
+                    CpuArchitecture::Aarch64,
+                    DmiData {
+                        board_name: "GenericBoard".to_string(),
+                        ..Default::default()
+                    },
+                ) => false,
+            }
+
+            "aarch64 with empty board name is not a DPU" {
+                info_with_dmi(CpuArchitecture::Aarch64, DmiData::default()) => false,
+            }
+
+            "x86_64 with bluefield board is not a DPU" {
+                info_with_dmi(
+                    CpuArchitecture::X86_64,
+                    DmiData {
+                        board_name: "BlueField-3".to_string(),
+                        ..Default::default()
+                    },
+                ) => false,
+            }
+
+            "unknown arch with bluefield board is not a DPU" {
+                info_with_dmi(
+                    CpuArchitecture::Unknown,
+                    DmiData {
+                        board_name: "BlueField-3".to_string(),
+                        ..Default::default()
+                    },
+                ) => false,
+            }
+
+            "aarch64 with no dmi data at all is not a DPU" {
+                HardwareInfo {
+                    machine_type: CpuArchitecture::Aarch64,
+                    dmi_data: None,
+                    ..Default::default()
+                } => false,
+            }
+        );
+    }
+
+    // `factory_mac_address()` requires `dpu_info` and a parseable MAC string within
+    // it; its error type is not PartialEq, so failures are asserted as `Fails`.
+    #[test]
+    fn hardware_info_factory_mac_address() {
+        scenarios!(
+            // HardwareInfoError is not PartialEq, so drop the error to make the run
+            // closure's error type `()`.
+            run = |info| info.factory_mac_address().map_err(drop);
+            "valid mac in dpu info yields the address" {
+                HardwareInfo {
+                    dpu_info: Some(DpuData {
+                        factory_mac_address: "00:11:22:33:44:55".to_string(),
+                        ..Default::default()
+                    }),
+                    ..Default::default()
+                } => Yields(MacAddress::from_str("00:11:22:33:44:55").unwrap()),
+            }
+
+            "missing dpu info fails" {
+                HardwareInfo::default() => Fails,
+            }
+
+            "empty mac string fails to parse" {
+                HardwareInfo {
+                    dpu_info: Some(DpuData {
+                        factory_mac_address: String::new(),
+                        ..Default::default()
+                    }),
+                    ..Default::default()
+                } => Fails,
+            }
+
+            "malformed mac string fails to parse" {
+                HardwareInfo {
+                    dpu_info: Some(DpuData {
+                        factory_mac_address: "not-a-mac".to_string(),
+                        ..Default::default()
+                    }),
+                    ..Default::default()
+                } => Fails,
+            }
+
+            "too-short mac string fails to parse" {
+                HardwareInfo {
+                    dpu_info: Some(DpuData {
+                        factory_mac_address: "00:11:22".to_string(),
+                        ..Default::default()
+                    }),
+                    ..Default::default()
+                } => Fails,
+            }
+        );
+    }
+
+    // `bmc_vendor()` maps the DMI `sys_vendor` string through `from_udev_dmi`, and
+    // falls back to `Unknown` when there is no DMI data at all.
+    #[test]
+    fn hardware_info_bmc_vendor() {
+        value_scenarios!(
+            run = |info| info.bmc_vendor();
+            "lenovo sys vendor" {
+                info_with_dmi(
+                    CpuArchitecture::X86_64,
+                    DmiData {
+                        sys_vendor: "Lenovo".to_string(),
+                        ..Default::default()
+                    },
+                ) => bmc_vendor::BMCVendor::Lenovo,
+            }
+
+            "dell sys vendor" {
+                info_with_dmi(
+                    CpuArchitecture::X86_64,
+                    DmiData {
+                        sys_vendor: "Dell Inc.".to_string(),
+                        ..Default::default()
+                    },
+                ) => bmc_vendor::BMCVendor::Dell,
+            }
+
+            "nvidia sys vendor" {
+                info_with_dmi(
+                    CpuArchitecture::Aarch64,
+                    DmiData {
+                        sys_vendor: "NVIDIA".to_string(),
+                        ..Default::default()
+                    },
+                ) => bmc_vendor::BMCVendor::Nvidia,
+            }
+
+            "mellanox url maps to nvidia" {
+                info_with_dmi(
+                    CpuArchitecture::Aarch64,
+                    DmiData {
+                        sys_vendor: "https://www.mellanox.com".to_string(),
+                        ..Default::default()
+                    },
+                ) => bmc_vendor::BMCVendor::Nvidia,
+            }
+
+            "supermicro sys vendor" {
+                info_with_dmi(
+                    CpuArchitecture::X86_64,
+                    DmiData {
+                        sys_vendor: "Supermicro".to_string(),
+                        ..Default::default()
+                    },
+                ) => bmc_vendor::BMCVendor::Supermicro,
+            }
+
+            "hpe sys vendor" {
+                info_with_dmi(
+                    CpuArchitecture::X86_64,
+                    DmiData {
+                        sys_vendor: "HPE".to_string(),
+                        ..Default::default()
+                    },
+                ) => bmc_vendor::BMCVendor::Hpe,
+            }
+
+            "unrecognized sys vendor is unknown" {
+                info_with_dmi(
+                    CpuArchitecture::X86_64,
+                    DmiData {
+                        sys_vendor: "Acme Corp".to_string(),
+                        ..Default::default()
+                    },
+                ) => bmc_vendor::BMCVendor::Unknown,
+            }
+
+            "case-sensitive: lowercase dell is unknown" {
+                info_with_dmi(
+                    CpuArchitecture::X86_64,
+                    DmiData {
+                        sys_vendor: "dell inc.".to_string(),
+                        ..Default::default()
+                    },
+                ) => bmc_vendor::BMCVendor::Unknown,
+            }
+
+            "no dmi data is unknown" {
+                HardwareInfo::default() => bmc_vendor::BMCVendor::Unknown,
+            }
+        );
+    }
+
+    // `is_gbx00()` checks for a "GB200" substring in the product name; `is_dgx_h100()`
+    // wants an exact NVIDIA / DGXH100 pairing.
+    #[test]
+    fn hardware_info_product_predicates() {
+        value_scenarios!(
+            run = |(product_name, _)| {
+                info_with_dmi(
+                    CpuArchitecture::Aarch64,
+                    DmiData {
+                        product_name: product_name.to_string(),
+                        ..Default::default()
+                    },
+                )
+                .is_gbx00()
+            };
+            "exact GB200 product name" {
+                ("GB200", false) => true,
+            }
+
+            "GB200 as a substring" {
+                ("NVIDIA GB200 NVL72", false) => true,
+            }
+
+            "different product is not gbx00" {
+                ("GB300", false) => false,
+            }
+
+            "empty product name is not gbx00" {
+                ("", false) => false,
+            }
+
+            "case-sensitive: lowercase gb200 is not gbx00" {
+                ("gb200", false) => false,
+            }
+        );
+    }
+
+    // `is_dgx_h100()` requires both sys_vendor == "NVIDIA" and product_name == "DGXH100".
+    #[test]
+    fn hardware_info_is_dgx_h100() {
+        value_scenarios!(
+            run = |(sys_vendor, product_name)| {
+                info_with_dmi(
+                    CpuArchitecture::X86_64,
+                    DmiData {
+                        sys_vendor: sys_vendor.to_string(),
+                        product_name: product_name.to_string(),
+                        ..Default::default()
+                    },
+                )
+                .is_dgx_h100()
+            };
+            "nvidia vendor and dgxh100 product" {
+                ("NVIDIA", "DGXH100") => true,
+            }
+
+            "wrong product is not a dgx h100" {
+                ("NVIDIA", "DGXH200") => false,
+            }
+
+            "wrong vendor is not a dgx h100" {
+                ("Supermicro", "DGXH100") => false,
+            }
+
+            "both empty is not a dgx h100" {
+                ("", "") => false,
+            }
+
+            "product as substring is rejected (exact match required)" {
+                ("NVIDIA", "DGXH100-rev2") => false,
+            }
+        );
+    }
+
+    // `all_mac_addresses()` projects each network interface's MAC, in order.
+    #[test]
+    fn hardware_info_all_mac_addresses() {
+        let iface = |mac: &str| NetworkInterface {
+            mac_address: MacAddress::from_str(mac).unwrap(),
+            pci_properties: None,
+        };
+        value_scenarios!(
+            run = |network_interfaces| {
+                HardwareInfo {
+                    network_interfaces,
+                    ..Default::default()
+                }
+                .all_mac_addresses()
+            };
+            "no interfaces yields an empty list" {
+                vec![] => vec![],
+            }
+
+            "one interface yields its mac" {
+                vec![iface("00:11:22:33:44:55")] => vec![MacAddress::from_str("00:11:22:33:44:55").unwrap()],
+            }
+
+            "several interfaces preserve order" {
+                vec![iface("00:11:22:33:44:55"), iface("aa:bb:cc:dd:ee:ff")] => vec![
+                    MacAddress::from_str("00:11:22:33:44:55").unwrap(),
+                    MacAddress::from_str("aa:bb:cc:dd:ee:ff").unwrap(),
+                ],
+            }
+        );
+    }
+
+    // `Display` for a software component renders as `url/name:version`, including
+    // the empty-url case.
+    #[test]
+    fn machine_inventory_component_display() {
+        value_scenarios!(
+            run = |(url, name, version)| {
+                MachineInventorySoftwareComponent {
+                    name: name.to_string(),
+                    version: version.to_string(),
+                    url: url.to_string(),
+                }
+                .to_string()
+            };
+            "all fields populated" {
+                ("nvidia.com", "bar", "2.0") => "nvidia.com/bar:2.0".to_string(),
+            }
+
+            "empty url keeps the leading slash" {
+                ("", "foo", "1.0") => "/foo:1.0".to_string(),
+            }
+
+            "all fields empty" {
+                ("", "", "") => "/:".to_string(),
+            }
+        );
+    }
+
+    // `TpmEkCertificate` round-trips its bytes through `From`, `as_bytes`, and
+    // `into_bytes`, including the empty-certificate case.
+    #[test]
+    fn tpm_ek_certificate_byte_accessors() {
+        value_scenarios!(
+            run = |bytes: Vec<u8>| {
+                let cert = TpmEkCertificate::from(bytes.clone());
+                assert_eq!(cert.as_bytes(), bytes.as_slice());
+                cert.into_bytes()
+            };
+            "non-empty certificate round-trips" {
+                vec![1u8, 2, 3, 4] => vec![1u8, 2, 3, 4],
+            }
+
+            "empty certificate round-trips" {
+                vec![] => vec![],
+            }
+        );
+    }
+
+    // `NvLinkGpu::from` pulls tray/slot from `location_info` (defaulting to 0 when
+    // absent or unset) and copies device_id / device_uid straight across.
+    #[test]
+    fn nvlink_gpu_from_nmxm_gpu() {
+        value_scenarios!(
+            run = |json| {
+                let gpu = serde_json::from_str::<libnmxm::nmxm_model::Gpu>(json).unwrap();
+                NvLinkGpu::from(gpu)
+            };
+            "full location info is carried through" {
+                r#"{
+                            "LocationInfo": {"TrayIndex": 3, "SlotID": 7},
+                            "DeviceUID": 42,
+                            "DeviceID": 5,
+                            "DevicePcieID": 0,
+                            "SystemUID": 0,
+                            "VendorID": 0,
+                            "ALIDList": []
+                        }"# => NvLinkGpu {
+                    tray_index: 3,
+                    slot_id: 7,
+                    device_id: 5,
+                    guid: 42,
+                },
+            }
+
+            "absent location info defaults tray and slot to zero" {
+                r#"{
+                            "DeviceUID": 99,
+                            "DeviceID": 1,
+                            "DevicePcieID": 0,
+                            "SystemUID": 0,
+                            "VendorID": 0,
+                            "ALIDList": []
+                        }"# => NvLinkGpu {
+                    tray_index: 0,
+                    slot_id: 0,
+                    device_id: 1,
+                    guid: 99,
+                },
+            }
+
+            "partial location info defaults the missing field" {
+                r#"{
+                            "LocationInfo": {"TrayIndex": 2},
+                            "DeviceUID": 0,
+                            "DeviceID": 0,
+                            "DevicePcieID": 0,
+                            "SystemUID": 0,
+                            "VendorID": 0,
+                            "ALIDList": []
+                        }"# => NvLinkGpu {
+                    tray_index: 2,
+                    slot_id: 0,
+                    device_id: 0,
+                    guid: 0,
+                },
+            }
+        );
     }
 }

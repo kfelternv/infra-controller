@@ -19,8 +19,6 @@
 
 use std::fmt;
 
-use libredfish::model::service_root::RedfishVendor;
-
 #[derive(
     Clone,
     Copy,
@@ -42,6 +40,7 @@ pub enum BMCVendor {
     Hpe,
     Nvidia, // DPU, Viking, Oberon
     Liteon,
+    Delta,
     #[serde(other)]
     #[default]
     Unknown,
@@ -64,6 +63,7 @@ impl From<&str> for BMCVendor {
             "hpe" => BMCVendor::Hpe,
             "nvidia" => BMCVendor::Nvidia,
             "liteon" => BMCVendor::Liteon,
+            "delta" => BMCVendor::Delta,
             _ => BMCVendor::Unknown,
         }
     }
@@ -106,6 +106,7 @@ impl BMCVendor {
             BMCVendor::Hpe => "Hpe",
             BMCVendor::Nvidia => "Nvidia",
             BMCVendor::Liteon => "Liteon",
+            BMCVendor::Delta => "Delta",
             BMCVendor::Unknown => "Unknown",
         }
         .to_string()
@@ -138,27 +139,11 @@ impl BMCVendor {
         *self == Self::Liteon
     }
 
+    pub fn is_delta(&self) -> bool {
+        *self == Self::Delta
+    }
+
     pub fn is_unknown(&self) -> bool {
         *self == Self::Unknown
-    }
-}
-
-impl From<RedfishVendor> for BMCVendor {
-    fn from(r: RedfishVendor) -> BMCVendor {
-        match r {
-            RedfishVendor::AMI
-            | RedfishVendor::NvidiaDpu
-            | RedfishVendor::NvidiaGBx00
-            | RedfishVendor::NvidiaGH200
-            | RedfishVendor::NvidiaGBSwitch
-            | RedfishVendor::P3809 => BMCVendor::Nvidia,
-            RedfishVendor::Dell => BMCVendor::Dell,
-            RedfishVendor::Hpe => BMCVendor::Hpe,
-            RedfishVendor::Lenovo => BMCVendor::Lenovo,
-            RedfishVendor::LenovoAMI => BMCVendor::LenovoAMI,
-            RedfishVendor::LiteOnPowerShelf => BMCVendor::Liteon,
-            RedfishVendor::Supermicro => BMCVendor::Supermicro,
-            RedfishVendor::Unknown => BMCVendor::Unknown,
-        }
     }
 }

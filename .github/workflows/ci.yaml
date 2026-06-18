@@ -14,7 +14,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 #
-name: Carbide CI
+name: NICo Core CI
 
 on:
   push:
@@ -23,6 +23,7 @@ on:
       - release/*
       - "pull-request/[0-9]+"
     tags:
+      - "v[0-9]*.[0-9]*.[0-9]*"
       - "v[0-9][0-9][0-9][0-9].[0-9][0-9].[0-9][0-9]*"
       - "v[0-9].[0-9].[0-9]-rc[0-9]*"
 
@@ -35,11 +36,62 @@ env:
 
 
 jobs:
+  changes:
+    name: Detect Core CI Gate
+    runs-on: ubuntu-latest
+    outputs:
+      run_core_ci: ${{ steps.gate.outputs.run_core_ci }}
+      non_rest_changed: ${{ steps.non-rest-changes.outputs.non_rest }}
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Detect non-rest changes
+        id: non-rest-changes
+        if: startsWith(github.ref, 'refs/heads/pull-request/')
+        uses: dorny/paths-filter@v3
+        with:
+          base: main
+          predicate-quantifier: every
+          filters: |
+            non_rest:
+              - '**'
+              - '!rest-api/**'
+              - '!.github/workflows/rest-*.yml'
+              - '!helm/rest/**'
+              - '!docs/**'
+              - '!fern/**'
+
+      - name: Decide whether Core CI should run
+        id: gate
+        env:
+          REF: ${{ github.ref }}
+          COMMIT_MESSAGE: ${{ github.event.head_commit.message || '' }}
+          NON_REST_CHANGED: ${{ steps.non-rest-changes.outputs.non_rest }}
+        run: |
+          run_core_ci=true
+
+          if [[ "${REF}" =~ ^refs/heads/pull-request/[0-9]+$ ]]; then
+            run_core_ci="${NON_REST_CHANGED}"
+          fi
+
+          if [[ "${COMMIT_MESSAGE}" =~ ci-run-complete-pipeline ]]; then
+            run_core_ci=true
+          fi
+
+          echo "run_core_ci=${run_core_ci}" >> "$GITHUB_OUTPUT"
+          echo "Core CI gate: ${run_core_ci}"
+
   # ============================================================================
   # PREPARE STAGE
   # ============================================================================
 
   prepare:
+    needs:
+      - changes
+    if: ${{ needs.changes.outputs.run_core_ci == 'true' }}
     runs-on: linux-amd64-cpu4
     outputs:
       version: ${{ steps.version.outputs.version }}
@@ -58,12 +110,10 @@ jobs:
       build_artifacts_container_aarch64_version: ${{ steps.base-container-gate.outputs.build_artifacts_container_aarch64_version }}
       runtime_container_aarch64_run: ${{ steps.base-container-gate.outputs.runtime_container_aarch64_run }}
       runtime_container_aarch64_version: ${{ steps.base-container-gate.outputs.runtime_container_aarch64_version }}
-      powerdns_container_run: ${{ steps.base-container-gate.outputs.powerdns_container_run }}
       proto_files_changed: ${{ steps.base-container-gate.outputs.proto_files_changed }}
       source_files_changed: ${{ steps.base-container-gate.outputs.source_files_changed }}
       release_build_args: ${{ steps.release-metadata.outputs.build_args }}
       release_build_args_aarch64: ${{ steps.release-metadata.outputs.build_args_aarch64 }}
-      sbom_container_run: ${{ steps.base-container-gate.outputs.sbom_container_run }}
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
@@ -88,8 +138,6 @@ jobs:
               - 'dev/docker/Dockerfile.build-artifacts-container-x86_64'
             build_artifacts_aarch64:
               - 'dev/docker/Dockerfile.build-artifacts-container-aarch64'
-            powerdns_container:
-              - 'dev/docker/Dockerfile-powerdns'
             proto_files:
               - '**/*.proto'
             source_files:
@@ -98,8 +146,6 @@ jobs:
               - 'Cargo.lock'
               - 'Makefile.toml'
               - 'rust-toolchain.toml'
-            sbom_container:
-              - 'dev/docker/sbom-tools/Dockerfile'
       - name: Calculate version
         id: version
         run: |
@@ -108,7 +154,6 @@ jobs:
 
           # Fetch tags for accurate git describe
           git fetch --tags --force
-          # Get short SHA
           SHORT_SHA=$(git rev-parse --short=7 HEAD)
           echo "short_sha=${SHORT_SHA}" >> $GITHUB_OUTPUT
           echo "Using Git describe to extract version as VERSION and HELM_VERSION"
@@ -169,7 +214,6 @@ jobs:
           BUILD_CONTAINER_AARCH64_DOCKERFILE_CHANGED: ${{ steps.build-container-changes.outputs.build_container_aarch64 }}
           BUILD_ARTIFACTS_X86_64_DOCKERFILE_CHANGED: ${{ steps.build-container-changes.outputs.build_artifacts_x86_64 }}
           BUILD_ARTIFACTS_AARCH64_DOCKERFILE_CHANGED: ${{ steps.build-container-changes.outputs.build_artifacts_aarch64 }}
-          POWERDNS_DOCKERFILE_CHANGED: ${{ steps.build-container-changes.outputs.powerdns_container }}
           PROTO_FILES_CHANGED: ${{ steps.build-container-changes.outputs.proto_files }}
           SOURCE_FILES_CHANGED: ${{ steps.build-container-changes.outputs.source_files }}
         run: |
@@ -179,7 +223,6 @@ jobs:
           runtime_container_aarch64_run=false
           build_artifacts_container_x86_64_run=false
           build_artifacts_container_aarch64_run=false
-          powerdns_container_run=false
           proto_files_changed=false
           source_files_changed=false
 
@@ -192,14 +235,6 @@ jobs:
             build_artifacts_container_aarch64_run=true
           elif [[ "${BUILD_CONTAINER_X86_64_DOCKERFILE_CHANGED}" == "true" ]]; then
             build_container_x86_64_run=true
-          fi
-
-          if [[ "${COMMIT_MESSAGE}" =~ ci-rebuild-sbom-tools ]]; then
-            sbom_container_run=true
-          fi
-
-          if [[ "${COMMIT_MESSAGE}" =~ ci-rebuild-powerdns ]] || [[ "${POWERDNS_DOCKERFILE_CHANGED}" == "true" ]]; then
-             powerdns_container_run=true
           fi
 
           if [[ "${PROTO_FILES_CHANGED}" == "true" ]]; then
@@ -230,20 +265,14 @@ jobs:
             build_artifacts_container_aarch64_run=true
           fi
 
-          if [[ "${SBOM_CONTAINER_DOCKERFILE_CHANGED}" == "true" ]]; then
-            sbom_container_run=true
-          fi
-
           echo "build_container_x86_64_run=${build_container_x86_64_run}" >> "$GITHUB_OUTPUT"
           echo "runtime_container_x86_64_run=${runtime_container_x86_64_run}" >> "$GITHUB_OUTPUT"
           echo "build_container_aarch64_run=${build_container_aarch64_run}" >> "$GITHUB_OUTPUT"
           echo "runtime_container_aarch64_run=${runtime_container_aarch64_run}" >> "$GITHUB_OUTPUT"
           echo "build_artifacts_container_x86_64_run=${build_artifacts_container_x86_64_run}" >> "$GITHUB_OUTPUT"
           echo "build_artifacts_container_aarch64_run=${build_artifacts_container_aarch64_run}" >> "$GITHUB_OUTPUT"
-          echo "powerdns_container_run=${powerdns_container_run}" >> "$GITHUB_OUTPUT"
           echo "proto_files_changed=${proto_files_changed}" >> "$GITHUB_OUTPUT"
           echo "source_files_changed=${source_files_changed}" >> "$GITHUB_OUTPUT"
-          echo "sbom_container_run=${sbom_container_run}" >> "$GITHUB_OUTPUT"
 
           if [[ "$build_container_x86_64_run" == "true" ]]; then
             echo "build_container_x86_64_version=${VERSION}" >> "$GITHUB_OUTPUT"
@@ -440,7 +469,7 @@ jobs:
   # BUILD STAGE - Release Container
   # ============================================================================
   build-release-container-x86_64:
-    if: ${{ always() && github.event_name != 'schedule' }}
+    if: ${{ always() && github.event_name != 'schedule' && needs.prepare.result == 'success' }}
     needs:
       - prepare
       - build-container-x86_64
@@ -456,12 +485,13 @@ jobs:
       runner: linux-amd64-cpu16
       push: ${{ !contains(github.ref, 'pull-request/') }}
       load: true
+      scan: true
       tag_latest: false
       timeout_minutes: 120
     secrets: inherit
 
   build-release-container-aarch64:
-    if: ${{ always() && github.event_name != 'schedule' }}
+    if: ${{ always() && github.event_name != 'schedule' && needs.prepare.result == 'success' }}
     needs:
       - prepare
       - build-container-aarch64
@@ -480,6 +510,55 @@ jobs:
       tag_latest: false
     secrets: inherit
 
+  test-release-container-services:
+    if: ${{ always() && github.event_name != 'schedule' && needs.prepare.result == 'success' }}
+    needs:
+      - prepare
+      - build-container-x86_64
+      - build-runtime-container-x86_64
+    runs-on: linux-amd64-cpu16
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Login to NVCR
+        uses: ./.github/actions/docker-auth
+        with:
+          username: ${{ secrets.NVCR_USERNAME }}
+          token: ${{ secrets.NVCR_TOKEN }}
+
+      - name: Run release-container service tests
+        env:
+          BUILD_CONTAINER: nvcr.io/0837451325059433/carbide-dev/build-container-x86_64:${{ needs.prepare.outputs.build_container_x86_64_version }}
+          CI_COMMIT_SHORT_SHA: ${{ needs.prepare.outputs.short_sha }}
+          VERSION: ${{ needs.prepare.outputs.version }}
+        run: |
+          set -euo pipefail
+          mkdir -p "${{ github.workspace }}/.sccache"
+          docker pull "${BUILD_CONTAINER}"
+          docker run --rm \
+            -v "${{ github.workspace }}:/carbide" \
+            -v "${{ github.workspace }}/.sccache:/sccache" \
+            -w /carbide \
+            -e CARGO_HOME=/carbide/cargo \
+            -e CARGO_INCREMENTAL=0 \
+            -e CARGO_MAKE_SKIP_CODECOV=true \
+            -e DATABASE_URL='postgresql://root@%2Fvar%2Frun%2Fpostgresql/root' \
+            -e SCCACHE_DIR=/sccache \
+            -e RUSTC_WRAPPER=sccache \
+            -e CARGO_PROFILE_RELEASE_DEBUG=true \
+            -e CI_COMMIT_SHORT_SHA="${CI_COMMIT_SHORT_SHA}" \
+            -e VERSION="${VERSION}" \
+            -e CONTAINER_REPO_ROOT=/carbide \
+            "${BUILD_CONTAINER}" \
+            bash -c '
+              set -euo pipefail
+              git config --global --add safe.directory /carbide
+              /etc/init.d/postgresql start
+              sudo -u postgres psql -c "ALTER USER root WITH SUPERUSER;"
+              createdb root
+              cargo make test-release-container-services
+            '
 
   # ============================================================================
   # BUILD STAGE - Forge CLI (Multi-arch)
@@ -488,7 +567,7 @@ jobs:
     needs:
       - prepare
       - build-artifacts-container-x86_64
-    if: ${{ always() && github.event_name != 'schedule' }}
+    if: ${{ always() && github.event_name != 'schedule' && needs.prepare.result == 'success' }}
     uses: ./.github/workflows/docker-build.yml
     with:
       dockerfile_path: dev/docker/Dockerfile.release-forge-cli
@@ -499,13 +578,14 @@ jobs:
       runner: linux-amd64-cpu4
       push: ${{ !contains(github.ref, 'pull-request/') }}
       load: true
+      scan: true
     secrets: inherit
 
   build-forge-cli-aarch64:
     needs:
       - prepare
       - build-artifacts-container-aarch64
-    if: ${{ always() && github.event_name != 'schedule' }}
+    if: ${{ always() && github.event_name != 'schedule' && needs.prepare.result == 'success' }}
     uses: ./.github/workflows/docker-build.yml
     with:
       dockerfile_path: dev/docker/Dockerfile.release-forge-cli
@@ -658,6 +738,7 @@ jobs:
       runner: linux-amd64-cpu4
       push: ${{ !contains(github.ref, 'pull-request/') }}
       load: true
+      scan: true
       download_artifacts: true  # Download boot and ephemeral artifacts for packaging
       build_args: |
         {
@@ -683,6 +764,7 @@ jobs:
       runner: linux-amd64-cpu4
       push: ${{ !contains(github.ref, 'pull-request/') }}
       load: true
+      scan: true
       download_artifacts: true  # Download boot and ephemeral artifacts for packaging
       build_args: |
         {
@@ -690,21 +772,6 @@ jobs:
           "CI_COMMIT_SHORT_SHA": "${{ needs.prepare.outputs.short_sha }}",
           "CONTAINER_RUNTIME_AARCH64": "alpine:latest"
         }
-    secrets: inherit
-
-  # ============================================================================
-  # BUILD STAGE - Publish Documentation
-  # ============================================================================
-
-  build-publish-documentation:
-    if: false
-    needs:
-      - prepare
-      - build-container-x86_64
-    uses: ./.github/workflows/docs.yml
-    with:
-      build_container: ${{ format('nvcr.io/0837451325059433/carbide-dev/build-container-x86_64:{0}', (needs['build-container-x86_64'].result == 'success' && needs.prepare.outputs.version) || 'latest') }}
-      runner: linux-amd64-cpu4
     secrets: inherit
 
   # ============================================================================
@@ -779,7 +846,8 @@ jobs:
       platforms: linux/amd64
       runner: linux-amd64-cpu4
       push: ${{ !contains(github.ref, 'pull-request/') }}
-      load: false
+      load: true  # load to daemon so the Grype scan can read it on PR builds
+      scan: true
     secrets: inherit
 
   build-release-machine-validation-artifacts-x86-host:
@@ -796,27 +864,8 @@ jobs:
       platforms: linux/amd64
       runner: linux-amd64-cpu4
       push: ${{ !contains(github.ref, 'pull-request/') }}
-      load: false
-    secrets: inherit
-
-  # ============================================================================
-  # BUILD STAGE - PowerDNS
-  # ============================================================================
-
-  build-powerdns-container:
-    needs:
-      - prepare
-    if: needs.prepare.outputs.powerdns_container_run == 'true'
-    uses: ./.github/workflows/docker-build.yml
-    with:
-      dockerfile_path: dev/docker/Dockerfile-powerdns
-      image_name: nvcr.io/0837451325059433/carbide-dev/powerdns
-      image_tag: "4.9.3"
-      build_args: '{"CI_COMMIT_SHORT_SHA":"${{ needs.prepare.outputs.short_sha }}"}'
-      platforms: linux/amd64
-      runner: linux-amd64-cpu4
-      push: ${{ !contains(github.ref, 'pull-request/') }}
-      load: false
+      load: true  # load to daemon so the Grype scan can read it on PR builds
+      scan: true
     secrets: inherit
 
   proto-police:
@@ -832,6 +881,27 @@ jobs:
 
       - name: Run Protolint
         run: protolint lint -config_path=.protolint.yaml crates/rpc/proto/
+
+  proto-breaking-changes:
+    name: Proto Breaking Changes Check
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0 # Required: Buf needs the history to compare against main
+
+      - name: Install Buf CLI
+        run: |
+          sudo curl -sSL https://github.com/bufbuild/buf/releases/download/v1.70.0/buf-Linux-x86_64 -o /usr/local/bin/buf
+          sudo chmod +x /usr/local/bin/buf
+          buf --version
+
+      - name: Check for Breaking Changes
+        run: |
+          buf breaking crates/rpc/proto \
+            --against 'https://github.com/${{ github.repository }}.git#branch=main,subdir=crates/rpc/proto' \
+            --error-format=github-actions
 
   lint-police:
     needs:
@@ -850,15 +920,15 @@ jobs:
 
       # PostgreSQL is required because sqlx proc macros (sqlx::query!) connect to
       # a local database at compile time to validate SQL queries and return types.
+      # Durability settings are disabled for speed in CI/DC.
       - name: Start PostgreSQL
         run: |
+          printf 'fsync = off\nsynchronous_commit = off\nfull_page_writes = off\n' | tee -a /etc/postgresql/*/main/postgresql.conf
           /etc/init.d/postgresql start
           sudo -u postgres psql -c "ALTER USER root WITH SUPERUSER;"
           createdb root
 
       - name: Run clippy
-        env:
-          DATABASE_URL: "postgresql://%2Fvar%2Frun%2Fpostgresql"
         run: cargo make --no-workspace clippy-flow
 
       - name: Run carbide lints
@@ -878,6 +948,9 @@ jobs:
 
       - name: Check bans
         run: cargo make --no-workspace check-bans
+
+      - name: Check isolated package builds
+        run: cargo xtask check-isolated-package-builds
 
   # ============================================================================
   # BUILD STAGE - Helm Chart
@@ -913,6 +986,43 @@ jobs:
         uses: NVIDIA/dsx-github-actions/.github/actions/helm-package-push@7de619729962a6bd5e8355b6fb3582a22517d7e5
         with:
           chart-path: helm
+          chart-version: ${{ needs.prepare.outputs.helm_version }}
+          app-version: ${{ needs.prepare.outputs.version }}
+          lint: 'false'
+          ngc-key: ${{ secrets.NVCR_TOKEN }}
+          ngc-path: 0837451325059433/carbide-dev
+          ngc-duplicate: fail
+
+  build-validate-helm-prereqs-chart:
+    needs:
+      - prepare
+    if: ${{ !cancelled() && github.event_name != 'schedule' && needs.prepare.result == 'success' }}
+    runs-on: linux-amd64-cpu4
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Validate Helm prereqs chart
+        uses: NVIDIA/dsx-github-actions/.github/actions/helm-validate@94bde998f5d7965576b0c663db7d5d709c918167
+        with:
+          chart-path: helm-prereqs
+          lint: 'true'
+          template: 'true'
+
+  build-push-helm-prereqs-chart:
+    needs:
+      - prepare
+      - build-validate-helm-prereqs-chart
+    if: ${{ !cancelled() && github.event_name != 'schedule' && needs.prepare.result == 'success' && needs.build-validate-helm-prereqs-chart.result == 'success' && !contains(github.ref, 'pull-request/') }}
+    runs-on: linux-amd64-cpu4
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Package and push Helm prereqs chart to NGC
+        uses: NVIDIA/dsx-github-actions/.github/actions/helm-package-push@7de619729962a6bd5e8355b6fb3582a22517d7e5
+        with:
+          chart-path: helm-prereqs
           chart-version: ${{ needs.prepare.outputs.helm_version }}
           app-version: ${{ needs.prepare.outputs.version }}
           lint: 'false'
@@ -985,11 +1095,45 @@ jobs:
       load: false
     secrets: inherit
 
+  build-bluefield-transceiver-exporter:
+    needs:
+      - prepare
+    if: ${{ !cancelled() && github.event_name != 'schedule' && needs.prepare.result == 'success' }}
+    uses: ./.github/workflows/docker-build.yml
+    with:
+      dockerfile_path: bluefield/containers/transceiver-exporter/Dockerfile
+      context_path: .
+      image_name: nvcr.io/0837451325059433/carbide-dev/transceiver-exporter
+      image_tag: ${{ needs.prepare.outputs.version }}
+      platforms: linux/arm64
+      runner: linux-arm64-cpu4
+      push: ${{ !contains(github.ref, 'pull-request/') }}
+      load: false
+    secrets: inherit
+
+  download-mft-aarch64:
+    needs:
+      - prepare
+    if: ${{ !cancelled() && github.event_name != 'schedule' && needs.prepare.result == 'success' }}
+    runs-on: linux-arm64-cpu4
+    steps:
+      - name: Download and extract MFT package
+        run: |
+          wget https://www.mellanox.com/downloads/MFT/mft-4.35.0-159-aarch64-deb.tgz
+          tar -zxvf mft-4.35.0-159-aarch64-deb.tgz
+          rm mft-4.35.0-159-aarch64-deb.tgz
+      - name: Upload MFT as artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: mft-aarch64-deb-${{ github.run_id }}
+          path: .
+
   build-bluefield-forge-dpu-agent:
     needs:
       - prepare
       - build-bluefield-binaries
-    if: ${{ !cancelled() && github.event_name != 'schedule' && needs.prepare.result == 'success' && needs.build-bluefield-binaries.result == 'success' }}
+      - download-mft-aarch64
+    if: ${{ !cancelled() && github.event_name != 'schedule' && needs.prepare.result == 'success' && needs.build-bluefield-binaries.result == 'success' && needs.download-mft-aarch64.result == 'success' }}
     uses: ./.github/workflows/docker-build.yml
     with:
       dockerfile_path: bluefield/containers/forge-dpu-agent/Dockerfile
@@ -1011,23 +1155,6 @@ jobs:
     with:
       dockerfile_path: bluefield/containers/forge-dhcp-server/Dockerfile
       image_name: nvcr.io/0837451325059433/carbide-dev/forge-dhcp-server
-      image_tag: ${{ needs.prepare.outputs.version }}
-      platforms: linux/arm64
-      runner: linux-arm64-cpu4
-      push: ${{ !contains(github.ref, 'pull-request/') }}
-      load: false
-      download_artifacts: true
-    secrets: inherit
-
-  build-bluefield-forge-dpu-otel-agent:
-    needs:
-      - prepare
-      - build-bluefield-binaries
-    if: ${{ !cancelled() && github.event_name != 'schedule' && needs.prepare.result == 'success' && needs.build-bluefield-binaries.result == 'success' }}
-    uses: ./.github/workflows/docker-build.yml
-    with:
-      dockerfile_path: bluefield/containers/forge-dpu-otel-agent/Dockerfile
-      image_name: nvcr.io/0837451325059433/carbide-dev/forge-dpu-otel-agent
       image_tag: ${{ needs.prepare.outputs.version }}
       platforms: linux/arm64
       runner: linux-arm64-cpu4
@@ -1066,38 +1193,31 @@ jobs:
       - name: Checkout code
         uses: actions/checkout@v4
 
-      - name: Validate carbide-otelcol chart
+      - name: Validate nico-otelcol chart
         uses: NVIDIA/dsx-github-actions/.github/actions/helm-validate@94bde998f5d7965576b0c663db7d5d709c918167
         with:
-          chart-path: bluefield/charts/carbide-otelcol
+          chart-path: bluefield/charts/nico-otelcol
           lint: 'true'
           template: 'true'
 
-      - name: Validate carbide-dpu-agent chart
+      - name: Validate nico-dpu-agent chart
         uses: NVIDIA/dsx-github-actions/.github/actions/helm-validate@94bde998f5d7965576b0c663db7d5d709c918167
         with:
-          chart-path: bluefield/charts/carbide-dpu-agent
+          chart-path: bluefield/charts/nico-dpu-agent
           lint: 'true'
           template: 'true'
 
-      - name: Validate carbide-dhcp-server chart
+      - name: Validate nico-dhcp-server chart
         uses: NVIDIA/dsx-github-actions/.github/actions/helm-validate@94bde998f5d7965576b0c663db7d5d709c918167
         with:
-          chart-path: bluefield/charts/carbide-dhcp-server
+          chart-path: bluefield/charts/nico-dhcp-server
           lint: 'true'
           template: 'true'
 
-      - name: Validate carbide-dpu-otel-agent chart
+      - name: Validate nico-fmds chart
         uses: NVIDIA/dsx-github-actions/.github/actions/helm-validate@94bde998f5d7965576b0c663db7d5d709c918167
         with:
-          chart-path: bluefield/charts/carbide-dpu-otel-agent
-          lint: 'true'
-          template: 'true'
-
-      - name: Validate carbide-fmds chart
-        uses: NVIDIA/dsx-github-actions/.github/actions/helm-validate@94bde998f5d7965576b0c663db7d5d709c918167
-        with:
-          chart-path: bluefield/charts/carbide-fmds
+          chart-path: bluefield/charts/nico-fmds
           lint: 'true'
           template: 'true'
 
@@ -1111,10 +1231,10 @@ jobs:
       - name: Checkout code
         uses: actions/checkout@v4
 
-      - name: Package and push carbide-otelcol chart
+      - name: Package and push nico-otelcol chart
         uses: NVIDIA/dsx-github-actions/.github/actions/helm-package-push@7de619729962a6bd5e8355b6fb3582a22517d7e5
         with:
-          chart-path: bluefield/charts/carbide-otelcol
+          chart-path: bluefield/charts/nico-otelcol
           chart-version: ${{ needs.prepare.outputs.helm_version }}
           app-version: ${{ needs.prepare.outputs.version }}
           lint: 'false'
@@ -1122,10 +1242,10 @@ jobs:
           ngc-path: 0837451325059433/carbide-dev
           ngc-duplicate: fail
 
-      - name: Package and push carbide-dpu-agent chart
+      - name: Package and push nico-dpu-agent chart
         uses: NVIDIA/dsx-github-actions/.github/actions/helm-package-push@7de619729962a6bd5e8355b6fb3582a22517d7e5
         with:
-          chart-path: bluefield/charts/carbide-dpu-agent
+          chart-path: bluefield/charts/nico-dpu-agent
           chart-version: ${{ needs.prepare.outputs.helm_version }}
           app-version: ${{ needs.prepare.outputs.version }}
           lint: 'false'
@@ -1133,10 +1253,10 @@ jobs:
           ngc-path: 0837451325059433/carbide-dev
           ngc-duplicate: fail
 
-      - name: Package and push carbide-dhcp-server chart
+      - name: Package and push nico-dhcp-server chart
         uses: NVIDIA/dsx-github-actions/.github/actions/helm-package-push@7de619729962a6bd5e8355b6fb3582a22517d7e5
         with:
-          chart-path: bluefield/charts/carbide-dhcp-server
+          chart-path: bluefield/charts/nico-dhcp-server
           chart-version: ${{ needs.prepare.outputs.helm_version }}
           app-version: ${{ needs.prepare.outputs.version }}
           lint: 'false'
@@ -1144,52 +1264,22 @@ jobs:
           ngc-path: 0837451325059433/carbide-dev
           ngc-duplicate: fail
 
-      - name: Package and push carbide-dpu-otel-agent chart
+      - name: Package and push nico-fmds chart
         uses: NVIDIA/dsx-github-actions/.github/actions/helm-package-push@7de619729962a6bd5e8355b6fb3582a22517d7e5
         with:
-          chart-path: bluefield/charts/carbide-dpu-otel-agent
+          chart-path: bluefield/charts/nico-fmds
           chart-version: ${{ needs.prepare.outputs.helm_version }}
           app-version: ${{ needs.prepare.outputs.version }}
           lint: 'false'
           ngc-key: ${{ secrets.NVCR_TOKEN }}
           ngc-path: 0837451325059433/carbide-dev
           ngc-duplicate: fail
-
-      - name: Package and push carbide-fmds chart
-        uses: NVIDIA/dsx-github-actions/.github/actions/helm-package-push@7de619729962a6bd5e8355b6fb3582a22517d7e5
-        with:
-          chart-path: bluefield/charts/carbide-fmds
-          chart-version: ${{ needs.prepare.outputs.helm_version }}
-          app-version: ${{ needs.prepare.outputs.version }}
-          lint: 'false'
-          ngc-key: ${{ secrets.NVCR_TOKEN }}
-          ngc-path: 0837451325059433/carbide-dev
-          ngc-duplicate: fail
-
-
-  # ============================================================================
-  # BUILD SBOM
-  # ============================================================================
-
-  build-sbom-container:
-    needs:
-      - prepare
-    if: ${{ needs.prepare.outputs.sbom_container_run == 'true' }}
-    uses: ./.github/workflows/docker-build.yml
-    with:
-      dockerfile_path: dev/docker/sbom-tools/Dockerfile
-      image_name: nvcr.io/0837451325059433/carbide-dev/sbom-tools
-      image_tag: ${{ needs.prepare.outputs.version }}
-      platforms: linux/amd64
-      runner: linux-amd64-cpu4
-      push: ${{ !contains(github.ref, 'pull-request/') }}
-      load: false
-    secrets: inherit
 
   build-summary:
     runs-on: linux-amd64-cpu4
-    if: ${{ always() && github.event_name != 'schedule' }}
+    if: ${{ always() && github.event_name != 'schedule' && needs.prepare.result == 'success' }}
     needs:
+      - prepare
       - build-container-x86_64
       - build-container-aarch64
       - build-runtime-container-x86_64
@@ -1198,6 +1288,7 @@ jobs:
       - build-artifacts-container-aarch64
       - build-release-container-x86_64
       - build-release-container-aarch64
+      - test-release-container-services
       - build-boot-artifacts-x86
       - build-boot-artifacts-bfb
       - build-boot-artifacts-ephemeral-image-x86-host
@@ -1207,16 +1298,17 @@ jobs:
       - merge-manifests-forge-cli
       - build-release-machine-validation-runner
       - build-release-machine-validation-artifacts-x86-host
-      - build-powerdns-container
       - build-validate-helm-chart
       - build-push-helm-chart
+      - build-validate-helm-prereqs-chart
+      - build-push-helm-prereqs-chart
       - build-release-artifacts-x86-host
       - build-release-artifacts-arm-host
       - build-bluefield-binaries
       - build-bluefield-otelcol-contrib
+      - build-bluefield-transceiver-exporter
       - build-bluefield-forge-dpu-agent
       - build-bluefield-forge-dhcp-server
-      - build-bluefield-forge-dpu-otel-agent
       - build-bluefield-carbide-fmds
       - build-validate-bluefield-helm-charts
       - build-push-bluefield-helm-charts
@@ -1231,7 +1323,7 @@ jobs:
           echo "|-----|--------|" >> "$GITHUB_STEP_SUMMARY"
           echo "$NEEDS" | jq -r '
             to_entries[]
-            | select(.key | startswith("build-"))
+            | select((.key | startswith("build-")) or (.key | startswith("test-")))
             | "| \(.key) | \(if .value.result == "failure" then "**\(.value.result)**" else .value.result end) |"
           ' >> "$GITHUB_STEP_SUMMARY"
 
@@ -1255,7 +1347,6 @@ jobs:
           IMAGES["build-forge-cli-aarch64"]="${{ needs.build-forge-cli-aarch64.outputs.image_ref }}"
           IMAGES["build-release-machine-validation-runner"]="${{ needs.build-release-machine-validation-runner.outputs.image_ref }}"
           IMAGES["build-release-machine-validation-artifacts-x86-host"]="${{ needs.build-release-machine-validation-artifacts-x86-host.outputs.image_ref }}"
-          IMAGES["build-powerdns-container"]="${{ needs.build-powerdns-container.outputs.image_ref }}"
           IMAGES["build-release-artifacts-x86-host"]="${{ needs.build-release-artifacts-x86-host.outputs.image_ref }}"
           IMAGES["build-release-artifacts-arm-host"]="${{ needs.build-release-artifacts-arm-host.outputs.image_ref }}"
 
@@ -1285,6 +1376,33 @@ jobs:
       DEST_PASSWORD: ${{ secrets.NVCR_PROD_TOKEN }}
 
   # ============================================================================
+  # CONTAINER SCAN SUMMARY
+  # ============================================================================
+  # Aggregates the per-image `grype-*` artifacts produced by the `scan: true`
+  # docker-build jobs into a single sticky comment on copy-pr-bot
+  # `pull-request/N` PRs. Inline Grype only runs on PRs (images are loaded, not
+  # pushed), so this job is PR-only. Advisory only — intentionally NOT wired
+  # into `core-ci-pass` so a scan/aggregation hiccup never blocks a merge.
+  security-container-scan-summary:
+    name: Container Scan Summary
+    runs-on: linux-amd64-cpu4
+    needs:
+      - build-release-container-x86_64
+      - build-forge-cli-x86_64
+      - build-release-artifacts-x86-host
+      - build-release-artifacts-arm-host
+      - build-release-machine-validation-runner
+      - build-release-machine-validation-artifacts-x86-host
+    if: ${{ always() && contains(github.ref, 'pull-request/') }}
+    permissions:
+      contents: read
+      pull-requests: write
+    steps:
+      - uses: NVIDIA/dsx-github-actions/.github/actions/security-container-scan-aggregate@739847ddf00fda38916504ef84e1f504eac3158f
+        with:
+          post-pr-comment: 'true'
+
+  # ============================================================================
   # NOTIFICATION STAGE
   # ============================================================================
 
@@ -1300,6 +1418,7 @@ jobs:
       - build-artifacts-container-aarch64
       - build-release-container-x86_64
       - build-release-container-aarch64
+      - test-release-container-services
       - build-boot-artifacts-x86
       - build-boot-artifacts-bfb
       - build-boot-artifacts-ephemeral-image-x86-host
@@ -1309,27 +1428,27 @@ jobs:
       - merge-manifests-forge-cli
       - build-release-machine-validation-runner
       - build-release-machine-validation-artifacts-x86-host
-      - build-powerdns-container
       - build-validate-helm-chart
       - build-push-helm-chart
+      - build-validate-helm-prereqs-chart
+      - build-push-helm-prereqs-chart
       - build-release-artifacts-x86-host
       - build-release-artifacts-arm-host
       - build-bluefield-binaries
       - build-bluefield-otelcol-contrib
+      - build-bluefield-transceiver-exporter
       - build-bluefield-forge-dpu-agent
       - build-bluefield-forge-dhcp-server
-      - build-bluefield-forge-dpu-otel-agent
       - build-bluefield-carbide-fmds
       - build-validate-bluefield-helm-charts
       - build-push-bluefield-helm-charts
-      - build-sbom-container
       - security-secret-scan
       - security-codeql-scan
       - promote-to-be-scanned-image
     uses: ./.github/workflows/notify-build-status.yml
     with:
       version: ${{ needs.prepare.outputs.version }}
-      workflow-name: "Carbide Core CI"
+      workflow-name: "NICo Core CI"
       channel-id: C0A0TSKJKSB # #dsx-carbide-feed
       needs-context: ${{ toJson(needs) }}
       notify-on-success: true
@@ -1337,3 +1456,41 @@ jobs:
       notify-on-failure: true
     secrets:
       slack-bot-token: ${{ secrets.CDS_SLACK_BOT_OAUTH_TOKEN }}
+
+  # ============================================================================
+  # AGGREGATOR — single required check for branch protection
+  # ============================================================================
+  # Fails iff any leaf job's result is `failure` or `cancelled`.
+  # `skipped` counts as pass — that's how rest-only PRs unblock when the
+  # `changes` gate intentionally skips the core pipeline.
+  # `changes` + `prepare` are in needs so a gate or prepare failure doesn't
+  # silently pass (downstream leaves become SKIPPED in those cases).
+  # Branch protection ruleset should require ONLY this aggregator + rest-ci-pass.
+  core-ci-pass:
+    name: core-ci-pass
+    runs-on: ubuntu-latest
+    if: always()
+    needs:
+      - changes
+      - prepare
+      - build-release-container-x86_64
+      - build-release-container-aarch64
+      - test-release-container-services
+      - security-secret-scan
+      - lint-police
+    steps:
+      - name: Decide pass/fail
+        env:
+          NEEDS_JSON: ${{ toJson(needs) }}
+        run: |
+          set -euo pipefail
+          echo "$NEEDS_JSON" | jq -r 'to_entries[] | "\(.key): \(.value.result)"'
+          if echo "$NEEDS_JSON" | jq -e '
+            to_entries
+            | map(select(.value.result == "failure" or .value.result == "cancelled"))
+            | length > 0
+          ' >/dev/null; then
+            echo "::error::One or more required jobs failed or were cancelled"
+            exit 1
+          fi
+          echo "All required jobs OK (success or skipped)"

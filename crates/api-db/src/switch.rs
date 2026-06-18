@@ -17,16 +17,19 @@
 
 use std::net::IpAddr;
 
-use carbide_uuid::rack::RackId;
+use carbide_uuid::rack::{RackId, RackProfileId};
 use carbide_uuid::switch::SwitchId;
 use chrono::prelude::*;
 use config_version::{ConfigVersion, Versioned};
 use health_report::{HealthReport, HealthReportApplyMode};
+use mac_address::MacAddress;
 use model::controller_outcome::PersistentStateHandlerOutcome;
 use model::metadata::Metadata;
 use model::rack::RackFirmwareUpgradeStatus;
 use model::switch::{
-    FabricManagerStatus, NewSwitch, Switch, SwitchControllerState, SwitchReprovisionRequest,
+    CONTROL_PLANE_STATE_CONFIGURED, FabricManagerState, FabricManagerStatus, NewSwitch,
+    SWITCH_CONTROLLER_STATE_READY, Switch, SwitchControllerState, SwitchMaintenanceOperation,
+    SwitchMaintenanceRequest, SwitchReprovisionRequest,
 };
 use sqlx::PgConnection;
 
@@ -34,6 +37,9 @@ use crate::db_read::DbReader;
 use crate::{
     ColumnInfo, DatabaseError, DatabaseResult, FilterableQueryBuilder, ObjectColumnFilter,
 };
+
+#[cfg(test)]
+mod test_metadata;
 
 #[derive(Copy, Clone)]
 pub struct IdColumn;
@@ -56,6 +62,18 @@ impl ColumnInfo<'_> for NameColumn {
         "name"
     }
 }
+
+#[derive(Copy, Clone)]
+pub struct BmcMacAddressColumn;
+impl ColumnInfo<'_> for BmcMacAddressColumn {
+    type TableType = Switch;
+    type ColumnType = mac_address::MacAddress;
+
+    fn column_name(&self) -> &'static str {
+        "bmc_mac_address"
+    }
+}
+
 #[derive(Debug, Clone, Default)]
 pub struct SwitchSearchConfig {
     // pub include_history: bool, // unused
@@ -111,6 +129,7 @@ pub async fn create(txn: &mut PgConnection, new_switch: &NewSwitch) -> DatabaseR
             version: controller_state_version,
         },
         controller_state_outcome: None,
+        switch_maintenance_requested: None,
         switch_reprovisioning_requested: None,
         firmware_upgrade_status: None,
         nvos_update_status: None,
@@ -159,6 +178,21 @@ pub async fn find_by_id(txn: &mut PgConnection, id: &SwitchId) -> DatabaseResult
     }
 }
 
+// TODO(chet): Per Issue #925, the goal is to link machines to BMCs via
+// the machine_interfaces table, but for now this is going to be like
+// this until I take care of the issue.
+pub async fn find_by_bmc_mac_address(
+    txn: &mut PgConnection,
+    bmc_mac_address: mac_address::MacAddress,
+) -> DatabaseResult<Option<Switch>> {
+    let switches = find_by(
+        txn,
+        ObjectColumnFilter::One(BmcMacAddressColumn, &bmc_mac_address),
+    )
+    .await?;
+    Ok(switches.into_iter().next())
+}
+
 pub async fn find_ids(
     txn: impl DbReader<'_>,
     filter: model::switch::SwitchSearchFilter,
@@ -169,11 +203,15 @@ pub async fn find_ids(
         qb.push(" JOIN machine_interfaces mi ON mi.switch_id = s.id");
     }
 
+    if filter.nvos_mac.is_some() {
+        qb.push(" JOIN expected_switches es_nvos ON es_nvos.bmc_mac_address = s.bmc_mac_address");
+    }
+
     qb.push(" WHERE TRUE");
 
-    if filter.rack_id.is_some() {
+    if let Some(rack_id) = filter.rack_id {
         qb.push(" AND s.rack_id = ");
-        qb.push_bind(filter.rack_id.unwrap());
+        qb.push_bind(rack_id);
     }
 
     match filter.deleted {
@@ -192,10 +230,59 @@ pub async fn find_ids(
         qb.push_bind(mac);
     }
 
+    if let Some(mac) = filter.nvos_mac {
+        qb.push(" AND ");
+        qb.push_bind(mac);
+        qb.push(" = ANY(es_nvos.nvos_mac_addresses)");
+    }
+
+    if let Some(ovrrd_str) = &filter.only_with_health_alert {
+        qb.push(" AND health_reports->'merges' ? ");
+        qb.push_bind(ovrrd_str.clone());
+        qb.push(" AND jsonb_array_length(health_reports->'merges'->");
+        qb.push_bind(ovrrd_str);
+        qb.push("->'alerts') > 0");
+    }
+
     qb.build_query_as()
         .fetch_all(txn)
         .await
         .map_err(|e| DatabaseError::new("switch::find_ids", e))
+}
+
+/// Returns non-deleted switches in `rack_id` whose controller state is Ready and whose
+/// Fabric Manager status reports `fabric_manager_state = ok` with
+/// `addition_info = CONTROL_PLANE_STATE_CONFIGURED`.
+pub async fn find_ready_control_plane_configured_switch_ids_in_rack<DB>(
+    txn: &mut DB,
+    rack_id: &RackId,
+) -> DatabaseResult<Vec<SwitchId>>
+where
+    for<'db> &'db mut DB: DbReader<'db>,
+{
+    let query = r#"
+        SELECT s.id
+        FROM switches s
+        WHERE s.rack_id = $1
+          AND s.deleted IS NULL
+          AND s.controller_state->>'state' = $2
+          AND s.fabric_manager_status->>'fabric_manager_state' = $3
+          AND s.fabric_manager_status->>'addition_info' = $4
+    "#;
+
+    sqlx::query_as::<_, SwitchId>(query)
+        .bind(rack_id)
+        .bind(SWITCH_CONTROLLER_STATE_READY)
+        .bind(FabricManagerState::Ok.as_str())
+        .bind(CONTROL_PLANE_STATE_CONFIGURED)
+        .fetch_all(&mut *txn)
+        .await
+        .map_err(|e| {
+            DatabaseError::new(
+                "switch::find_ready_control_plane_configured_switch_ids_in_rack",
+                e,
+            )
+        })
 }
 
 pub async fn find_by<'a, C: ColumnInfo<'a, TableType = Switch>>(
@@ -255,9 +342,20 @@ pub async fn set_switch_reprovisioning_requested(
     switch_id: SwitchId,
     initiator: &str,
 ) -> DatabaseResult<()> {
+    set_switch_reprovisioning_requested_with_firmware_continuation(txn, switch_id, initiator, true)
+        .await
+}
+
+pub async fn set_switch_reprovisioning_requested_with_firmware_continuation(
+    txn: &mut PgConnection,
+    switch_id: SwitchId,
+    initiator: &str,
+    continue_after_firmware_upgrade: bool,
+) -> DatabaseResult<()> {
     let req = SwitchReprovisionRequest {
         requested_at: Utc::now(),
         initiator: initiator.to_string(),
+        continue_after_firmware_upgrade,
     };
     let query =
         "UPDATE switches SET switch_reprovisioning_requested = $1 WHERE id = $2 RETURNING id";
@@ -283,6 +381,41 @@ pub async fn clear_switch_reprovisioning_requested(
         .fetch_optional(txn)
         .await
         .map_err(|e| DatabaseError::new("clear_switch_reprovisioning_requested", e))?;
+    Ok(())
+}
+
+pub async fn set_switch_maintenance_requested(
+    txn: &mut PgConnection,
+    switch_id: SwitchId,
+    initiator: &str,
+    operation: SwitchMaintenanceOperation,
+) -> DatabaseResult<()> {
+    let req = SwitchMaintenanceRequest {
+        requested_at: Utc::now(),
+        initiator: initiator.to_string(),
+        operation,
+    };
+    let query = "UPDATE switches SET switch_maintenance_requested = $1 WHERE id = $2 RETURNING id";
+    sqlx::query_as::<_, SwitchId>(query)
+        .bind(sqlx::types::Json(req))
+        .bind(switch_id)
+        .fetch_one(txn)
+        .await
+        .map_err(|e| DatabaseError::new("set_switch_maintenance_requested", e))?;
+    Ok(())
+}
+
+pub async fn clear_switch_maintenance_requested(
+    txn: &mut PgConnection,
+    switch_id: SwitchId,
+) -> DatabaseResult<()> {
+    let query =
+        "UPDATE switches SET switch_maintenance_requested = NULL WHERE id = $1 RETURNING id";
+    sqlx::query_as::<_, SwitchId>(query)
+        .bind(switch_id)
+        .fetch_one(txn)
+        .await
+        .map_err(|e| DatabaseError::new("clear_switch_maintenance_requested", e))?;
     Ok(())
 }
 
@@ -401,34 +534,6 @@ pub async fn update(switch: &Switch, txn: &mut PgConnection) -> Result<Switch, D
         .map_err(|e| DatabaseError::new("update", e))?;
 
     Ok(switch.clone())
-}
-
-use mac_address::MacAddress;
-
-#[derive(Debug, sqlx::FromRow)]
-pub struct SwitchBmcInfoRow {
-    pub serial_number: String,
-    pub bmc_mac_address: MacAddress,
-    pub ip_address: IpAddr,
-}
-
-pub async fn list_switch_bmc_info(txn: &mut PgConnection) -> DatabaseResult<Vec<SwitchBmcInfoRow>> {
-    let sql = r#"
-        SELECT 
-            es.serial_number,
-            es.bmc_mac_address,
-            mia.address as ip_address
-        FROM expected_switches es
-        JOIN machine_interfaces mi ON mi.mac_address = es.bmc_mac_address
-        JOIN machine_interface_addresses mia ON mia.interface_id = mi.id
-        JOIN network_segments ns ON ns.id = mi.segment_id
-        WHERE ns.network_segment_type = 'underlay'
-    "#;
-
-    sqlx::query_as(sql)
-        .fetch_all(txn)
-        .await
-        .map_err(|err| DatabaseError::new("list_switch_bmc_info", err))
 }
 
 /// Resolve SwitchIds to BMC IPs via the FK path:
@@ -555,38 +660,6 @@ pub async fn update_metadata(
     }
 }
 
-#[derive(Debug, sqlx::FromRow)]
-pub struct SwitchBmcRow {
-    pub switch_id: SwitchId,
-    pub bmc_mac: MacAddress,
-    pub bmc_ip: IpAddr,
-}
-
-/// Resolve SwitchIds to BMC MAC + IP via machine_interfaces.
-pub async fn find_bmc_info_by_switch_ids(
-    db: impl crate::db_read::DbReader<'_>,
-    switch_ids: &[SwitchId],
-) -> DatabaseResult<Vec<SwitchBmcRow>> {
-    let sql = r#"
-        SELECT DISTINCT ON (mi.switch_id)
-            mi.switch_id,
-            mi.mac_address   AS bmc_mac,
-            mia.address      AS bmc_ip
-        FROM machine_interfaces mi
-        JOIN machine_interface_addresses mia ON mia.interface_id = mi.id
-        JOIN network_segments ns ON ns.id = mi.segment_id
-        WHERE mi.switch_id = ANY($1)
-          AND ns.network_segment_type = 'underlay'
-        ORDER BY mi.switch_id
-    "#;
-
-    sqlx::query_as(sql)
-        .bind(switch_ids)
-        .fetch_all(db)
-        .await
-        .map_err(|err| DatabaseError::new("switch::find_bmc_info_by_switch_ids", err))
-}
-
 /// A switch resolved by its BMC MAC address, along with the rack it belongs
 /// to. Used by the Component Manager state controller wrapper to build a
 /// rack-level `MaintenanceScope` for the switches it's been asked to act on.
@@ -615,24 +688,30 @@ pub async fn find_ids_by_bmc_macs(
         .map_err(|err| DatabaseError::new("switch::find_ids_by_bmc_macs", err))
 }
 
-/// RMS identity for a switch: the switch ID (used as the RMS node_id),
-/// the BMC MAC address, and the rack_id.
+/// RMS identity for a switch, including rack profile context for node type
+/// resolution.
 #[derive(Debug, sqlx::FromRow)]
 pub struct SwitchRmsIdentity {
     pub id: String,
     pub bmc_mac_address: MacAddress,
     pub rack_id: Option<RackId>,
+    pub rack_profile_id: Option<RackProfileId>,
 }
 
-/// Look up RMS identities (node_id, rack_id) for switches by their
-/// BMC MAC addresses.
+/// Look up RMS identities and rack profile context for switches by their BMC
+/// MAC addresses.
 pub async fn find_rms_identities_by_macs(
     db: impl crate::db_read::DbReader<'_>,
     macs: &[MacAddress],
 ) -> DatabaseResult<Vec<SwitchRmsIdentity>> {
     let sql = r#"
-        SELECT s.id::text, s.bmc_mac_address, s.rack_id
+        SELECT
+            s.id::text,
+            s.bmc_mac_address,
+            s.rack_id,
+            r.rack_profile_id
         FROM switches s
+        LEFT JOIN racks r ON r.id = s.rack_id
         WHERE s.bmc_mac_address = ANY($1)
     "#;
 

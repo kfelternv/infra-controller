@@ -17,15 +17,17 @@
 use std::sync::atomic::{AtomicU32, Ordering};
 
 use base64::prelude::*;
-use bmc_mock::MachineInfo;
+use bmc_mock::{DUMMY_FACTORY_PASSWORD, DUMMY_FACTORY_USERNAME, MachineInfo};
 use carbide_uuid::instance::InstanceId;
 use carbide_uuid::machine::{MachineId, MachineInterfaceId};
+use carbide_uuid::machine_validation::MachineValidationId;
 use mac_address::MacAddress;
 use rpc::forge::instance_operating_system_config::Variant;
 use rpc::forge::machine_cleanup_info::CleanupStepResult;
 use rpc::forge::{
-    ConfigSetting, ExpectedMachine, InlineIpxe, InstanceOperatingSystemConfig,
-    MachinesByIdsRequest, PxeInstructions, SetDynamicConfigRequest, VpcVirtualizationType,
+    ConfigSetting, ExpectedMachine, ExpectedPowerShelf, ExpectedSwitch, InlineIpxe,
+    InstanceOperatingSystemConfig, MachinesByIdsRequest, SetDynamicConfigRequest,
+    VpcVirtualizationType,
 };
 use rpc::protos::forge_api_client::ForgeApiClient;
 
@@ -144,6 +146,7 @@ impl ApiClient {
             machine_interface_id: Some(machine_interface_id),
             discovery_data: Some(rpc::DiscoveryData::Info(machine_discovery_info)),
             create_machine: true,
+            ..Default::default()
         };
 
         let out = self
@@ -264,6 +267,7 @@ impl ApiClient {
             virtual_function_id: None,
             ip_address: None,
             ipv6_interface_config: None,
+            routing_profile: None,
         };
 
         let tenant_config = rpc::TenantConfig {
@@ -277,7 +281,6 @@ impl ApiClient {
             os: Some(InstanceOperatingSystemConfig {
                 variant: Some(Variant::Ipxe(InlineIpxe {
                     ipxe_script: "Non-existing-ipxe".to_string(),
-                    user_data: None,
                 })),
                 user_data: None,
                 phone_home_enabled: false,
@@ -285,11 +288,13 @@ impl ApiClient {
             }),
             network: Some(rpc::InstanceNetworkConfig {
                 interfaces: vec![interface_config],
+                auto: false,
             }),
             network_security_group_id: None,
             infiniband: None,
             dpu_extension_services: None,
             nvlink: None,
+            spxconfig: None,
         };
 
         let instance_request = rpc::InstanceAllocationRequest {
@@ -319,6 +324,7 @@ impl ApiClient {
                 delete_interfaces: true,
                 delete_bmc_interfaces: true,
                 delete_bmc_credentials: false,
+                allow_delete_with_orphaned_dpf_crds: false,
             })
             .await
             .map_err(ClientApiError::InvocationError)
@@ -405,7 +411,6 @@ impl ApiClient {
         self.0
             .create_vpc(rpc::forge::VpcCreationRequest {
                 id: None,
-                name: "".to_string(),
                 tenant_organization_id: "Forge-simulation-tenant".to_string(),
                 tenant_keyset_id: None,
                 network_security_group_id: None,
@@ -429,13 +434,13 @@ impl ApiClient {
     pub async fn machine_validation_complete(
         &self,
         machine_id: &MachineId,
-        validation_id: rpc::common::Uuid,
+        validation_id: &MachineValidationId,
     ) -> ClientApiResult<()> {
         self.0
             .machine_validation_completed(rpc::forge::MachineValidationCompletedRequest {
                 machine_id: Some(*machine_id),
                 machine_validation_error: None,
-                validation_id: Some(validation_id),
+                validation_id: Some(*validation_id),
             })
             .await
             .map_err(ClientApiError::InvocationError)
@@ -461,7 +466,7 @@ impl ApiClient {
                 result: 0,
                 message: "".to_string(),
             }),
-            result: 0,
+            ..Default::default()
         };
 
         self.0
@@ -469,22 +474,6 @@ impl ApiClient {
             .await
             .map_err(ClientApiError::InvocationError)
             .map(|_| ())
-    }
-
-    pub async fn get_pxe_instructions(
-        &self,
-        arch: rpc::forge::MachineArchitecture,
-        interface_id: MachineInterfaceId,
-        product: Option<String>,
-    ) -> ClientApiResult<PxeInstructions> {
-        self.0
-            .get_pxe_instructions(rpc::forge::PxeInstructionRequest {
-                arch: arch.into(),
-                interface_id: Some(interface_id),
-                product,
-            })
-            .await
-            .map_err(ClientApiError::InvocationError)
     }
 
     pub async fn configure_bmc_proxy_host(&self, host: String) -> ClientApiResult<()> {
@@ -500,16 +489,19 @@ impl ApiClient {
 
     /// Registers a mock expected machine. Static BMC (`bmc_ip_address`) is left unset here;
     /// real environments set it through the admin CLI / API when DHCP discovery is not used.
+    /// `dpu_mode` is the per-host operating mode -- pass `Some(NoDpu)` for zero-DPU mock hosts
+    /// or `Some(NicMode)` for DPU-in-NIC-mode mock hosts; `None` for normal DPU hosts.
     pub async fn add_expected_machine(
         &self,
         bmc_mac_address: String,
         chassis_serial_number: String,
+        dpu_mode: Option<rpc::forge::DpuMode>,
     ) -> ClientApiResult<()> {
         self.0
             .add_expected_machine(ExpectedMachine {
                 bmc_mac_address,
-                bmc_username: "root".to_string(),
-                bmc_password: "factory_password".to_string(),
+                bmc_username: DUMMY_FACTORY_USERNAME.to_string(),
+                bmc_password: DUMMY_FACTORY_PASSWORD.to_string(),
                 chassis_serial_number,
                 fallback_dpu_serial_numbers: Vec::new(),
                 metadata: None,
@@ -523,7 +515,57 @@ impl ApiClient {
                 is_dpf_enabled: Some(true),
                 bmc_ip_address: None,
                 bmc_retain_credentials: None,
-                dpu_mode: None,
+                dpu_mode: dpu_mode.map(|m| m as i32),
+                host_lifecycle_profile: None,
+            })
+            .await
+            .map_err(ClientApiError::InvocationError)
+    }
+
+    /// Registers a mock expected power shelf.
+    pub async fn add_expected_power_shelf(
+        &self,
+        bmc_mac_address: String,
+        shelf_serial_number: String,
+    ) -> ClientApiResult<()> {
+        self.0
+            .add_expected_power_shelf(ExpectedPowerShelf {
+                expected_power_shelf_id: None,
+                bmc_mac_address,
+                bmc_username: DUMMY_FACTORY_USERNAME.to_string(),
+                bmc_password: DUMMY_FACTORY_PASSWORD.to_string(),
+                shelf_serial_number,
+                bmc_ip_address: String::new(),
+                metadata: None,
+                rack_id: None,
+                bmc_retain_credentials: Some(true),
+            })
+            .await
+            .map_err(ClientApiError::InvocationError)
+    }
+
+    /// Registers a mock expected switch.
+    pub async fn add_expected_switch(
+        &self,
+        bmc_mac_address: String,
+        switch_serial_number: String,
+        nvos_mac_addresses: Vec<String>,
+    ) -> ClientApiResult<()> {
+        self.0
+            .add_expected_switch(ExpectedSwitch {
+                expected_switch_id: None,
+                bmc_mac_address,
+                nvos_mac_addresses,
+                bmc_username: DUMMY_FACTORY_USERNAME.to_string(),
+                bmc_password: DUMMY_FACTORY_PASSWORD.to_string(),
+                switch_serial_number,
+                nvos_username: None,
+                nvos_password: None,
+                bmc_ip_address: String::new(),
+                nvos_ip_address: None,
+                metadata: None,
+                rack_id: None,
+                bmc_retain_credentials: None,
             })
             .await
             .map_err(ClientApiError::InvocationError)

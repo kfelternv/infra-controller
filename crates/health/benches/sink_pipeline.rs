@@ -24,8 +24,8 @@ use std::sync::Arc;
 use carbide_health::endpoint::{BmcAddr, EndpointMetadata, MachineData};
 use carbide_health::metrics::MetricsManager;
 use carbide_health::sink::{
-    Classification, CollectorEvent, CompositeDataSink, DataSink, EventContext, HealthOverrideSink,
-    HealthReport, LogRecord, PrometheusSink, ReportSource, SensorHealthData,
+    Classification, CollectorEvent, CompositeDataSink, DataSink, EventContext, HealthReport,
+    HealthReportSink, LogRecord, MetricSample, PrometheusSink, ReportSource,
 };
 use criterion::{BatchSize, BenchmarkId, Criterion, Throughput, criterion_group, criterion_main};
 use health_report::HealthReport as CarbideHealthReport;
@@ -67,6 +67,9 @@ fn event_context_for_machine(machine_id: &str) -> EventContext {
         metadata: Some(EndpointMetadata::Machine(MachineData {
             machine_id: machine_id.parse().expect("valid machine id"),
             machine_serial: None,
+            slot_number: None,
+            tray_index: None,
+            nvlink_domain_uuid: None,
         })),
         rack_id: None,
     }
@@ -81,7 +84,7 @@ fn metric_events(batch_size: usize, unique_keys: usize) -> Vec<CollectorEvent> {
             let key = format!("sensor-{sensor_idx}");
 
             CollectorEvent::Metric(
-                SensorHealthData {
+                MetricSample {
                     key: key.clone(),
                     name: "hw_sensor".to_string(),
                     metric_type: "temperature".to_string(),
@@ -179,6 +182,7 @@ fn bench_composite_sink(c: &mut Criterion) {
 fn health_report_with_alerts(alert_count: usize) -> HealthReport {
     let mut report = HealthReport {
         source: carbide_health::sink::ReportSource::BmcSensors,
+        target: Some(carbide_health::sink::HealthReportTarget::Machine),
         observed_at: Some(chrono::Utc::now()),
         successes: Vec::new(),
         alerts: Vec::new(),
@@ -194,17 +198,17 @@ fn health_report_with_alerts(alert_count: usize) -> HealthReport {
     report
 }
 
-struct HealthOverrideBenchState {
-    sink: HealthOverrideSink,
+struct HealthReportBenchState {
+    sink: HealthReportSink,
     context: EventContext,
     distinct_contexts: Vec<EventContext>,
     sensor_event: CollectorEvent,
     leak_event: CollectorEvent,
 }
 
-impl HealthOverrideBenchState {
+impl HealthReportBenchState {
     fn new() -> Self {
-        let sink = HealthOverrideSink::new_for_bench().expect("bench sink should initialize");
+        let sink = HealthReportSink::new_for_bench().expect("bench sink should initialize");
         let context = event_context();
         let distinct_contexts = MACHINE_IDS
             .into_iter()
@@ -213,6 +217,7 @@ impl HealthOverrideBenchState {
         let sensor_event = CollectorEvent::HealthReport(Arc::new(health_report_with_alerts(256)));
         let leak_event = CollectorEvent::HealthReport(Arc::new(HealthReport {
             source: ReportSource::TrayLeakDetection,
+            target: Some(carbide_health::sink::HealthReportTarget::Machine),
             observed_at: Some(chrono::Utc::now()),
             successes: Vec::new(),
             alerts: vec![carbide_health::sink::HealthReportAlert {
@@ -233,12 +238,12 @@ impl HealthOverrideBenchState {
     }
 }
 
-fn filled_health_override_sink(
+fn filled_health_report_sink(
     contexts: &[EventContext],
     event: &CollectorEvent,
     leak_event: &CollectorEvent,
-) -> HealthOverrideSink {
-    let sink = HealthOverrideSink::new_for_bench().expect("bench sink should initialize");
+) -> HealthReportSink {
+    let sink = HealthReportSink::new_for_bench().expect("bench sink should initialize");
     for context in contexts {
         sink.handle_event(context, event);
         sink.handle_event(context, leak_event);
@@ -246,7 +251,7 @@ fn filled_health_override_sink(
     sink
 }
 
-fn drain_pending(sink: &HealthOverrideSink) -> usize {
+fn drain_pending(sink: &HealthReportSink) -> usize {
     let mut drained = 0;
     while sink.pop_pending_for_bench().is_some() {
         drained += 1;
@@ -254,7 +259,7 @@ fn drain_pending(sink: &HealthOverrideSink) -> usize {
     drained
 }
 
-fn drain_and_convert_pending(sink: &HealthOverrideSink) -> usize {
+fn drain_and_convert_pending(sink: &HealthReportSink) -> usize {
     let mut drained = 0;
     while let Some((_machine_id, report)) = sink.pop_pending_for_bench() {
         let converted: CarbideHealthReport = report
@@ -267,12 +272,12 @@ fn drain_and_convert_pending(sink: &HealthOverrideSink) -> usize {
     drained
 }
 
-fn bench_health_override_sink(c: &mut Criterion) {
-    let mut group = c.benchmark_group("sink_health_override");
+fn bench_health_report_sink(c: &mut Criterion) {
+    let mut group = c.benchmark_group("sink_health_report");
     let batch_size = 20_000usize;
     group.throughput(Throughput::Elements(batch_size as u64));
 
-    let state = HealthOverrideBenchState::new();
+    let state = HealthReportBenchState::new();
 
     group.bench_with_input(BenchmarkId::new("enqueue", "report"), &state, |b, state| {
         b.iter(|| {
@@ -287,7 +292,7 @@ fn bench_health_override_sink(c: &mut Criterion) {
     group.bench_with_input(BenchmarkId::new("drain", "report"), &state, |b, state| {
         b.iter_batched(
             || {
-                filled_health_override_sink(
+                filled_health_report_sink(
                     &state.distinct_contexts,
                     &state.sensor_event,
                     &state.leak_event,
@@ -306,7 +311,7 @@ fn bench_health_override_sink(c: &mut Criterion) {
         |b, state| {
             b.iter_batched(
                 || {
-                    filled_health_override_sink(
+                    filled_health_report_sink(
                         &state.distinct_contexts,
                         &state.sensor_event,
                         &state.leak_event,
@@ -441,12 +446,56 @@ fn bench_queue_key_construction(c: &mut Criterion) {
     group.finish();
 }
 
+fn make_sink_report(alert_count: usize, success_count: usize) -> HealthReport {
+    use carbide_health::sink::{HealthReportAlert, HealthReportSuccess};
+    HealthReport {
+        source: ReportSource::BmcSensors,
+        target: Some(carbide_health::sink::HealthReportTarget::Machine),
+        observed_at: Some(chrono::Utc::now()),
+        successes: (0..success_count)
+            .map(|i| HealthReportSuccess {
+                probe_id: carbide_health::sink::Probe::Sensor,
+                target: Some(format!("target-{i}")),
+            })
+            .collect(),
+        alerts: (0..alert_count)
+            .map(|i| HealthReportAlert {
+                probe_id: carbide_health::sink::Probe::Sensor,
+                target: Some(format!("target-{i}")),
+                message: format!("alert message for probe {i}"),
+                classifications: vec![Classification::SensorCritical],
+            })
+            .collect(),
+    }
+}
+
+fn bench_content_hash(c: &mut Criterion) {
+    let mut group = c.benchmark_group("health_report_content_hash");
+
+    for (label, alerts, successes) in [
+        ("empty", 0usize, 0usize),
+        ("small_success_only", 0, 8),
+        ("large_success_only", 0, 256),
+        ("small_with_alerts", 4, 4),
+        ("large_with_alerts", 64, 64),
+    ] {
+        let report = Arc::new(make_sink_report(alerts, successes));
+
+        group.bench_with_input(BenchmarkId::new("hash", label), &report, |b, report| {
+            b.iter(|| black_box(HealthReportSink::content_hash_for_bench(report)));
+        });
+    }
+
+    group.finish();
+}
+
 criterion_group!(
     benches,
     bench_prometheus_sink,
     bench_composite_sink,
-    bench_health_override_sink,
+    bench_health_report_sink,
     bench_otlp_sink,
     bench_queue_key_construction,
+    bench_content_hash,
 );
 criterion_main!(benches);

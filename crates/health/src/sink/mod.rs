@@ -16,28 +16,33 @@
  */
 
 mod composite;
+mod dedup_queue;
 #[cfg(not(feature = "bench-hooks"))]
 pub(crate) mod event_mapper;
 #[cfg(feature = "bench-hooks")]
 pub mod event_mapper;
 mod events;
-mod health_override;
+mod health_report;
 mod log_file;
 pub(crate) mod otlp;
-mod override_queue;
+mod power_shelf_health_report;
 mod prometheus;
-mod rack_health_override;
+mod rack_health_report;
+mod switch_health_report;
 mod tracing;
 
 pub use composite::CompositeDataSink;
 pub use events::{
     Classification, CollectorEvent, EventContext, FirmwareInfo, HealthReport, HealthReportAlert,
-    HealthReportSuccess, LogRecord, Probe, ReportSource, SensorHealthContext, SensorHealthData,
+    HealthReportSuccess, HealthReportTarget, LogRecord, MetricSample, Probe, ReportSource,
+    SensorThresholdContext,
 };
-pub use health_override::HealthOverrideSink;
+pub use health_report::HealthReportSink;
 pub use log_file::LogFileSink;
+pub use power_shelf_health_report::PowerShelfHealthReportSink;
 pub use prometheus::PrometheusSink;
-pub use rack_health_override::RackHealthOverrideSink;
+pub use rack_health_report::RackHealthReportSink;
+pub use switch_health_report::SwitchHealthReportSink;
 pub use tracing::TracingSink;
 
 #[cfg(not(feature = "bench-hooks"))]
@@ -60,8 +65,8 @@ mod tests {
     use mac_address::MacAddress;
 
     use super::{
-        CollectorEvent, CompositeDataSink, DataSink, EventContext, LogRecord, PrometheusSink,
-        SensorHealthData,
+        CollectorEvent, CompositeDataSink, DataSink, EventContext, LogRecord, MetricSample,
+        PrometheusSink,
     };
     use crate::endpoint::{BmcAddr, EndpointMetadata, MachineData};
     use crate::metrics::MetricsManager;
@@ -120,7 +125,7 @@ mod tests {
         };
 
         let event = CollectorEvent::Metric(
-            SensorHealthData {
+            MetricSample {
                 key: "key".to_string(),
                 name: "metric".to_string(),
                 metric_type: "gauge".to_string(),
@@ -156,6 +161,9 @@ mod tests {
                     .parse()
                     .expect("valid machine id"),
                 machine_serial: None,
+                slot_number: None,
+                tray_index: None,
+                nvlink_domain_uuid: None,
             })),
             rack_id: None,
         };
@@ -171,12 +179,12 @@ mod tests {
         sink.handle_event(&context, &log_event);
 
         let export_after_log = metrics_manager
-            .export_all()
-            .expect("metrics export should work");
+            .export_telemetry()
+            .expect("telemetry export should work");
         assert!(!export_after_log.contains("test_sink_hw_sensor"));
 
         let metric_event = CollectorEvent::Metric(
-            SensorHealthData {
+            MetricSample {
                 key: "metric_key".to_string(),
                 name: "hw_sensor".to_string(),
                 metric_type: "temperature".to_string(),
@@ -191,9 +199,69 @@ mod tests {
         sink.handle_event(&context, &metric_event);
 
         let export_after_metric = metrics_manager
-            .export_all()
-            .expect("metrics export should work");
+            .export_telemetry()
+            .expect("telemetry export should work");
         assert!(export_after_metric.contains("test_sink_hw_sensor_temperature_celsius"));
+
+        let service_metrics = metrics_manager
+            .export_metrics()
+            .expect("service metrics export should work");
+        assert!(!service_metrics.contains("test_sink_hw_sensor_temperature_celsius"));
+    }
+
+    #[tokio::test]
+    async fn test_prometheus_sink_removes_collector_metrics() {
+        let metrics_manager =
+            Arc::new(MetricsManager::new("test").expect("should create metrics manager"));
+        let sink = PrometheusSink::new(metrics_manager.clone(), "test_sink")
+            .expect("sink should initialize");
+
+        let context = EventContext {
+            endpoint_key: "42:9e:b1:bd:9d:dd".to_string(),
+            addr: BmcAddr {
+                ip: "10.0.0.1".parse().expect("valid ip"),
+                port: Some(443),
+                mac: MacAddress::from_str("42:9e:b1:bd:9d:dd").unwrap(),
+            },
+            collector_type: "sensor_collector",
+            metadata: Some(EndpointMetadata::Machine(MachineData {
+                machine_id: "fm100htjtiaehv1n5vh67tbmqq4eabcjdng40f7jupsadbedhruh6rag1l0"
+                    .parse()
+                    .expect("valid machine id"),
+                machine_serial: None,
+                slot_number: None,
+                tray_index: None,
+                nvlink_domain_uuid: None,
+            })),
+            rack_id: None,
+        };
+
+        let metric_event = CollectorEvent::Metric(
+            MetricSample {
+                key: "metric_key".to_string(),
+                name: "hw_sensor".to_string(),
+                metric_type: "temperature".to_string(),
+                unit: "celsius".to_string(),
+                value: 42.0,
+                labels: vec![(Cow::Borrowed("sensor"), "temp1".to_string())],
+                context: None,
+            }
+            .into(),
+        );
+
+        sink.handle_event(&context, &metric_event);
+        let export_before_remove = metrics_manager
+            .export_telemetry()
+            .expect("telemetry export should work");
+        assert!(export_before_remove.contains("test_sink_hw_sensor_temperature_celsius"));
+
+        sink.handle_event(&context, &CollectorEvent::CollectorRemoved);
+
+        let export_after_remove = metrics_manager
+            .export_telemetry()
+            .expect("telemetry export should work");
+        assert!(!export_after_remove.contains("test_sink_hw_sensor_temperature_celsius"));
+        assert!(!export_after_remove.contains("endpoint_key=\"42:9e:b1:bd:9d:dd\""));
     }
 
     #[tokio::test]
@@ -216,6 +284,9 @@ mod tests {
                     .parse()
                     .expect("valid machine id"),
                 machine_serial: None,
+                slot_number: None,
+                tray_index: None,
+                nvlink_domain_uuid: None,
             })),
             rack_id: None,
         };
@@ -223,7 +294,7 @@ mod tests {
         let start_event = CollectorEvent::MetricCollectionStart;
         sink.handle_event(&context, &start_event);
         let s1_event = CollectorEvent::Metric(
-            SensorHealthData {
+            MetricSample {
                 key: "s1".to_string(),
                 name: "hw_sensor".to_string(),
                 metric_type: "temperature".to_string(),
@@ -239,14 +310,14 @@ mod tests {
         sink.handle_event(&context, &end_event);
 
         let first_export = metrics_manager
-            .export_all()
-            .expect("metrics export should work");
+            .export_telemetry()
+            .expect("telemetry export should work");
         assert!(first_export.contains("sensor=\"temp1\""));
 
         let start_event = CollectorEvent::MetricCollectionStart;
         sink.handle_event(&context, &start_event);
         let s2_event = CollectorEvent::Metric(
-            SensorHealthData {
+            MetricSample {
                 key: "s2".to_string(),
                 name: "hw_sensor".to_string(),
                 metric_type: "temperature".to_string(),
@@ -262,8 +333,8 @@ mod tests {
         sink.handle_event(&context, &end_event);
 
         let second_export = metrics_manager
-            .export_all()
-            .expect("metrics export should work");
+            .export_telemetry()
+            .expect("telemetry export should work");
         assert!(!second_export.contains("sensor=\"temp1\""));
         assert!(second_export.contains("sensor=\"temp2\""));
     }

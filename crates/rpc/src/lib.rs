@@ -36,6 +36,7 @@ use serde::ser::Error;
 use serde_json::{Value, json};
 use tokio_stream::Stream;
 
+use crate::forge_agent_control_response::LegacyAction;
 pub use crate::protos::common::{self, Uuid};
 pub use crate::protos::dns::{self};
 pub use crate::protos::forge::machine_credentials_update_request::CredentialPurpose;
@@ -48,20 +49,28 @@ pub use crate::protos::forge::{
     InstanceInfinibandStatus, InstanceInterfaceConfig, InstanceInterfaceStatus,
     InstanceInterfaceStatusObservation, InstanceList, InstanceNetworkConfig, InstanceNetworkStatus,
     InstanceNvLinkStatus, InstanceReleaseRequest, InstanceStatus, InstanceTenantStatus,
-    InterfaceFunctionType, Machine, MachineCleanupInfo, MachineDiscoveryInfo, MachineEvent,
-    MachineInterface, MachineList, Metadata, NetworkSegment, NetworkSegmentList, NvLinkPartition,
-    NvLinkPartitionList, NvLinkPartitionQuery, ResourcePoolType, SyncState, TenantConfig,
-    TenantState, forge_agent_control_response,
+    InterfaceFunctionType, Machine, MachineCleanupInfo, MachineDiscoveryInfo,
+    MachineDiscoveryReporter, MachineEvent, MachineInterface, MachineList, Metadata,
+    NetworkSegment, NetworkSegmentList, NvLinkPartition, NvLinkPartitionList, NvLinkPartitionQuery,
+    ResourcePoolType, SyncState, TenantConfig, TenantState, forge_agent_control_response,
 };
 pub use crate::protos::machine_discovery::{
     self, BlockDevice, Cpu, DiscoveryInfo, DmiData, NetworkInterface, NvmeDevice,
     PciDeviceProperties,
 };
-pub use crate::protos::{fmds, health, site_explorer};
+pub use crate::protos::{fmds, health, scout_firmware_upgrade, site_explorer};
 
 pub mod errors;
 pub mod forge_tls_client;
+pub mod libmlx;
+pub mod measured_boot;
+pub mod network;
 pub mod protos;
+pub mod secrets;
+pub mod utils;
+
+#[cfg(feature = "model")]
+pub mod model;
 
 #[cfg(feature = "cli")]
 pub mod admin_cli;
@@ -558,6 +567,15 @@ impl FromStr for forge::InstanceNvLinkConfig {
     }
 }
 
+impl FromStr for forge::InstanceSpxConfig {
+    type Err = RpcDataConversionError;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        serde_json::from_str(s)
+            .map_err(|e| RpcDataConversionError::JsonConversionFailure(e.to_string()))
+    }
+}
+
 /*  ****************************************************** */
 // Serialization/deserialization helpers for network
 // security group enums to let admin CLI callers describe
@@ -784,6 +802,103 @@ impl forge::ScoutStreamApiBoundMessage {
     }
 }
 
+impl forge::ForgeAgentControlResponse {
+    pub fn noop() -> Self {
+        Self {
+            action: Some(forge_agent_control_response::Action::noop()),
+            legacy_action: LegacyAction::Noop as i32,
+            data: None,
+        }
+    }
+
+    pub fn reset() -> Self {
+        Self {
+            action: Some(forge_agent_control_response::Action::reset()),
+            legacy_action: LegacyAction::Reset as i32,
+            data: None,
+        }
+    }
+
+    pub fn retry() -> Self {
+        Self {
+            action: Some(forge_agent_control_response::Action::retry()),
+            legacy_action: LegacyAction::Retry as i32,
+            data: None,
+        }
+    }
+
+    pub fn measure() -> Self {
+        Self {
+            action: Some(forge_agent_control_response::Action::measure()),
+            legacy_action: LegacyAction::Measure as i32,
+            data: None,
+        }
+    }
+
+    pub fn discovery() -> Self {
+        Self {
+            action: Some(forge_agent_control_response::Action::discovery()),
+            legacy_action: LegacyAction::Discovery as i32,
+            data: None,
+        }
+    }
+
+    pub fn log_error() -> Self {
+        Self {
+            action: Some(forge_agent_control_response::Action::log_error()),
+            legacy_action: LegacyAction::Logerror as i32,
+            data: None,
+        }
+    }
+}
+
+impl forge_agent_control_response::Action {
+    pub fn noop() -> Self {
+        Self::Noop(forge_agent_control_response::Noop {})
+    }
+
+    pub fn reset() -> Self {
+        Self::Reset(forge_agent_control_response::Reset {})
+    }
+
+    pub fn retry() -> Self {
+        Self::Retry(forge_agent_control_response::Retry {})
+    }
+
+    pub fn measure() -> Self {
+        Self::Measure(forge_agent_control_response::Measure {})
+    }
+
+    pub fn discovery() -> Self {
+        Self::Discovery(forge_agent_control_response::Discovery {})
+    }
+
+    pub fn log_error() -> Self {
+        Self::LogError(forge_agent_control_response::LogError {})
+    }
+
+    pub fn as_str_name(&self) -> &'static str {
+        match self {
+            Self::Noop(_) => "NOOP",
+            Self::Reset(_) => "RESET",
+            Self::Discovery(_) => "DISCOVERY",
+            Self::Rebuild(_) => "REBUILD",
+            Self::Retry(_) => "RETRY",
+            Self::Measure(_) => "MEASURE",
+            Self::LogError(_) => "LOGERROR",
+            Self::MachineValidation(_) => "MACHINE_VALIDATION",
+            Self::MlxAction(_) => "MLX_ACTION",
+            Self::FirmwareUpgrade(_) => "FIRMWARE_UPGRADE",
+        }
+    }
+}
+
+impl From<MacAddress> for forge::find_bmc_ips_request::LookupBy {
+    fn from(addr: MacAddress) -> Self {
+        Self::MacAddress(addr.to_string())
+    }
+}
+
 #[cfg(feature = "cli")]
 // This impl allows us to use the RPC RouteServerSourceType type
 // as a first class enum with clap, for the purpose of allowing
@@ -852,12 +967,11 @@ mod tests {
             user_data: Some("def".to_string()),
             variant: Some(Variant::Ipxe(InlineIpxe {
                 ipxe_script: "abc".to_string(),
-                user_data: Some("def".to_string()),
             })),
         };
 
         assert_eq!(
-            "{\"phone_home_enabled\":true,\"run_provisioning_instructions_on_every_boot\":true,\"user_data\":\"def\",\"variant\":{\"Ipxe\":{\"ipxe_script\":\"abc\",\"user_data\":\"def\"}}}",
+            "{\"phone_home_enabled\":true,\"run_provisioning_instructions_on_every_boot\":true,\"user_data\":\"def\",\"variant\":{\"Ipxe\":{\"ipxe_script\":\"abc\"}}}",
             serde_json::to_string(&os).unwrap()
         );
     }
@@ -895,5 +1009,61 @@ mod tests {
         assert_eq!(uuid, deserialized_uuid);
         assert_eq!(ts, created_system_time);
         assert_eq!(ts2, updated_system_time);
+    }
+
+    /// Verifies the additive DHCP discovery IPv6 fields survive protobuf encoding.
+    #[test]
+    fn dhcp_discovery_round_trips_with_ipv6_fields() {
+        let discovery = forge::DhcpDiscovery {
+            mac_address: "00:11:22:33:44:55".to_string(),
+            relay_address: "2001:db8::1".to_string(),
+            vendor_string: Some("vendor".to_string()),
+            link_address: Some("2001:db8::2".to_string()),
+            circuit_id: Some("circuit".to_string()),
+            remote_id: Some("remote".to_string()),
+            desired_address: Some("2001:db8::10".to_string()),
+            address_family: Some(2),
+            message_kind: Some(2),
+            duid: Some(vec![0, 1, 0, 1, 0xaa, 0xbb]),
+        };
+
+        // Encode then decode so prost field numbering is exercised directly.
+        let encoded = discovery.encode_to_vec();
+        let decoded = forge::DhcpDiscovery::decode(&encoded[..]).unwrap();
+
+        // Verify the newly-added IPv6 fields survive the protobuf round trip.
+        assert_eq!(decoded.address_family, Some(2));
+        assert_eq!(decoded.message_kind, Some(2));
+        assert_eq!(decoded.duid, Some(vec![0, 1, 0, 1, 0xaa, 0xbb]));
+    }
+
+    /// Verifies the additive DHCP record IPv6 fields survive protobuf encoding.
+    #[test]
+    fn dhcp_record_round_trips_with_ipv6_fields() {
+        let record = forge::DhcpRecord {
+            machine_id: None,
+            machine_interface_id: None,
+            segment_id: None,
+            subdomain_id: None,
+            fqdn: "host.example.com".to_string(),
+            mac_address: "00:11:22:33:44:55".to_string(),
+            address: "2001:db8::10".to_string(),
+            mtu: 9000,
+            prefix: "2001:db8::/64".to_string(),
+            gateway: None,
+            booturl: None,
+            last_invalidation_time: None,
+            ntp_servers: vec![],
+            dhcpv6_preferred_lifetime_secs: Some(3600),
+            dhcpv6_valid_lifetime_secs: Some(7200),
+        };
+
+        // Encode then decode so prost field numbering is exercised directly.
+        let encoded = record.encode_to_vec();
+        let decoded = forge::DhcpRecord::decode(&encoded[..]).unwrap();
+
+        // Verify the newly-added IPv6 fields survive the protobuf round trip.
+        assert_eq!(decoded.dhcpv6_preferred_lifetime_secs, Some(3600));
+        assert_eq!(decoded.dhcpv6_valid_lifetime_secs, Some(7200));
     }
 }

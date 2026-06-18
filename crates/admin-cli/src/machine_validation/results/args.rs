@@ -16,9 +16,24 @@
  */
 
 use carbide_uuid::machine::MachineId;
+use carbide_uuid::machine_validation::MachineValidationId;
 use clap::{ArgGroup, Parser};
 
 #[derive(Parser, Debug)]
+#[command(after_long_help = "\
+EXAMPLES:
+
+Show validation results for a machine:
+    $ nico-admin-cli machine-validation results show --machine 12345678-1234-5678-90ab-cdef01234567
+
+Show results for a specific validation run:
+    $ nico-admin-cli machine-validation results show --validation-id 12345678-1234-5678-90ab-cdef01234567
+
+Show one test's result within a run (with history):
+    $ nico-admin-cli machine-validation results show --validation-id 12345678-1234-5678-90ab-cdef01234567 \
+    --test-name gpu_bandwidth --history
+
+")]
 pub enum Args {
     #[clap(about = "Show results")]
     Show(ShowResultsOptions),
@@ -40,7 +55,7 @@ pub struct ShowResultsOptions {
     pub machine: Option<MachineId>,
 
     #[clap(short = 'v', long, group = "group", help = "Machine validation id")]
-    pub validation_id: Option<String>,
+    pub validation_id: Option<MachineValidationId>,
 
     #[clap(
         short = 't',

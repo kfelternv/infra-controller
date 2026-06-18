@@ -14,7 +14,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 #
-FROM arm64v8/rust:1.90.0-slim-bookworm
+FROM arm64v8/rust:1.95.0-slim-bookworm
 
 # Set in gitlab-templates/scripts/build-push-container-image.sh
 ARG CI_COMMIT_SHORT_SHA
@@ -53,8 +53,10 @@ RUN CACHEKEY=${CI_COMMIT_SHORT_SHA} apt update &&  \
 		libssl-dev \
 		libtss2-dev \
 		libudev-dev \
+		pandoc \
 		pkg-config \
 		tpm2-tools \
+		lld \
 		postgresql-15 \
 		protobuf-compiler \
 		sudo \
@@ -62,6 +64,9 @@ RUN CACHEKEY=${CI_COMMIT_SHORT_SHA} apt update &&  \
 		wget \
 		git \
 	&& rm -rf /var/lib/apt/lists/*
+
+# make LLVM's linker lld the default, because ld crashes using too much memory
+RUN update-alternatives --install /usr/bin/ld ld /usr/bin/lld 50
 
 RUN rustup component add rustfmt
 RUN cargo install cargo-cache cargo-make sccache cargo-deny --locked && \

@@ -15,13 +15,15 @@
  * limitations under the License.
  */
 
-use ::rpc::admin_cli::CarbideCliError;
+use carbide_utils::has_duplicates;
 use carbide_uuid::rack::RackId;
 use clap::{ArgGroup, Parser};
 use mac_address::MacAddress;
+use rpc::forge::DpuMode;
 use serde::{Deserialize, Serialize};
-use utils::has_duplicates;
 use uuid::Uuid;
+
+use crate::errors::CarbideCliError;
 
 /// Patch expected machine (partial update, preserves unprovided fields).
 ///
@@ -31,10 +33,10 @@ use uuid::Uuid;
 ///
 /// Examples:
 ///   # Update only SKU, preserve all other fields including metadata
-///   forge-admin-cli expected-machine patch --bmc-mac-address 1a:1b:1c:1d:1e:1f --sku-id new_sku
+///   nico-admin-cli expected-machine patch --bmc-mac-address 1a:1b:1c:1d:1e:1f --sku-id new_sku
 ///
 ///   # Update only labels, preserve name and description
-///   forge-admin-cli expected-machine patch --bmc-mac-address 1a:1b:1c:1d:1e:1f \
+///   nico-admin-cli expected-machine patch --bmc-mac-address 1a:1b:1c:1d:1e:1f \
 ///     --sku-id sku123 --label env:prod --label team:platform
 #[derive(Parser, Debug, Serialize, Deserialize)]
 #[clap(verbatim_doc_comment)]
@@ -45,7 +47,29 @@ use uuid::Uuid;
 "fallback_dpu_serial_numbers",
 "sku_id",
 "bmc_ip_address",
+"dpu_mode",
+"dpf_enabled",
 ])))]
+#[command(after_long_help = "\
+EXAMPLES:
+
+Patch only the SKU of a machine, selected by BMC MAC address:
+    $ nico-admin-cli expected-machine patch --bmc-mac-address 00:11:22:33:44:55 \
+    --sku-id DGX-H100-640GB
+
+Patch a machine selected by id:
+    $ nico-admin-cli expected-machine patch --id 12345678-1234-5678-90ab-cdef01234567 \
+    --sku-id DGX-H100-640GB
+
+Rotate the BMC credentials (username and password must be set together):
+    $ nico-admin-cli expected-machine patch --bmc-mac-address 00:11:22:33:44:55 \
+    --bmc-username admin --bmc-password mynewpassword
+
+Change the per-host DPU mode:
+    $ nico-admin-cli expected-machine patch --bmc-mac-address 00:11:22:33:44:55 \
+    --dpu-mode no-dpu
+
+")]
 pub struct Args {
     #[clap(short = 'a', long, help = "BMC MAC Address of the expected machine")]
     pub bmc_mac_address: Option<MacAddress>,
@@ -153,6 +177,22 @@ pub struct Args {
         help = "When true, site-explorer skips BMC password rotation and stores factory-default credentials in Vault as-is"
     )]
     pub bmc_retain_credentials: Option<bool>,
+
+    #[clap(
+        long = "dpu-mode",
+        value_name = "DPU_MODE",
+        value_enum,
+        group = "group",
+        help = "Per-host DPU operating mode. `dpu-mode` (default): DPUs are managed by NICo; `nic-mode`: DPU hardware present but treated as a plain NIC; `no-dpu`: no DPU hardware at all. Unset preserves the existing per-host value."
+    )]
+    pub dpu_mode: Option<DpuMode>,
+
+    #[clap(
+        long = "disable-lockdown",
+        value_name = "DISABLE_LOCKDOWN",
+        help = "If true, do not lock down the server as part of lifecycle management within the state machine. If unset or false, preserve the default behavior of locking down the server after configuring the BIOS."
+    )]
+    pub disable_lockdown: Option<bool>,
 }
 
 impl Args {
@@ -176,9 +216,11 @@ impl Args {
             && self.fallback_dpu_serial_numbers.is_none()
             && self.sku_id.is_none()
             && self.rack_id.is_none()
+            && self.dpf_enabled.is_none()
             && self.bmc_ip_address.is_none()
+            && self.dpu_mode.is_none()
         {
-            return Err(CarbideCliError::GenericError("One of the following options must be specified: bmc-user-name and bmc-password or chassis-serial-number or fallback-dpu-serial-number or bmc-ip-address".to_string()));
+            return Err(CarbideCliError::GenericError("One of the following options must be specified: bmc-user-name and bmc-password or chassis-serial-number or fallback-dpu-serial-number or bmc-ip-address or dpu-mode or dpf-enabled".to_string()));
         }
         if self
             .fallback_dpu_serial_numbers

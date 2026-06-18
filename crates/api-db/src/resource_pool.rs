@@ -23,8 +23,8 @@ use config_version::ConfigVersion;
 use ipnetwork::Ipv6Network;
 use model::resource_pool;
 use model::resource_pool::common::{
-    CommonPools, EXTERNAL_VPC_VNI, EthernetPools, FNN_ASN, IbPools, LOOPBACK_IP, SECONDARY_VTEP_IP,
-    VLANID, VNI, VPC_DPU_LOOPBACK, VPC_VNI,
+    CommonPools, DPA_VNI, EXTERNAL_VPC_VNI, EthernetPools, FNN_ASN, IbPools, LOOPBACK_IP,
+    SECONDARY_VTEP_IP, VLANID, VNI, VPC_DPU_LOOPBACK, VPC_VNI,
 };
 use model::resource_pool::define::{ResourcePoolDef, ResourcePoolType};
 use model::resource_pool::{
@@ -216,6 +216,64 @@ where
     Ok(s)
 }
 
+/// Insert the `ResourcePoolDef` snapshot for a pool that has never been
+/// seeded. **Fails** with a unique-constraint violation if the row already
+/// exists — callers must check with `stored_def` / `all_stored_defs` before
+/// calling this, and skip the insert when a snapshot is present.
+pub async fn insert_pool_def(
+    txn: &mut PgConnection,
+    name: &str,
+    def: &ResourcePoolDef,
+) -> Result<(), DatabaseError> {
+    let query = "
+        INSERT INTO resource_pool_def (name, definition, seeded_at)
+        VALUES ($1, $2, NOW())
+    ";
+
+    let definition = serde_json::to_value(def).map_err(|e| {
+        DatabaseError::InvalidArgument(format!(
+            "ResourcePool: {def:?} could not be serialized to JSON: {e}"
+        ))
+    })?;
+
+    sqlx::query(query)
+        .bind(name)
+        .bind(definition)
+        .execute(&mut *txn)
+        .await
+        .map_err(|e| DatabaseError::query(query, e))?;
+    Ok(())
+}
+
+/// Fetch the stored definition for a single pool, or `None` if never seeded.
+pub async fn stored_def(
+    txn: impl DbReader<'_>,
+    name: &str,
+) -> Result<Option<ResourcePoolDef>, DatabaseError> {
+    let query = "SELECT definition FROM resource_pool_def WHERE name = $1";
+    let row: Option<(sqlx::types::Json<ResourcePoolDef>,)> = sqlx::query_as(query)
+        .bind(name)
+        .fetch_optional(txn)
+        .await
+        .map_err(|e| DatabaseError::query(query, e))?;
+    Ok(row.map(|(json,)| json.0))
+}
+
+/// Fetch every stored definition as a `HashMap<name, def>`.
+pub async fn all_stored_defs(
+    txn: impl DbReader<'_>,
+) -> Result<HashMap<String, ResourcePoolDef>, DatabaseError> {
+    let query = "SELECT name, definition FROM resource_pool_def";
+    let rows: Vec<(String, sqlx::types::Json<ResourcePoolDef>)> = sqlx::query_as(query)
+        .fetch_all(txn)
+        .await
+        .map_err(|e| DatabaseError::query(query, e))?;
+    Ok(rows
+        .into_iter()
+        .map(|(name, json)| (name, json.0))
+        .collect())
+}
+
 pub async fn all(txn: &mut PgConnection) -> Result<Vec<ResourcePoolSnapshot>, DatabaseError> {
     let mut out = Vec::with_capacity(4);
 
@@ -261,7 +319,7 @@ pub async fn all(txn: &mut PgConnection) -> Result<Vec<ResourcePoolSnapshot>, Da
                 FROM resource_pool WHERE value_type = 'ipv4' GROUP BY name
             ) snapshot";
 
-    for query in &[query_int, query_ipv4] {
+    for query in [query_int, query_ipv4] {
         let mut rows: Vec<ResourcePoolSnapshot> = sqlx::query_as(query)
             .fetch_all(&mut *txn)
             .await
@@ -310,9 +368,6 @@ const MAX_POOL_SIZE: usize = 250_000;
 
 #[derive(thiserror::Error, Debug)]
 pub enum DefineResourcePoolError {
-    #[error("Invalid TOML: {0}")]
-    InvalidToml(#[from] toml::de::Error),
-
     #[error("{0}")]
     InvalidArgument(String),
 
@@ -336,6 +391,97 @@ pub async fn define_all_from(
         define(txn, name, def).await?;
         tracing::info!(pool_name = name, "Pool populated");
     }
+    Ok(())
+}
+pub async fn pool_has_rows(txn: &mut PgConnection, name: &str) -> Result<bool, DatabaseError> {
+    let query: &str = "SELECT EXISTS(SELECT 1 FROM resource_pool WHERE name = $1)";
+    let (exists,): (bool,) = sqlx::query_as(query)
+        .bind(name)
+        .fetch_one(&mut *txn)
+        .await
+        .map_err(|e| DatabaseError::query(query, e))?;
+    Ok(exists)
+}
+
+/// Reconcile declared pool definitions against what was previously seeded.
+/// Each declared pool is classified independently by its `(snapshot, pool)`
+/// state.
+///
+///   1. **New** (no snapshot, pool absent from `resource_pool`): seed
+///      and snapshot.
+///   2. **Backfill** (no snapshot, pool present): record the snapshot only.
+///   3. **In sync** (snapshot matches declaration): no-op.
+///   4. **Drift** (snapshot differs from declaration, pool present): warn
+///      and leave both in place. Operator must reconcile by hand.
+///   5. **Anomaly** (snapshot present, pool absent): error-log and skip.
+///      Indicates a partial restore or manual deletion; auto-healing here
+///      would risk re-seeding a pool an operator deliberately cleared.
+///
+/// Pools that appear in the snapshot table but are no longer declared
+/// ("dropped" from `InitialObjectsConfig.pools`) are warned about, but
+/// not removed.
+pub async fn reconcile_pool_defs(
+    txn: &mut PgConnection,
+    declared: &HashMap<String, ResourcePoolDef>,
+) -> Result<(), DefineResourcePoolError> {
+    let stored = all_stored_defs(&mut *txn).await?;
+
+    for (name, def) in declared {
+        let pool_exists = pool_has_rows(&mut *txn, name).await?;
+        match (stored.get(name), pool_exists) {
+            // Snapshot exists but pool is missing from resource_pool.
+            // Anomaly: e.g., partial DB restore. Don't auto-heal — operator
+            // must reconcile by hand.
+            (Some(stored_def), false) => {
+                tracing::error!(
+                    pool_name = name,
+                    stored = ?stored_def,
+                    "Resource Pool snapshot exists but resource_pool has no rows for it; \
+                     manual recovery required"
+                );
+            }
+            // Already seeded with the current declaration.
+            (Some(stored_def), true) if stored_def == def => {}
+            // Declaration has drifted since seed. Warn, don't reapply.
+            (Some(stored_def), true) => {
+                tracing::warn!(
+                    pool_name = name,
+                    stored = ?stored_def,
+                    declared = ?def,
+                    "Resource Pool definition has changed since it was seeded; not re-applying"
+                );
+            }
+            // Pool exists in resource_pool but has no snapshot yet.
+            // Pre-migration deployment, or a pool re-added after a snapshot
+            // was manually deleted. Record the snapshot only.
+            (None, true) => {
+                insert_pool_def(txn, name, def).await?;
+                tracing::info!(
+                    pool_name = name,
+                    "Backfilled pool definition snapshot for pre-existing pool"
+                );
+            }
+            // New — seed and snapshot.
+            (None, false) => {
+                define(txn, name, def).await?;
+                insert_pool_def(txn, name, def).await?;
+                tracing::info!(
+                    pool_name = name,
+                    "Seeded Resource Pool definition snapshot for pool"
+                );
+            }
+        }
+    }
+
+    for name in stored.keys() {
+        if !declared.contains_key(name) {
+            tracing::warn!(
+                pool_name = name,
+                "Resource Pool exists in database but is no longer declared in any config file"
+            );
+        }
+    }
+
     Ok(())
 }
 
@@ -788,6 +934,10 @@ pub async fn create_common_pools(
         Arc::new(ResourcePool::new(FNN_ASN.to_string(), ValueType::Integer));
     optional_pool_names.push(pool_fnn_asn.name().to_string());
 
+    let pool_dpa_vni: Arc<ResourcePool<i32>> =
+        Arc::new(ResourcePool::new(DPA_VNI.to_string(), ValueType::Integer));
+    optional_pool_names.push(pool_dpa_vni.name().to_string());
+
     let pool_vpc_dpu_loopback_ip: Arc<ResourcePool<IpAddr>> = Arc::new(ResourcePool::new(
         VPC_DPU_LOOPBACK.to_string(),
         ValueType::Ipv4,
@@ -867,6 +1017,7 @@ pub async fn create_common_pools(
             pool_vni,
             pool_vpc_vni,
             pool_external_vpc_vni,
+            pool_dpa_vni,
             pool_fnn_asn,
             pool_vpc_dpu_loopback_ip,
             pool_secondary_vtep_ip,
@@ -879,7 +1030,28 @@ pub async fn create_common_pools(
 
 #[cfg(test)]
 mod tests {
+    use carbide_test_support::Outcome::*;
+    use carbide_test_support::{Case, check_cases};
+
     use super::*;
+
+    #[test]
+    fn test_expand_ipv6_prefix_120_values() {
+        let values = expand_ipv6_prefix("fd00:abcd::/120").expect("valid /120 prefix");
+        assert_eq!(values.len(), 256);
+        assert_eq!(values[0], "fd00:abcd::".parse::<Ipv6Addr>().unwrap());
+        assert_eq!(values[255], "fd00:abcd::ff".parse::<Ipv6Addr>().unwrap());
+    }
+
+    #[test]
+    fn test_expand_ipv4_prefix_slash24() {
+        let values = expand_ip_prefix("192.168.1.0/24").expect("valid /24 prefix");
+        // /24 has 256 addresses; expand_ip_prefix excludes the broadcast,
+        // yielding .0 .. .254 inclusive (255 entries).
+        assert_eq!(values.len(), 255);
+        assert_eq!(values[0], "192.168.1.0".parse::<Ipv4Addr>().unwrap());
+        assert_eq!(values[254], "192.168.1.254".parse::<Ipv4Addr>().unwrap());
+    }
 
     #[crate::sqlx_test]
     async fn test_ipv4_pool_all_snapshots(
@@ -1034,19 +1206,30 @@ mod tests {
 
     #[test]
     fn test_expand_ipv6_prefix_boundary() {
-        // A /111 == 2^17 = 131,072 addresses — under MAX_POOL_SIZE
-        // (which is currently 250k as of this writing).
-        let addrs = expand_ipv6_prefix("fd00::/111").unwrap();
-        assert_eq!(addrs.len(), 131_072);
-
-        // A /110 == 262,144 addresses — over MAX_POOL_SIZE, which
-        // is currently 250k as of this writing.
-        let result = expand_ipv6_prefix("fd00::/110");
-        assert!(result.is_err());
-        assert!(matches!(
-            result.unwrap_err(),
-            DefineResourcePoolError::TooBig(_, _)
-        ));
+        // MAX_POOL_SIZE (currently 250k) is the dividing line: a prefix
+        // expands when its address count fits, and is rejected when it
+        // doesn't. We assert on that count; the rejection error
+        // (DefineResourcePoolError) isn't PartialEq, so the operation
+        // discards it and we only assert that the case `Fails`.
+        check_cases(
+            [
+                Case {
+                    scenario: "/111 fits: 2^17 = 131,072 addresses",
+                    input: "fd00::/111",
+                    expect: Yields(131_072),
+                },
+                Case {
+                    scenario: "/110 is too big: 2^18 = 262,144 addresses",
+                    input: "fd00::/110",
+                    expect: Fails,
+                },
+            ],
+            |network| {
+                expand_ipv6_prefix(network)
+                    .map(|addrs| addrs.len())
+                    .map_err(|_| ())
+            },
+        );
     }
 
     #[test]
@@ -1257,6 +1440,237 @@ mod tests {
         // exclusive end), which gives us 16 prefixes.
         let pool_stats = stats(txn.as_mut(), "test-ipv6prefix-range").await?;
         assert_eq!(pool_stats.free, 16);
+
+        txn.rollback().await?;
+        Ok(())
+    }
+
+    // the pool has never been seeded. `reconcile_pool_defs`
+    // should run `define` *and* record the snapshot.
+    #[crate::sqlx_test]
+    async fn reconcile_pool_defs_seeds_new_pool(
+        pool: sqlx::PgPool,
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        use model::resource_pool::Range;
+
+        let def = ResourcePoolDef {
+            prefix: None,
+            ranges: vec![Range {
+                start: 100.to_string(),
+                end: 105.to_string(),
+                auto_assign: true,
+            }],
+            pool_type: ResourcePoolType::Integer,
+            delegate_prefix_len: None,
+        };
+
+        let mut txn = pool.begin().await?;
+
+        let declared: HashMap<String, ResourcePoolDef> = [("brand-new".to_string(), def.clone())]
+            .into_iter()
+            .collect();
+
+        reconcile_pool_defs(&mut txn, &declared).await?;
+
+        let stored = stored_def(txn.as_mut(), "brand-new").await?;
+        assert_eq!(
+            stored.as_ref(),
+            Some(&def),
+            "snapshot must match declared def"
+        );
+
+        let snapshots = all(txn.as_mut()).await?;
+        assert!(
+            snapshots.iter().any(|s| s.name == "brand-new"),
+            "pool should have been seeded into resource_pool"
+        );
+
+        txn.rollback().await?;
+        Ok(())
+    }
+
+    // a pool exists in `resource_pool` but has no snapshot —
+    // the deployment was created before the snapshot table existed.
+    #[crate::sqlx_test]
+    async fn reconcile_pool_defs_backfills_existing_pool(
+        pool: sqlx::PgPool,
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        use model::resource_pool::Range;
+
+        let mut txn = pool.begin().await?;
+        let def = ResourcePoolDef {
+            prefix: None,
+            ranges: vec![Range {
+                start: 200.to_string(),
+                end: 205.to_string(),
+                auto_assign: true,
+            }],
+            pool_type: ResourcePoolType::Integer,
+            delegate_prefix_len: None,
+        };
+        // Pre-seed: define the pool but skip insert_pool_def so the
+        // snapshot table starts empty while resource_pool is non-empty.
+        define(&mut txn, "preexisting", &def).await?;
+        let row_count_before = all(txn.as_mut()).await?.len();
+
+        let declared: HashMap<String, ResourcePoolDef> = [("preexisting".to_string(), def.clone())]
+            .into_iter()
+            .collect();
+
+        reconcile_pool_defs(&mut txn, &declared).await?;
+
+        let stored = stored_def(txn.as_mut(), "preexisting").await?;
+        assert_eq!(stored.as_ref(), Some(&def), "snapshot must be backfilled");
+
+        // Backfill must not call `define` again — `all()` row count
+        // should be unchanged.
+        let row_count_after = all(txn.as_mut()).await?.len();
+        assert_eq!(
+            row_count_before, row_count_after,
+            "backfill path must not re-seed an existing pool"
+        );
+
+        txn.rollback().await?;
+        Ok(())
+    }
+
+    // snapshot exists and matches the declared def. Reconcile
+    // should be a silent no-op.
+    #[crate::sqlx_test]
+    async fn reconcile_pool_defs_in_sync_is_noop(
+        pool: sqlx::PgPool,
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        use model::resource_pool::Range;
+        let def = ResourcePoolDef {
+            prefix: None,
+            ranges: vec![Range {
+                start: 300.to_string(),
+                end: 305.to_string(),
+                auto_assign: true,
+            }],
+            pool_type: ResourcePoolType::Integer,
+            delegate_prefix_len: None,
+        };
+
+        let mut txn = pool.begin().await?;
+
+        define(&mut txn, "stable", &def).await?;
+        insert_pool_def(&mut txn, "stable", &def).await?;
+
+        let declared: HashMap<String, ResourcePoolDef> =
+            [("stable".to_string(), def.clone())].into_iter().collect();
+
+        reconcile_pool_defs(&mut txn, &declared).await?;
+
+        let stored = stored_def(txn.as_mut(), "stable").await?;
+        assert_eq!(
+            stored.as_ref(),
+            Some(&def),
+            "snapshot must remain unchanged"
+        );
+
+        txn.rollback().await?;
+        Ok(())
+    }
+
+    // snapshot exists but is different from the declared def. The
+    // reconciler must *not* update either the pool or its snapshot — it
+    // only logs a warning. Operator must intervene.
+    #[crate::sqlx_test]
+    async fn reconcile_pool_defs_drift_does_not_apply(
+        pool: sqlx::PgPool,
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        use model::resource_pool::Range;
+        let original = ResourcePoolDef {
+            prefix: None,
+            ranges: vec![Range {
+                start: 400.to_string(),
+                end: 405.to_string(),
+                auto_assign: true,
+            }],
+            pool_type: ResourcePoolType::Integer,
+            delegate_prefix_len: None,
+        };
+
+        let drifted = ResourcePoolDef {
+            prefix: None,
+            ranges: vec![Range {
+                start: 400.to_string(),
+                end: 999.to_string(),
+                auto_assign: true,
+            }],
+            pool_type: ResourcePoolType::Integer,
+            delegate_prefix_len: None,
+        };
+        let mut txn = pool.begin().await?;
+
+        define(&mut txn, "drifty", &original).await?;
+        insert_pool_def(&mut txn, "drifty", &original).await?;
+
+        let declared: HashMap<String, ResourcePoolDef> = [("drifty".to_string(), drifted.clone())]
+            .into_iter()
+            .collect();
+
+        reconcile_pool_defs(&mut txn, &declared).await?;
+
+        // The stored snapshot must still reflect the original
+        let stored = stored_def(txn.as_mut(), "drifty").await?;
+        assert_eq!(
+            stored.as_ref(),
+            Some(&original),
+            "drift path must not overwrite the snapshot"
+        );
+
+        txn.rollback().await?;
+        Ok(())
+    }
+
+    // snapshot exists but the pool has no rows in `resource_pool`.
+    // The reconciler must surface the anomaly and leave the snapshot alone
+    // so an operator can investigate.
+    #[crate::sqlx_test]
+    async fn reconcile_pool_defs_snapshot_without_pool_logs_error(
+        pool: sqlx::PgPool,
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        use model::resource_pool::Range;
+        let def = ResourcePoolDef {
+            prefix: None,
+            ranges: vec![Range {
+                start: 500.to_string(),
+                end: 505.to_string(),
+                auto_assign: true,
+            }],
+            pool_type: ResourcePoolType::Integer,
+            delegate_prefix_len: None,
+        };
+        let mut txn = pool.begin().await?;
+
+        // Pre-seed only the snapshot — skip define() so the pool has no
+        // rows in resource_pool.
+        insert_pool_def(&mut txn, "orphaned-snapshot", &def).await?;
+
+        let declared: HashMap<String, ResourcePoolDef> =
+            [("orphaned-snapshot".to_string(), def.clone())]
+                .into_iter()
+                .collect();
+
+        // Reconcile must succeed (warn-only), not error.
+        reconcile_pool_defs(&mut txn, &declared).await?;
+
+        // The snapshot is unchanged.
+        let stored = stored_def(txn.as_mut(), "orphaned-snapshot").await?;
+        assert_eq!(
+            stored.as_ref(),
+            Some(&def),
+            "anomaly path must not modify the snapshot"
+        );
+
+        // The pool was NOT seeded by reconcile.
+        let pool_rows = all(txn.as_mut()).await?;
+        assert!(
+            !pool_rows.iter().any(|s| s.name == "orphaned-snapshot"),
+            "anomaly path must not auto-seed the missing pool"
+        );
 
         txn.rollback().await?;
         Ok(())

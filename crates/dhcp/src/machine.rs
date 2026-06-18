@@ -55,7 +55,10 @@ impl Machine {
                     vendor_string: discovery.vendor_class.clone(),
                     circuit_id: discovery.circuit_id.clone(),
                     remote_id: discovery.remote_id.clone(),
-                    desired_address: discovery.desired_address.clone(),
+                    desired_address: discovery.desired_address.map(|addr| addr.to_string()),
+                    address_family: None,
+                    message_kind: None,
+                    duid: None,
                 });
 
                 client
@@ -247,7 +250,8 @@ pub extern "C" fn machine_get_next_server(ctx: *mut Machine) -> u32 {
 pub extern "C" fn machine_get_nameservers(ctx: *mut Machine) -> *mut libc::c_char {
     assert!(!ctx.is_null());
 
-    let nameservers = CString::new(CONFIG.read().unwrap().nameservers.clone()).unwrap();
+    let nameservers =
+        CString::new(crate::format_ipv4_list(&CONFIG.read().unwrap().nameservers)).unwrap();
     log::debug!("Nameservers are {nameservers:?}");
 
     nameservers.into_raw()
@@ -257,7 +261,15 @@ pub extern "C" fn machine_get_nameservers(ctx: *mut Machine) -> *mut libc::c_cha
 pub extern "C" fn machine_get_ntpservers(ctx: *mut Machine) -> *mut libc::c_char {
     assert!(!ctx.is_null());
 
-    let ntpservers = CString::new(CONFIG.read().unwrap().ntpservers.clone()).unwrap();
+    let machine = unsafe { &*ctx };
+
+    let ntp_csv = if !machine.inner.ntp_servers.is_empty() {
+        machine.inner.ntp_servers.join(",")
+    } else {
+        crate::format_ipv4_list(&CONFIG.read().unwrap().ntpservers)
+    };
+
+    let ntpservers = CString::new(ntp_csv).unwrap();
     log::debug!("Ntp servers are {ntpservers:?}");
 
     ntpservers.into_raw()
@@ -288,24 +300,6 @@ pub extern "C" fn machine_get_client_type(ctx: *mut Machine) -> *mut libc::c_cha
         Some(vc) => CString::new(vc.id.clone()).unwrap(),
     };
     vendor_class.into_raw()
-}
-
-#[unsafe(no_mangle)]
-pub extern "C" fn machine_get_uuid(ctx: *mut Machine) -> *mut libc::c_char {
-    assert!(!ctx.is_null());
-    let machine = unsafe { &mut *ctx };
-
-    let uuid = if let Some(machine_interface_id) = &machine.inner.machine_interface_id {
-        CString::new(machine_interface_id.to_string()).unwrap()
-    } else {
-        log::debug!(
-            "Found a host missing UUID (Possibly a Instance), dumping everything we know about it: {:?}",
-            &machine
-        );
-        CString::new("").unwrap()
-    };
-
-    uuid.into_raw()
 }
 
 /// Get the broadcast address.
@@ -353,17 +347,6 @@ pub extern "C" fn machine_free_client_type(client_type: *mut libc::c_char) {
         }
 
         drop(CString::from_raw(client_type))
-    };
-}
-
-#[unsafe(no_mangle)]
-pub extern "C" fn machine_free_uuid(uuid: *mut libc::c_char) {
-    unsafe {
-        if uuid.is_null() {
-            return;
-        }
-
-        drop(CString::from_raw(uuid))
     };
 }
 
@@ -465,8 +448,9 @@ mod test {
 
     use rpc::forge as rpc;
 
+    use crate::carbide_set_config_ntp;
     use crate::discovery::Discovery;
-    use crate::machine::{Machine, machine_get_filename};
+    use crate::machine::{Machine, machine_get_filename, machine_get_ntpservers};
     use crate::vendor_class::VendorClass;
 
     #[test]
@@ -533,5 +517,64 @@ mod test {
         let cstr = unsafe { CString::from_raw(out as *mut _) };
 
         assert_eq!(cstr, CString::new("https://foobar").unwrap());
+    }
+
+    #[test]
+    fn test_machine_get_ntpservers() {
+        unsafe {
+            let s = CString::new("10.0.0.1").unwrap();
+            carbide_set_config_ntp(s.as_ptr());
+        }
+
+        // Test with ntp servers in the dhcp record
+        let mut machine = Box::new(Machine {
+            inner: rpc::DhcpRecord {
+                ntp_servers: vec!["198.51.100.1".to_string(), "198.51.100.2".to_string()],
+                ..Default::default()
+            },
+            discovery_info: Discovery {
+                relay_address: "127.0.0.1".parse().unwrap(),
+                mac_address: "00:00:00:00:00:01".parse().unwrap(),
+                _client_system: None,
+                vendor_class: None,
+                link_select_address: None,
+                circuit_id: None,
+                remote_id: None,
+                desired_address: None,
+            },
+            vendor_class: None,
+        });
+
+        let raw = machine_get_ntpservers(&mut *machine);
+        let cstr = unsafe { CString::from_raw(raw) };
+        assert_eq!(cstr.to_str().unwrap(), "198.51.100.1,198.51.100.2");
+
+        // Test with no ntp servers in the dhcp record
+        unsafe {
+            let s = CString::new("10.0.0.2,10.0.0.3").unwrap();
+            carbide_set_config_ntp(s.as_ptr());
+        }
+
+        let mut machine = Box::new(Machine {
+            inner: rpc::DhcpRecord {
+                ntp_servers: vec![],
+                ..Default::default()
+            },
+            discovery_info: Discovery {
+                relay_address: "127.0.0.1".parse().unwrap(),
+                mac_address: "00:00:00:00:00:02".parse().unwrap(),
+                _client_system: None,
+                vendor_class: None,
+                link_select_address: None,
+                circuit_id: None,
+                remote_id: None,
+                desired_address: None,
+            },
+            vendor_class: None,
+        });
+
+        let raw = machine_get_ntpservers(&mut *machine);
+        let cstr = unsafe { CString::from_raw(raw) };
+        assert_eq!(cstr.to_str().unwrap(), "10.0.0.2,10.0.0.3");
     }
 }

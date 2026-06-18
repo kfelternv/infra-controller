@@ -18,7 +18,7 @@
 use std::collections::VecDeque;
 use std::fmt::Write;
 
-use ::rpc::admin_cli::{CarbideCliError, CarbideCliResult, OutputFormat};
+use ::rpc::admin_cli::OutputFormat;
 use ::rpc::forge as forgerpc;
 use carbide_uuid::machine::MachineId;
 use prettytable::{Table, row};
@@ -26,6 +26,7 @@ use rpc::Machine;
 
 use super::args::Args;
 use crate::cfg::cli_options::SortField;
+use crate::errors::{CarbideCliError, CarbideCliResult};
 use crate::rpc::ApiClient;
 use crate::{async_write, async_write_table_as_csv, async_writeln};
 
@@ -101,19 +102,7 @@ fn convert_machine_to_nice_format(
         writeln!(&mut lines, "{key:<width$}: {value}")?;
     }
 
-    let metadata = machine.metadata.unwrap_or_default();
-    writeln!(&mut lines, "METADATA")?;
-    writeln!(&mut lines, "\tNAME: {}", metadata.name)?;
-    writeln!(&mut lines, "\tDESCRIPTION: {}", metadata.description)?;
-    writeln!(&mut lines, "\tLABELS:")?;
-    for label in metadata.labels {
-        writeln!(
-            &mut lines,
-            "\t\t{}:{}",
-            label.key,
-            label.value.unwrap_or_default()
-        )?;
-    }
+    crate::metadata::write_metadata_in_nice_format(&mut lines, width, machine.metadata.as_ref())?;
 
     writeln!(&mut lines, "STATE HISTORY: (Latest {history_count} only)")?;
     if machine.events.is_empty() {
@@ -293,7 +282,7 @@ fn convert_machines_to_nice_table(machines: forgerpc::MachineList) -> Box<Table>
             vendor = dmi.sys_vendor;
         }
 
-        let labels = crate::metadata::get_nice_labels_from_rpc_metadata(machine.metadata.as_ref());
+        let labels = crate::metadata::fmt_labels_as_kv_pairs(machine.metadata.as_ref());
 
         let slot_number = machine
             .placement_in_rack
@@ -346,7 +335,7 @@ async fn show_all_machines(
         .await?;
 
     match sort_by {
-        SortField::PrimaryId => machines.machines.sort_by(|m1, m2| m1.id.cmp(&m2.id)),
+        SortField::PrimaryId => machines.machines.sort_by_key(|machine| machine.id),
         SortField::State => machines.machines.sort_by(|m1, m2| m1.state.cmp(&m2.state)),
     };
 
@@ -363,9 +352,7 @@ async fn show_all_machines(
             async_write_table_as_csv!(output_file, table)?;
         }
         OutputFormat::Yaml => {
-            return Err(CarbideCliError::NotImplemented(
-                "YAML formatted output".to_string(),
-            ));
+            return Err(CarbideCliError::NotImplemented(output_format.to_string()));
         }
     }
     Ok(())
@@ -441,6 +428,7 @@ pub async fn get_next_free_machine(
     api_client: &ApiClient,
     machine_ids: &mut VecDeque<MachineId>,
     min_interface_count: usize,
+    zero_dpu: bool,
 ) -> Option<Machine> {
     while let Some(id) = machine_ids.pop_front() {
         tracing::debug!("Checking {}", id);
@@ -448,6 +436,9 @@ pub async fn get_next_free_machine(
             if machine.state != "Ready" {
                 tracing::debug!("Machine is not ready");
                 continue;
+            }
+            if zero_dpu {
+                return Some(machine);
             }
             if let Some(discovery_info) = &machine.discovery_info {
                 let dpu_interfaces = discovery_info

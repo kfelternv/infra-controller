@@ -1,3 +1,4 @@
+{{- if .Values.certManager.siteRoot.create }}
 ## =============================================================================
 ## Self-signed bootstrap → site-root CA
 ##
@@ -8,7 +9,7 @@
 ##   -10  selfsigned-bootstrap ClusterIssuer (this file)
 ##    -9  site-root Certificate              (this file)
 ##    -5  site-issuer ClusterIssuer          (vault-tls-certs.yaml)
-##    -4  forgeca-vault-client Certificate   (vault-tls-certs.yaml)
+##    -4  nicoca-vault-client Certificate   (vault-tls-certs.yaml)
 ##    -4  vault-raft-tls Certificate         (vault-tls-certs.yaml)
 ##
 ## NOTE: setup.sh must run helmfile sync for cert-manager BEFORE vault so that
@@ -43,3 +44,4 @@ spec:
   issuerRef:
     name: selfsigned-bootstrap
     kind: ClusterIssuer
+{{- end }}

@@ -17,12 +17,14 @@
 
 use std::net::SocketAddr;
 
+use carbide_redfish::boot_interface::BootInterfaceTarget;
 use libredfish::RoleId;
-use libredfish::model::oem::nvidia_dpu::NicMode;
 use mac_address::MacAddress;
 use model::expected_entity::ExpectedEntity;
 use model::machine::MachineInterfaceSnapshot;
-use model::site_explorer::{EndpointExplorationError, EndpointExplorationReport, LockdownStatus};
+use model::site_explorer::{
+    EndpointExplorationError, EndpointExplorationReport, LockdownStatus, NicMode,
+};
 
 use super::metrics::SiteExplorationMetrics;
 
@@ -39,18 +41,13 @@ pub trait EndpointExplorer: Send + Sync + 'static {
         address: SocketAddr,
         interface: &MachineInterfaceSnapshot,
         expected: Option<&ExpectedEntity>,
-        last_report: Option<&EndpointExplorationReport>,
+        last_exploration_error: Option<&EndpointExplorationError>,
         boot_interface_mac: Option<MacAddress>,
     ) -> Result<EndpointExplorationReport, EndpointExplorationError>;
 
     async fn check_preconditions(
         &self,
         metrics: &mut SiteExplorationMetrics,
-    ) -> Result<(), EndpointExplorationError>;
-
-    async fn probe_redfish_endpoint(
-        &self,
-        bmc_ip_address: SocketAddr,
     ) -> Result<(), EndpointExplorationError>;
 
     // redfish_reset_bmc issues a BMC reset through redfish.
@@ -117,14 +114,14 @@ pub trait EndpointExplorer: Send + Sync + 'static {
         &self,
         address: SocketAddr,
         interface: &MachineInterfaceSnapshot,
-        boot_interface_mac: Option<&str>,
+        boot_interface: Option<&BootInterfaceTarget>,
     ) -> Result<(), EndpointExplorationError>;
 
     async fn set_boot_order_dpu_first(
         &self,
         address: SocketAddr,
         interface: &MachineInterfaceSnapshot,
-        boot_interface_mac: &str,
+        boot_interface: &BootInterfaceTarget,
     ) -> Result<(), EndpointExplorationError>;
 
     async fn set_nic_mode(
@@ -144,13 +141,6 @@ pub trait EndpointExplorer: Send + Sync + 'static {
         &self,
         bmc_ip_address: SocketAddr,
         interface: &MachineInterfaceSnapshot,
-    ) -> Result<(), EndpointExplorationError>;
-
-    async fn copy_bfb_to_dpu_rshim(
-        &self,
-        bmc_ip_address: SocketAddr,
-        interface: &MachineInterfaceSnapshot,
-        is_bf2: bool,
     ) -> Result<(), EndpointExplorationError>;
 
     async fn create_bmc_user(

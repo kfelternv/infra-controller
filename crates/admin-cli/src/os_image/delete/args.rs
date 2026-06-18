@@ -16,12 +16,20 @@
  */
 
 use clap::Parser;
-use rpc::admin_cli::{CarbideCliError, CarbideCliResult};
 use rpc::forge::DeleteOsImageRequest;
 
+use crate::errors::{CarbideCliError, CarbideCliResult};
 use crate::os_image::common::str_to_rpc_uuid;
 
 #[derive(Parser, Debug, Clone)]
+#[command(after_long_help = "\
+EXAMPLES:
+
+Delete an OS image (must be unused by any instance):
+    $ nico-admin-cli os-image delete --id 12345678-1234-5678-90ab-cdef01234567 \
+    --tenant-org-id fds34511233a
+
+")]
 pub struct Args {
     #[clap(short = 'i', long, help = "uuid of the OS image to delete.")]
     pub id: String,

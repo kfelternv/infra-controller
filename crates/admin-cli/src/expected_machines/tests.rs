@@ -24,6 +24,8 @@
 // Argument Parsing    - Ensure required/optional arg combinations parse correctly.
 // Validation Logic    - Test business logic validators on parsed arguments.
 
+use carbide_test_support::Outcome::*;
+use carbide_test_support::scenarios;
 use clap::{CommandFactory, Parser};
 
 use super::*;
@@ -94,6 +96,30 @@ fn parse_add() {
         Cmd::Add(args) => {
             assert_eq!(args.bmc_username, "admin");
             assert_eq!(args.chassis_serial_number, "SN12345");
+        }
+        _ => panic!("expected Add variant"),
+    }
+}
+
+// parse_add_without_password ensures add parses when --bmc-password is omitted.
+#[test]
+fn parse_add_without_password() {
+    let cmd = Cmd::try_parse_from([
+        "expected-machine",
+        "add",
+        "--bmc-mac-address",
+        "1a:2b:3c:4d:5e:6f",
+        "--bmc-username",
+        "admin",
+        "--chassis-serial-number",
+        "SN12345",
+    ])
+    .expect("should parse add without password");
+
+    match cmd {
+        Cmd::Add(args) => {
+            assert_eq!(args.bmc_password, None);
+            assert_eq!(args.bmc_username, "admin");
         }
         _ => panic!("expected Add variant"),
     }
@@ -204,70 +230,62 @@ fn parse_erase() {
     assert!(matches!(cmd, Cmd::Erase(_)));
 }
 
-// parse_add_missing_required_fails ensures add fails
-// without required arguments.
+// Every malformed invocation is rejected at parse time -- a missing required
+// argument, one half of a paired credential, or a flag left without its value.
 #[test]
-fn parse_add_missing_required_fails() {
-    let result = Cmd::try_parse_from(["expected-machine", "add"]);
-    assert!(result.is_err(), "should fail without required arguments");
-}
+fn invalid_invocations_are_rejected() {
+    scenarios!(
+        run = |argv| {
+            Cmd::try_parse_from(argv.iter().copied())
+                .map(|_| ())
+                .map_err(drop)
+        };
+        "add without its required arguments" {
+            &["expected-machine", "add"][..] => Fails,
+        }
 
-// parse_patch_username_requires_password ensures patch
-// fails with username only (password required).
-#[test]
-fn parse_patch_username_requires_password() {
-    let result = Cmd::try_parse_from([
-        "expected-machine",
-        "patch",
-        "--bmc-mac-address",
-        "00:00:00:00:00:00",
-        "--bmc-username",
-        "admin",
-    ]);
-    assert!(result.is_err(), "should fail with username but no password");
-}
+        "patch with a username but no password" {
+            &[
+                "expected-machine",
+                "patch",
+                "--bmc-mac-address",
+                "00:00:00:00:00:00",
+                "--bmc-username",
+                "admin",
+            ][..] => Fails,
+        }
 
-// parse_patch_password_requires_username ensures patch
-// fails with password only (username required).
-#[test]
-fn parse_patch_password_requires_username() {
-    let result = Cmd::try_parse_from([
-        "expected-machine",
-        "patch",
-        "--bmc-mac-address",
-        "00:00:00:00:00:00",
-        "--bmc-password",
-        "secret",
-    ]);
-    assert!(result.is_err(), "should fail with password but no username");
-}
+        "patch with a password but no username" {
+            &[
+                "expected-machine",
+                "patch",
+                "--bmc-mac-address",
+                "00:00:00:00:00:00",
+                "--bmc-password",
+                "secret",
+            ][..] => Fails,
+        }
 
-// parse_update_missing_filename_fails ensures update
-// fails without --filename.
-#[test]
-fn parse_update_missing_filename_fails() {
-    let result = Cmd::try_parse_from(["expected-machine", "update"]);
-    assert!(result.is_err(), "should fail without --filename");
-}
+        "update without --filename" {
+            &["expected-machine", "update"][..] => Fails,
+        }
 
-// parse_add_dpu_serial_requires_value ensures add fails
-// when --fallback-dpu-serial-number has no value.
-#[test]
-fn parse_add_dpu_serial_requires_value() {
-    let result = Cmd::try_parse_from([
-        "expected-machine",
-        "add",
-        "--bmc-mac-address",
-        "0a:0b:0c:0d:0e:0f",
-        "--bmc-username",
-        "admin",
-        "--bmc-password",
-        "secret",
-        "--chassis-serial-number",
-        "SN12345",
-        "--fallback-dpu-serial-number",
-    ]);
-    assert!(result.is_err(), "should fail without dpu serial value");
+        "add with --fallback-dpu-serial-number missing its value" {
+            &[
+                "expected-machine",
+                "add",
+                "--bmc-mac-address",
+                "0a:0b:0c:0d:0e:0f",
+                "--bmc-username",
+                "admin",
+                "--bmc-password",
+                "secret",
+                "--chassis-serial-number",
+                "SN12345",
+                "--fallback-dpu-serial-number",
+            ][..] => Fails,
+        }
+    );
 }
 
 /////////////////////////////////////////////////////////////////////////////
@@ -276,86 +294,71 @@ fn parse_add_dpu_serial_requires_value() {
 // This section tests business logic validators on parsed arguments,
 // including custom validation methods like duplicate detection.
 
-// validate_no_duplicate_dpu_serials ensures
-// has_duplicate_dpu_serials returns false for unique serials.
+// has_duplicate_dpu_serials flags a repeated `-d` serial on an otherwise valid
+// add: unique serials and the no-serials case are clean, a repeat is caught.
 #[test]
-fn validate_no_duplicate_dpu_serials() {
-    let machine = add::Args::try_parse_from([
-        "ExpectedMachine",
-        "--bmc-mac-address",
-        "0a:0b:0c:0d:0e:0f",
-        "--bmc-username",
-        "admin",
-        "--bmc-password",
-        "secret",
-        "--chassis-serial-number",
-        "SN12345",
-        "--fallback-dpu-serial-number",
-        "dpu1",
-        "-d",
-        "dpu2",
-        "-d",
-        "dpu3",
-    ])
-    .expect("should parse");
+fn has_duplicate_dpu_serials_flags_repeats() {
+    scenarios!(
+        run = |argv| {
+            add::Args::try_parse_from(argv.iter().copied())
+                .map(|m| m.has_duplicate_dpu_serials())
+                .map_err(drop)
+        };
+        "three unique serials" {
+            &[
+                "ExpectedMachine",
+                "--bmc-mac-address",
+                "0a:0b:0c:0d:0e:0f",
+                "--bmc-username",
+                "admin",
+                "--bmc-password",
+                "secret",
+                "--chassis-serial-number",
+                "SN12345",
+                "--fallback-dpu-serial-number",
+                "dpu1",
+                "-d",
+                "dpu2",
+                "-d",
+                "dpu3",
+            ][..] => Yields(false),
+        }
 
-    assert!(
-        !machine.has_duplicate_dpu_serials(),
-        "unique serials should not be duplicates"
-    );
-}
+        "a repeated serial is detected" {
+            &[
+                "ExpectedMachine",
+                "--bmc-mac-address",
+                "0a:0b:0c:0d:0e:0f",
+                "--bmc-username",
+                "admin",
+                "--bmc-password",
+                "secret",
+                "--chassis-serial-number",
+                "SN12345",
+                "-d",
+                "dpu1",
+                "-d",
+                "dpu2",
+                "-d",
+                "dpu3",
+                "-d",
+                "dpu1",
+            ][..] => Yields(true),
+        }
 
-// validate_duplicate_dpu_serials_detected ensures
-// has_duplicate_dpu_serials returns true for duplicates.
-#[test]
-fn validate_duplicate_dpu_serials_detected() {
-    let machine = add::Args::try_parse_from([
-        "ExpectedMachine",
-        "--bmc-mac-address",
-        "0a:0b:0c:0d:0e:0f",
-        "--bmc-username",
-        "admin",
-        "--bmc-password",
-        "secret",
-        "--chassis-serial-number",
-        "SN12345",
-        "-d",
-        "dpu1",
-        "-d",
-        "dpu2",
-        "-d",
-        "dpu3",
-        "-d",
-        "dpu1",
-    ])
-    .expect("should parse");
-
-    assert!(
-        machine.has_duplicate_dpu_serials(),
-        "duplicate serials should be detected"
-    );
-}
-
-// validate_empty_dpu_serials ensures has_duplicate_dpu_serials
-// returns false when no serials provided.
-#[test]
-fn validate_empty_dpu_serials() {
-    let machine = add::Args::try_parse_from([
-        "ExpectedMachine",
-        "--bmc-mac-address",
-        "0a:0b:0c:0d:0e:0f",
-        "--bmc-username",
-        "admin",
-        "--bmc-password",
-        "secret",
-        "--chassis-serial-number",
-        "SN12345",
-    ])
-    .expect("should parse");
-
-    assert!(
-        !machine.has_duplicate_dpu_serials(),
-        "empty serials should not be duplicates"
+        "no serials at all" {
+            &[
+                "ExpectedMachine",
+                "--bmc-mac-address",
+                "0a:0b:0c:0d:0e:0f",
+                "--bmc-username",
+                "admin",
+                "--bmc-password",
+                "secret",
+                "--chassis-serial-number",
+                "SN12345",
+            ][..] => Yields(false),
+        }
     );
 }
 
@@ -469,8 +472,9 @@ fn validate_patch_all_fields() {
 }
 
 // parse_add_without_dpu_mode ensures the flag is optional and defaults to
-// unset; downstream, unset is treated as "use site default" (as in, use
-// the site-wide `force_dpu_nic_mode` flag).
+// unset; downstream, unset is treated as "defer to the site-wide
+// `[site_explorer] dpu_mode` setting" (which itself falls back to
+// `DpuMode::DpuMode` when not set).
 #[test]
 fn parse_add_without_dpu_mode() {
     let cmd = Cmd::try_parse_from([
@@ -600,4 +604,99 @@ fn parse_add_rejects_invalid_dpu_mode() {
         result.is_err(),
         "clap should reject --dpu-mode with an invalid value"
     );
+}
+
+// parse_patch_with_dpu_mode_nic ensures `patch ... --dpu-mode nic-mode`
+// parses to NicMode. Patch users flip dpu_mode on a single host without
+// rewriting the entire ExpectedMachine.
+#[test]
+fn parse_patch_with_dpu_mode_nic() {
+    let cmd = Cmd::try_parse_from([
+        "expected-machine",
+        "patch",
+        "--bmc-mac-address",
+        "1a:2b:3c:4d:5e:6f",
+        "--dpu-mode",
+        "nic-mode",
+    ])
+    .expect("should parse patch --dpu-mode nic-mode");
+
+    match cmd {
+        Cmd::Patch(args) => {
+            assert!(matches!(args.dpu_mode, Some(rpc::forge::DpuMode::NicMode)));
+        }
+        _ => panic!("expected Patch variant"),
+    }
+}
+
+// parse_patch_with_dpu_mode_no_dpu ensures `patch ... --dpu-mode no-dpu`
+// parses (host with no DPU hardware at all).
+#[test]
+fn parse_patch_with_dpu_mode_no_dpu() {
+    let cmd = Cmd::try_parse_from([
+        "expected-machine",
+        "patch",
+        "--bmc-mac-address",
+        "1a:2b:3c:4d:5e:6f",
+        "--dpu-mode",
+        "no-dpu",
+    ])
+    .expect("should parse patch --dpu-mode no-dpu");
+
+    match cmd {
+        Cmd::Patch(args) => {
+            assert!(matches!(args.dpu_mode, Some(rpc::forge::DpuMode::NoDpu)));
+        }
+        _ => panic!("expected Patch variant"),
+    }
+}
+
+// parse_patch_with_dpu_mode_dpu ensures `patch ... --dpu-mode dpu-mode`
+// parses; this is how operators revert a host back to the default after
+// previously setting NicMode/NoDpu.
+#[test]
+fn parse_patch_with_dpu_mode_dpu() {
+    let cmd = Cmd::try_parse_from([
+        "expected-machine",
+        "patch",
+        "--bmc-mac-address",
+        "1a:2b:3c:4d:5e:6f",
+        "--dpu-mode",
+        "dpu-mode",
+    ])
+    .expect("should parse patch --dpu-mode dpu-mode");
+
+    match cmd {
+        Cmd::Patch(args) => {
+            assert!(matches!(args.dpu_mode, Some(rpc::forge::DpuMode::DpuMode)));
+        }
+        _ => panic!("expected Patch variant"),
+    }
+}
+
+// validate_patch_with_dpu_mode_only ensures `patch --dpu-mode nic-mode`
+// alone (no other patchable fields) satisfies clap's ArgGroup and the
+// `Args::validate()` "at least one field" check. The whole point of this
+// patch is "flip dpu_mode", so it must work without dummy companion args.
+#[test]
+fn validate_patch_with_dpu_mode_only() {
+    let cmd = Cmd::try_parse_from([
+        "expected-machine",
+        "patch",
+        "--bmc-mac-address",
+        "00:00:00:00:00:00",
+        "--dpu-mode",
+        "nic-mode",
+    ])
+    .expect("patch --dpu-mode alone should parse (ArgGroup)");
+
+    match cmd {
+        Cmd::Patch(args) => {
+            assert!(
+                args.validate().is_ok(),
+                "patch --dpu-mode alone should validate"
+            );
+        }
+        _ => panic!("expected Patch variant"),
+    }
 }

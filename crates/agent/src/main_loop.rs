@@ -29,6 +29,7 @@ use ::rpc::forge_tls_client::ForgeClientConfig;
 use ::rpc::{forge as rpc, forge_tls_client};
 use carbide_host_support::agent_config::AgentConfig;
 use carbide_network::virtualization::VpcVirtualizationType;
+use carbide_rpc_utils::dhcp::{DhcpTimestamps, DhcpTimestampsFilePath};
 use carbide_systemd::systemd;
 use carbide_uuid::machine::MachineId;
 use eyre::WrapErr;
@@ -40,7 +41,6 @@ use tokio::signal::unix::{SignalKind, signal};
 use tokio::sync::watch;
 use tokio::task::JoinHandle;
 use tracing::log::error;
-use utils::models::dhcp::{DhcpTimestamps, DhcpTimestampsFilePath};
 use version_compare::Version;
 
 use crate::command_line::HbnConfigMode;
@@ -49,7 +49,7 @@ use crate::dpu::interface::Interface;
 use crate::dpu::route::{DpuRoutePlan, IpRoute, Route};
 use crate::duppet::{SummaryFormat, SyncOptions};
 use crate::ethernet_virtualization::{
-    InterfaceTranslationMode, NvueUpdateFlavor, ServiceAddresses,
+    InterfaceTranslationMode, NvueClientContext, NvueUpdateFlavor, ServiceAddresses,
 };
 use crate::fmds_client::FmdsUpdater;
 use crate::health::HealthCheckParams;
@@ -57,7 +57,7 @@ use crate::host_machine_id::get_host_machine_id_retry;
 use crate::instrumentation::{create_metrics, get_dpu_agent_meter};
 use crate::machine_inventory_updater::MachineInventoryUpdaterConfig;
 use crate::network_monitor::{self, NetworkPingerType};
-use crate::util::{UrlResolver, get_host_boot_timestamp};
+use crate::util::get_host_boot_timestamp;
 use crate::{
     FMDS_MINIMUM_HBN_VERSION, HBNDeviceNames, NVUE_MINIMUM_HBN_VERSION, RunOptions, command_line,
     ethernet_virtualization, extension_services, hbn, health, instance_metadata_endpoint, lldp,
@@ -120,11 +120,22 @@ pub async fn setup_and_run(
             machine_id,
             forge_api_server.clone(),
             Arc::clone(&forge_client_config),
-        ),
+            agent_config.machine_identity.clone(),
+        )
+        .map_err(|e| eyre::eyre!("failed to initialize instance metadata router state: {e}"))?,
     );
 
     let agent_meter = get_dpu_agent_meter();
     let metrics = create_metrics(agent_meter);
+
+    if let Err(e) = crate::metadata_service::spawn_prometheus_metrics_server(
+        agent_config.telemetry.metrics_address.clone(),
+    ) {
+        tracing::warn!(
+            error = format!("{e:#}"),
+            "Failed to start Prometheus /metrics endpoint"
+        );
+    }
 
     // And now set up our FMDS updater, which will either be our original
     // embedded server (which spins up a local listener within the DPU agent)
@@ -135,15 +146,24 @@ pub async fn setup_and_run(
             fmds_address = fmds_addr,
             "Using FmdsUpdater::External FMDS service"
         );
-        let fmds_client = crate::fmds_client::FmdsGrpcClient::connect(fmds_addr)
-            .await
-            .wrap_err("Failed to connect to external FMDS service")?;
-        FmdsUpdater::External(fmds_client)
+        match crate::fmds_client::FmdsGrpcClient::connect(
+            fmds_addr,
+            agent_config.machine_identity.clone(),
+        )
+        .await
+        {
+            Ok(fmds_client) => FmdsUpdater::External(Box::new(fmds_client)),
+            Err(e) => {
+                tracing::warn!(
+                    "Failed to connect to external FMDS service: {e:#}, falling back to embedded"
+                );
+                FmdsUpdater::Embedded(instance_metadata_state.clone())
+            }
+        }
     } else {
         if options.enable_metadata_service {
             crate::metadata_service::spawn_metadata_service(
                 agent_config.metadata_service.address.clone(),
-                agent_config.telemetry.metrics_address.clone(),
                 metrics.clone(),
                 instance_metadata_state.clone(),
             )
@@ -201,11 +221,12 @@ pub async fn setup_and_run(
         // We have eight cores. Letting ovs_vswitchd have one is OK.
     };
 
-    let nvue_client = match options.hbn_config_mode {
+    let nvue_context = match options.hbn_config_mode {
         HbnConfigMode::ContainerExec => None,
         HbnConfigMode::NvueRest => {
             let nvue_client = nvue_client::NvueClient::new_https_from_env()?;
-            Some(nvue_client)
+            let nvue_context = NvueClientContext::new(nvue_client);
+            Some(nvue_context)
         }
     };
 
@@ -257,42 +278,11 @@ pub async fn setup_and_run(
 
     let periodic_config_reader = periodic_config_fetcher.reader();
 
-    let service_addrs = if !agent_config.machine.is_fake_dpu {
-        let mut url_resolver = UrlResolver::try_new()?;
-
-        let pxe_ips = url_resolver
-            .resolve("carbide-pxe.forge")
-            .await
-            .wrap_err("DNS resolver for carbide-pxe")?;
-
-        // This log should be removed after some time.
-        tracing::info!(?pxe_ips, "Pxe server resolved");
-
-        let ntpservers = match url_resolver.resolve("carbide-ntp.forge").await {
-            Ok(x) => {
-                // This log should be removed after some time.
-                tracing::info!(?x, "NTP servers resolved.");
-                x
-            }
-            Err(e) => {
-                tracing::error!(error = %e, "NTP servers couldn't be resolved. Dhcp-server won't send NTP server IPs in dhcpoffer/ack.");
-                vec![]
-            }
-        };
-
-        let nameservers = url_resolver.nameservers();
-        ServiceAddresses {
-            pxe_ips,
-            ntpservers,
-            nameservers,
-        }
-    } else {
-        ServiceAddresses {
-            pxe_ips: vec![IpAddr::from([127, 0, 0, 1])],
-            ntpservers: vec![],
-            nameservers: vec![IpAddr::from([127, 0, 0, 1])],
-        }
-    };
+    let service_addrs = ServiceAddresses::build(
+        &options.agent_platform_type,
+        agent_config.machine.is_fake_dpu,
+    )
+    .await?;
 
     let inventory_updater_config = MachineInventoryUpdaterConfig {
         dpu_agent_version: build_version.clone(),
@@ -387,7 +377,7 @@ pub async fn setup_and_run(
         close_sender,
         network_monitor_handle,
         extension_service_manager,
-        nvue_client,
+        nvue_context,
         dhcp_interface_translation_mode,
     };
 
@@ -420,7 +410,7 @@ struct MainLoop {
     network_monitor_handle: Option<JoinHandle<()>>,
     close_sender: watch::Sender<bool>,
     extension_service_manager: extension_services::ExtensionServiceManager,
-    nvue_client: Option<nvue_client::NvueClient>,
+    nvue_context: Option<NvueClientContext>,
     dhcp_interface_translation_mode: Option<InterfaceTranslationMode>,
 }
 
@@ -569,10 +559,11 @@ impl MainLoop {
                 if self.is_hbn_up {
                     // First thing is to read the existing HBN version and properly set the hbn device names
                     // associated with that version.
-                    let hbn_version = match self.nvue_client.as_mut() {
+                    let hbn_version = match self.nvue_context.as_mut() {
                         None => hbn::read_version().await?,
-                        Some(nvue_client) => {
-                            let nvue_system_build = nvue_client.system_build_info().await?;
+                        Some(nvue_context) => {
+                            let nvue_system_build =
+                                nvue_context.nvue_client.system_build_info().await?;
                             match nvue_system_build.strip_prefix("HBN ") {
                                 Some(hbn_version) => Ok(hbn_version.into()),
                                 None => Err(eyre::format_err!(
@@ -615,22 +606,6 @@ impl MainLoop {
                     }
 
                     tracing::trace!("Desired network config is {conf:?}");
-                    // Generate the fmds interface plan from the config. This does not apply the plan.
-                    // The plan is applied when the NVUE template is written
-                    let fmds_proposed_interfaces = &self.agent_config.fmds_armos_networking;
-                    let network_plan = DpuNetworkInterfaces::new(fmds_proposed_interfaces);
-
-                    let fmds_interface_plan =
-                        Interface::plan(self.hbn_device_names.sfs[0], network_plan).await?;
-                    tracing::trace!("Interface plan: {:?}", fmds_interface_plan);
-
-                    // Generate the fmds route plan from conf.tenant_interfaces[n].address
-                    // the plan is applied when the nvue template is written
-                    let route_plan =
-                        plan_fmds_armos_routing(self.hbn_device_names.sfs[0], &proposed_routes)
-                            .await?;
-                    tracing::trace!("Route plan: {:?}", route_plan);
-
                     // Get the actual virtualization type to use for configuring
                     // an interface, where we'll default to reading the one provided
                     // by the Carbide API, with the ability to override via RunOptions.
@@ -651,6 +626,24 @@ impl MainLoop {
                         if self.options.agent_platform_type.is_dpu_os()
                             && hbn_version >= self.fmds_minimum_hbn_version
                         {
+                            // Generate the fmds interface plan from the config. This does not apply the plan.
+                            // The plan is applied when the NVUE template is written
+                            let fmds_proposed_interfaces = &self.agent_config.fmds_armos_networking;
+                            let network_plan = DpuNetworkInterfaces::new(fmds_proposed_interfaces);
+
+                            let fmds_interface_plan =
+                                Interface::plan(self.hbn_device_names.sfs[0], network_plan).await?;
+                            tracing::trace!("Interface plan: {:?}", fmds_interface_plan);
+
+                            // Generate the fmds route plan from conf.tenant_interfaces[n].address
+                            // the plan is applied when the nvue template is written
+                            let route_plan = plan_fmds_armos_routing(
+                                self.hbn_device_names.sfs[0],
+                                &proposed_routes,
+                            )
+                            .await?;
+                            tracing::trace!("Route plan: {:?}", route_plan);
+
                             // Apply the interface plan. This is where we actually configure
                             // the FMDS phone home interface on the DPU.
                             Interface::apply(fmds_interface_plan).await?;
@@ -681,6 +674,7 @@ impl MainLoop {
                         {
                             ethernet_virtualization::update_traffic_intercept_bridging(
                                 &conf,
+                                self.hbn_device_names.clone(),
                                 self.agent_config.hbn.skip_reload,
                             )
                             .await
@@ -689,8 +683,8 @@ impl MainLoop {
                         };
 
                         if bridging_result.is_ok() {
-                            let update_flavor = match self.nvue_client.as_ref() {
-                                Some(nvue_client) => NvueUpdateFlavor::RestApi { nvue_client },
+                            let update_flavor = match self.nvue_context.as_mut() {
+                                Some(nvue_context) => NvueUpdateFlavor::RestApi { nvue_context },
                                 None => NvueUpdateFlavor::StartupFile {
                                     hbn_root: &self.agent_config.hbn.root_dir,
                                     skip_post: self.agent_config.hbn.skip_reload,
@@ -710,8 +704,11 @@ impl MainLoop {
 
                     let joined_result = match (update_result, dhcp_result) {
                         (Ok(a), Ok(b)) => Ok(a | b),
-                        (Err(e1), Err(e2)) => Err(eyre::eyre!("errors update: {e1}, dhcp: {e2}")),
-                        (Err(err), _) | (_, Err(err)) => Err(err),
+                        (Err(e1), Err(e2)) => Err(eyre::eyre!(
+                            "network update failed: update={e1:#}, dhcp={e2:#}"
+                        )),
+                        (Err(err), Ok(_)) => Err(err.wrap_err("network update failed (update)")),
+                        (Ok(_), Err(err)) => Err(err.wrap_err("network update failed (dhcp)")),
                     };
                     match joined_result {
                         Ok(has_changed) => {
@@ -789,7 +786,7 @@ impl MainLoop {
                             match ethernet_virtualization::interfaces(
                                 &conf,
                                 self.factory_mac_address,
-                                self.nvue_client.as_ref(),
+                                self.nvue_context.as_ref().map(|c| &c.nvue_client),
                             )
                             .await
                             {
@@ -808,7 +805,10 @@ impl MainLoop {
 
                     // In case of secondary DPU, the interface must be disabled if on admin network, else enabled.
                     // Note that the nvue config handles the blocking of traffic on the interface.  This is only so that the host link reflects the correct state.
-                    if let Err(err) = ethernet_virtualization::update_interface_state(&conf).await {
+                    if self.options.agent_platform_type.is_dpu_os()
+                        && let Err(err) =
+                            ethernet_virtualization::update_interface_state(&conf).await
+                    {
                         tracing::error!(error = format!("{err:#}"), "Updating interface state.");
                     }
                 }
@@ -829,7 +829,7 @@ impl MainLoop {
                 current_instance_config_version = status_out.instance_config_version.clone();
                 current_instance_id = status_out.instance_id.as_ref().map(|id| id.to_string());
 
-                let health_report = match self.nvue_client.as_ref() {
+                let health_report = match self.nvue_context.as_ref() {
                     None => {
                         health::health_check(HealthCheckParams {
                             hbn_root: &self.agent_config.hbn.root_dir,
@@ -843,7 +843,7 @@ impl MainLoop {
                         })
                         .await
                     }
-                    Some(nvue_client) => health::nvue_api_health(nvue_client).await,
+                    Some(nvue_context) => health::nvue_api_health(&nvue_context.nvue_client).await,
                 };
                 is_healthy = !health_report.successes.is_empty() && health_report.alerts.is_empty();
                 self.is_hbn_up = health::is_up(&health_report);
@@ -934,9 +934,10 @@ impl MainLoop {
             }
         }
 
-        if let result @ IterationResult {
-            stop_agent: true, ..
-        } = self.perform_upgrade_check(now).await
+        if self.options.agent_platform_type.is_dpu_os()
+            && let result @ IterationResult {
+                stop_agent: true, ..
+            } = self.perform_upgrade_check(now).await
         {
             return Ok(result);
         }
@@ -1057,7 +1058,7 @@ fn effective_virtualization_type(
     // table for the VPC this DPU is in).
     //
     // This may be unset, which means to just use
-    // EthernetVirtualizerWithNvue.
+    // EthernetVirtualizer.
     let virtualization_type_from_remote = conf
         .network_virtualization_type
         .map(rpc::VpcVirtualizationType::try_from)
@@ -1066,7 +1067,7 @@ fn effective_virtualization_type(
 
     // And now see if the remote virtualization type should be overwritten
     // by runtime options. If it's not, and the remote value was also unset,
-    // then just use EthernetVirtualizerWithNvue.
+    // then just use EthernetVirtualizer.
     let virtualization_type = options
         .override_network_virtualization_type // dev
         .or(virtualization_type_from_remote)

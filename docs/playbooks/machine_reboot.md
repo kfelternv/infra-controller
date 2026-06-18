@@ -1,6 +1,6 @@
 # Rebooting a machine
 
-This page describes how to reboot a machine managed by NCX Infra Controller (NICo) (i.e. a managed host or DPU)
+This page describes how to reboot a machine managed by NVIDIA Infra Controller (NICo) (i.e. a managed host or DPU)
 in any potential state of its lifecycle.
 
 ## Important note
@@ -15,31 +15,31 @@ instance lifecycle.**
 
 The following steps can be used to reboot a machine:
 
-### 1. Obtain access to `carbide-admin-cli`
+### 1. Obtain access to `nico-admin-cli`
 
-See [carbide-admin-cli access on a Forge cluster](forge_admin_cli.md).
+See [nico-admin-cli access on a NICo deployment](nico_admin_cli.md).
 
-### 2. Execute the `carbide-admin-cli machine reboot` command
+### 2. Execute the `nico-admin-cli machine reboot` command
 
-`carbide-admin-cli machine reboot` can be used to restart a machine.
+`nico-admin-cli machine reboot` can be used to restart a machine.
 It always will require the machine's BMC IP and port to be specified.
 
 BMC credentials can either be explicitly passed, or the `--machine-id` parameter
-can be used to let the forge site-controller read the last known credentials
+can be used to let the NICo site controller read the last known credentials
 for the machine.
 
 Rebooting a machine will also always reset its boot order. The machine
 will PXE boot, and thereby will be able to retrieve new boot instructions from
-the Forge site controller.
+the NICo site controller.
 
 **Example:**
 
 ```
-/opt/carbide/carbide-admin-cli -c https://127.0.0.1:1079 machine reboot --address 123.123.123.123 --port 9999 --machine-id="60cef902-9779-4666-8362-c9bb4b37184f"
+/opt/nico/nico-admin-cli -c https://127.0.0.1:1079 machine reboot --address 123.123.123.123 --port 9999 --machine-id="60cef902-9779-4666-8362-c9bb4b37184f"
 ```
 
 or using username and password:
 
 ```
-/opt/carbide/carbide-admin-cli -c https://127.0.0.1:1079 machine reboot --address 123.123.123.123 --port 9999 --username myhost --password mypassword
+/opt/nico/nico-admin-cli -c https://127.0.0.1:1079 machine reboot --address 123.123.123.123 --port 9999 --username myhost --password mypassword
 ```

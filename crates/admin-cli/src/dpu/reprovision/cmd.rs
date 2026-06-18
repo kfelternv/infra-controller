@@ -15,12 +15,12 @@
  * limitations under the License.
  */
 
-use ::rpc::admin_cli::{CarbideCliError, CarbideCliResult};
 use ::rpc::forge::DpuReprovisioningRequest;
 use carbide_uuid::machine::MachineType;
 use prettytable::{Table, row};
 
 use super::args::Args;
+use crate::errors::{CarbideCliError, CarbideCliResult};
 use crate::machine::{HealthReportTemplates, get_health_report};
 use crate::rpc::ApiClient;
 
@@ -74,7 +74,7 @@ async fn apply_health_report(
         }
         _ => {
             return Err(CarbideCliError::GenericError(format!(
-                "Invalid machine ID for reprevisioning, only Hosts and DPUs are supported: {update_message}"
+                "Invalid machine ID for reprovisioning, only Hosts and DPUs are supported: {id}"
             )));
         }
     };

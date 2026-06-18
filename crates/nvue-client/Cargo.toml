@@ -28,12 +28,14 @@ name = "nvue_client"
 [features]
 
 [dependencies]
-eyre = { workspace = true }
-reqwest = { features = ["rustls-tls", "json"], workspace = true }
+reqwest = { features = ["rustls", "json"], workspace = true }
 serde = { features = ["derive"], workspace = true }
 serde_json = { workspace = true }
 serde_yaml = { workspace = true }
 thiserror = { workspace = true }
+
+[dev-dependencies]
+glob = { workspace = true }
 
 [lints]
 workspace = true

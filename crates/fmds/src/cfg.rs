@@ -15,7 +15,10 @@
  * limitations under the License.
  */
 
+use std::net::SocketAddr;
+
 use clap::Parser;
+use ipnetwork::IpNetwork;
 
 #[derive(Parser)]
 #[clap(name = "carbide-fmds")]
@@ -27,11 +30,15 @@ pub struct Options {
     /// carbide-dpu-agent. The tenant should not be able to
     /// communicate with this address.
     #[clap(long, default_value = "0.0.0.0:50052")]
-    pub grpc_address: String,
+    pub grpc_address: SocketAddr,
 
     /// REST listen address for tenant OS metadata queries.
     #[clap(long, default_value = "0.0.0.0:80")]
-    pub rest_address: String,
+    pub rest_address: SocketAddr,
+
+    /// Prometheus scrape address for `/metrics` (HTTP request stats for the REST metadata API).
+    #[clap(long, default_value = "0.0.0.0:8888")]
+    pub metrics_address: SocketAddr,
 
     /// Carbide API server address for phone_home.
     #[clap(long, default_value = "https://carbide-api.forge")]
@@ -51,6 +58,18 @@ pub struct Options {
     /// This will probably be shared with the carbide-dpu-agent.
     #[clap(long)]
     pub client_key: Option<String>,
+
+    /// Name of the interface to assign the metadata-service address to.
+    #[clap(long, env = "FMDS_INTERFACE_NAME", default_value = "f_pf0hpf_if")]
+    pub interface_name: String,
+
+    /// CIDR to assign on `interface_name` (cloud metadata-service address).
+    #[clap(
+        long,
+        env = "FMDS_INTERFACE_CIDR",
+        default_value = "169.254.169.254/30"
+    )]
+    pub interface_cidr: IpNetwork,
 }
 
 impl Options {

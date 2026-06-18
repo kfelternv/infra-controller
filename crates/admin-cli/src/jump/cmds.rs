@@ -18,7 +18,6 @@
 use std::net::IpAddr;
 use std::str::FromStr;
 
-use ::rpc::admin_cli::CarbideCliError;
 use ::rpc::forge as forgerpc;
 use carbide_uuid::machine::MachineId;
 use dpa::ShowDpa;
@@ -26,6 +25,7 @@ use mac_address::MacAddress;
 
 use super::args::Cmd;
 use crate::cfg::runtime::RuntimeContext;
+use crate::errors::CarbideCliError;
 use crate::{
     compute_allocation, domain, dpa, instance, machine, machine_interfaces, network_segment,
     resource_pool, site_explorer, vpc,
@@ -97,11 +97,7 @@ pub async fn jump(args: Cmd, ctx: &mut RuntimeContext) -> color_eyre::Result<()>
                             label_value: None,
                             instance_type_id: None,
                         },
-                        &mut ctx.output_file,
-                        &config_format,
-                        &ctx.api_client,
-                        ctx.config.page_size,
-                        &ctx.config.sort_by,
+                        ctx,
                     )
                     .await?
                 }
@@ -228,11 +224,7 @@ pub async fn jump(args: Cmd, ctx: &mut RuntimeContext) -> color_eyre::Result<()>
                             label_value: None,
                             instance_type_id: None,
                         },
-                        &mut ctx.output_file,
-                        &ctx.config.format,
-                        &ctx.api_client,
-                        ctx.config.page_size,
-                        &ctx.config.sort_by,
+                        ctx,
                     )
                     .await?
                 }

@@ -15,9 +15,8 @@
  * limitations under the License.
  */
 
-use ::rpc::admin_cli::CarbideCliResult;
-
 use super::args::OnDemandOptions;
+use crate::errors::CarbideCliResult;
 use crate::rpc::ApiClient;
 
 pub async fn on_demand_machine_validation(
@@ -29,7 +28,7 @@ pub async fn on_demand_machine_validation(
             args.machine,
             args.tags,
             args.allowed_tests,
-            args.run_unverfied_tests,
+            args.run_unverified_tests,
             args.contexts,
         )
         .await?;

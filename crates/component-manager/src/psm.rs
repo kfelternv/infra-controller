@@ -1,6 +1,7 @@
 // SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 // SPDX-License-Identifier: Apache-2.0
 
+use carbide_secrets::credentials::Credentials;
 use model::component_manager::{FirmwareState, PowerAction, PowerShelfComponent};
 use tonic::transport::Channel;
 use tracing::instrument;
@@ -9,7 +10,7 @@ use crate::config::BackendTlsConfig;
 use crate::error::ComponentManagerError;
 use crate::power_shelf_manager::{
     PowerShelfComponentResult, PowerShelfEndpoint, PowerShelfFirmwareUpdateStatus,
-    PowerShelfFirmwareVersions, PowerShelfManager, PowerShelfVendor,
+    PowerShelfFirmwareVersions, PowerShelfManager, PowerShelfPowerStateResult, PowerShelfVendor,
 };
 use crate::proto::psm;
 use crate::types::parse_mac;
@@ -48,6 +49,15 @@ fn map_vendor(v: &PowerShelfVendor) -> i32 {
     }
 }
 
+fn credentials_to_psm(creds: &Credentials) -> psm::Credentials {
+    match creds {
+        Credentials::UsernamePassword { username, password } => psm::Credentials {
+            username: username.clone(),
+            password: password.clone(),
+        },
+    }
+}
+
 fn to_psm_component(c: &PowerShelfComponent) -> psm::PowershelfComponent {
     match c {
         PowerShelfComponent::Pmc => psm::PowershelfComponent::Pmc,
@@ -72,7 +82,7 @@ async fn register_with_psm(
             pmc_mac_address: ep.pmc_mac.to_string(),
             pmc_ip_address: ep.pmc_ip.to_string(),
             pmc_vendor: map_vendor(&ep.pmc_vendor),
-            pmc_credentials: None,
+            pmc_credentials: Some(credentials_to_psm(&ep.pmc_credentials)),
         })
         .collect();
 
@@ -213,6 +223,7 @@ impl PowerShelfManager for PsmPowerShelfBackend {
         endpoints: &[PowerShelfEndpoint],
         target_version: &str,
         components: &[PowerShelfComponent],
+        _options: &crate::types::FirmwareUpdateOptions,
     ) -> Result<Vec<PowerShelfComponentResult>, ComponentManagerError> {
         register_with_psm(&mut self.client.clone(), endpoints).await?;
 
@@ -367,6 +378,50 @@ impl PowerShelfManager for PsmPowerShelfBackend {
             })
             .collect()
     }
+
+    #[instrument(skip(self), fields(backend = "psm"))]
+    async fn get_power_state(
+        &self,
+        endpoints: &[PowerShelfEndpoint],
+    ) -> Result<Vec<PowerShelfPowerStateResult>, ComponentManagerError> {
+        register_with_psm(&mut self.client.clone(), endpoints).await?;
+
+        let request = psm::PowershelfRequest {
+            pmc_macs: mac_strings(endpoints),
+        };
+
+        let response = self
+            .client
+            .clone()
+            .get_powershelves(request)
+            .await?
+            .into_inner();
+
+        let mut results = Vec::with_capacity(endpoints.len());
+        for ep in endpoints {
+            let Some(shelf) = response.powershelves.iter().find(|s| {
+                s.pmc
+                    .as_ref()
+                    .is_some_and(|pmc| pmc.mac_address == ep.pmc_mac.to_string())
+            }) else {
+                results.push(PowerShelfPowerStateResult {
+                    pmc_mac: ep.pmc_mac,
+                    power_state: None,
+                    error: Some("power shelf not found in PSM inventory".into()),
+                });
+                continue;
+            };
+
+            let powered_on = shelf.psus.iter().any(|psu| psu.power_state);
+            results.push(PowerShelfPowerStateResult {
+                pmc_mac: ep.pmc_mac,
+                power_state: Some(if powered_on { "on" } else { "off" }.into()),
+                error: None,
+            });
+        }
+
+        Ok(results)
+    }
 }
 
 #[cfg(test)]
@@ -433,11 +488,19 @@ mod tests {
                 pmc_ip: "10.0.0.1".parse().unwrap(),
                 pmc_mac: "AA:BB:CC:DD:EE:01".parse().unwrap(),
                 pmc_vendor: PowerShelfVendor::Liteon,
+                pmc_credentials: Credentials::UsernamePassword {
+                    username: "admin".into(),
+                    password: "pass".into(),
+                },
             },
             PowerShelfEndpoint {
                 pmc_ip: "10.0.0.2".parse().unwrap(),
                 pmc_mac: "AA:BB:CC:DD:EE:02".parse().unwrap(),
                 pmc_vendor: PowerShelfVendor::Unknown,
+                pmc_credentials: Credentials::UsernamePassword {
+                    username: "admin".into(),
+                    password: "pass".into(),
+                },
             },
         ];
         let macs = mac_strings(&eps);

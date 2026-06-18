@@ -21,10 +21,11 @@ use carbide_uuid::machine::MachineId;
 use chrono::{DateTime, Utc};
 use clap::Parser;
 use prettytable::{Cell, Row, Table};
-use rpc::admin_cli::{CarbideCliResult, OutputFormat};
+use rpc::admin_cli::OutputFormat;
 
 use crate::cfg::dispatch::Dispatch;
 use crate::cfg::runtime::RuntimeContext;
+use crate::errors::CarbideCliResult;
 use crate::rpc::ApiClient;
 
 #[cfg(test)]
@@ -42,16 +43,37 @@ pub enum ScoutStreamAction {
 
 // ConnectionsShowCommand shows all active scout stream connections.
 #[derive(Parser, Debug)]
+#[command(after_long_help = "\
+EXAMPLES:
+
+Show all active scout stream connections:
+    $ nico-admin-cli scout-stream show
+
+")]
 pub struct ConnectionsShowCommand {}
 
 // ConnectionsDisconnectCommand disconnects a machine based on machine ID.
 #[derive(Parser, Debug)]
+#[command(after_long_help = "\
+EXAMPLES:
+
+Disconnect a machine's scout stream connection:
+    $ nico-admin-cli scout-stream disconnect 12345678-1234-5678-90ab-cdef01234567
+
+")]
 pub struct ConnectionsDisconnectCommand {
     pub machine_id: MachineId,
 }
 
 // ConnectionsPingCommand pings a machine based on machine ID.
 #[derive(Parser, Debug)]
+#[command(after_long_help = "\
+EXAMPLES:
+
+Ping-test a machine's scout stream connection:
+    $ nico-admin-cli scout-stream ping 12345678-1234-5678-90ab-cdef01234567
+
+")]
 pub struct ConnectionsPingCommand {
     pub machine_id: MachineId,
 }
@@ -83,7 +105,7 @@ async fn handle_show(
 ) -> CarbideCliResult<()> {
     let response = ctxt.grpc_conn.0.scout_stream_show_connections().await?;
     let mut connections = response.scout_stream_connections;
-    connections.sort_by(|a, b| a.machine_id.cmp(&b.machine_id));
+    connections.sort_by_key(|connection| connection.machine_id);
     match ctxt.format {
         OutputFormat::AsciiTable => {
             print_connections_table(&connections);

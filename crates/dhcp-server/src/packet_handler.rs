@@ -18,6 +18,7 @@ use std::net::{Ipv4Addr, SocketAddrV4};
 use std::str::FromStr;
 use std::sync::Arc;
 
+use carbide_rpc_utils::dhcp::{HostConfig, InterfaceInfo};
 use dhcproto::v4::relay::{RelayAgentInformation, RelayCode, RelayInfo};
 use dhcproto::v4::{Decodable, Decoder, DhcpOption, Message, MessageType, OptionCode};
 use dhcproto::{Encodable, Encoder};
@@ -26,7 +27,6 @@ use lru::LruCache;
 use rpc::forge::{DhcpDiscovery, DhcpRecord};
 use tokio::net::UdpSocket;
 use tokio::sync::Mutex;
-use utils::models::dhcp::{HostConfig, InterfaceInfo};
 
 use crate::cache::CacheEntry;
 use crate::errors::DhcpError;
@@ -177,6 +177,9 @@ impl DecodedPacket {
             circuit_id: handler.get_circuit_id(self, circuit_id),
             remote_id: self.get_remote_id(),
             desired_address: None,
+            address_family: None,
+            message_kind: None,
+            duid: None,
         }
     }
 
@@ -542,6 +545,7 @@ mod test {
             fqdn: "fqdn1".to_string(),
             booturl: None,
             mtu: None,
+            ipv6: None,
         };
         let interface_mtu_9000 = crate::packet_handler::InterfaceInfo {
             address: <std::net::Ipv4Addr as std::str::FromStr>::from_str("20.22.2.2")
@@ -554,6 +558,7 @@ mod test {
             fqdn: "fqdn2".to_string(),
             booturl: None,
             mtu: Some(9000),
+            ipv6: None,
         };
         let mut interface_mtu_65537 = interface_mtu_none.clone();
         interface_mtu_65537.mtu = Some(65537);
@@ -574,15 +579,16 @@ mod test {
         tree.insert("interface_mtu_12000".to_string(), interface_mtu_12000);
         expected.insert("interface_mtu_12000".to_string(), 12000);
 
-        let host_config: utils::models::dhcp::HostConfig = utils::models::dhcp::HostConfig {
-            host_interface_id:
-                <carbide_uuid::machine::MachineInterfaceId as std::str::FromStr>::from_str(
-                    "959888da-cdc8-4079-8d23-8a09832447ce",
-                )
-                .ok()
-                .unwrap(),
-            host_ip_addresses: tree.clone(),
-        };
+        let host_config: carbide_rpc_utils::dhcp::HostConfig =
+            carbide_rpc_utils::dhcp::HostConfig {
+                host_interface_id:
+                    <carbide_uuid::machine::MachineInterfaceId as std::str::FromStr>::from_str(
+                        "959888da-cdc8-4079-8d23-8a09832447ce",
+                    )
+                    .ok()
+                    .unwrap(),
+                host_ip_addresses: tree.clone(),
+            };
 
         for (circuit_id, expected_mtu) in expected.iter() {
             println!("Checking circuit_id: {}", circuit_id);

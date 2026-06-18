@@ -14,11 +14,11 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
+use carbide_rpc_utils::dhcp::InterfaceInfo;
 use carbide_uuid::machine::MachineInterfaceId;
 use lru::LruCache;
 use rpc::forge::{DhcpDiscovery, DhcpRecord};
 use tonic::async_trait;
-use utils::models::dhcp::InterfaceInfo;
 
 use super::DhcpMode;
 use crate::cache::CacheEntry;
@@ -44,6 +44,9 @@ fn from_host_conf(value: &InterfaceInfo, interface_id: MachineInterfaceId) -> Dh
         gateway: Some(value.gateway.to_string()),
         booturl: value.booturl.clone(),
         last_invalidation_time: None,
+        ntp_servers: vec![],
+        dhcpv6_preferred_lifetime_secs: None,
+        dhcpv6_valid_lifetime_secs: None,
     }
 }
 

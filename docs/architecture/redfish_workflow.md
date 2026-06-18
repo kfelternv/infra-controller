@@ -9,14 +9,14 @@ For the overall NICo architecture and component responsibilities, see [Overview 
 ```
 DHCP Request (BMC)
   → NICo DHCP (Kea hook)
-    → Carbide Core (gRPC discover_dhcp)
+    → NICo Core (gRPC discover_dhcp)
       → Site Explorer probes Redfish endpoint
         → Authenticates, collects inventory
           → Pairs DPUs to hosts via serial number matching
             → Provisioning:
                1. Set DPU boot to HTTP IPv4 UEFI
                2. Power cycle DPU via Redfish
-               3. DPU PXE boots carbide.efi
+               3. DPU PXE boots nico.efi
                4. BIOS config (SR-IOV, etc.)
                5. Set host boot order (DPU first)
                6. Power cycle host via Redfish
@@ -28,13 +28,13 @@ DHCP Request (BMC)
 
 ## 1. DHCP Discovery
 
-When a BMC on the underlay network sends a DHCP request, the NICo DHCP server (a Kea hook plugin) captures it and forwards the discovery information to Carbide Core.
+When a BMC on the underlay network sends a DHCP request, the NICo DHCP server (a Kea hook plugin) captures it and forwards the discovery information to NICo Core.
 
 The Kea hook is implemented as a Rust library with C FFI bindings. When a DHCP packet arrives, the hook:
 
 1. Extracts the MAC address, vendor class string, relay address, circuit ID, and remote ID from the DHCP packet
 2. Builds a `Discovery` struct with these fields
-3. Sends a gRPC `discover_dhcp()` request to Carbide Core with the MAC and vendor string
+3. Sends a gRPC `discover_dhcp()` request to NICo Core with the MAC and vendor string
 4. Receives back a `Machine` response containing the network configuration (IP address, gateway, etc.) to return to the BMC
 
 The vendor class string is parsed to identify the BMC type and capabilities. DHCP entries are tracked in the database by MAC address and associated with machine interfaces.
@@ -80,8 +80,8 @@ With an authenticated session, Site Explorer queries a comprehensive set of Redf
 Serial numbers are trimmed of whitespace. If `system.serial_number` is missing, the chassis serial number is used as a fallback.
 
 **Key files:**
-- `crates/api/src/site_explorer/redfish.rs` — `RedfishClient`: `probe_redfish_endpoint()`, `create_redfish_client()`, inventory queries
-- `crates/api/src/site_explorer/bmc_endpoint_explorer.rs` — `BmcEndpointExplorer` orchestrates credential lookup and exploration
+- `crates/site-explorer/src/redfish.rs` — `RedfishClient`: `get_redfish_vendor()`, `create_redfish_client()`, inventory queries
+- `crates/site-explorer/src/bmc_endpoint_explorer.rs` — `BmcEndpointExplorer` orchestrates credential lookup and exploration
 - `crates/api-model/src/bmc_info.rs` — `BmcInfo` model (IP, port, MAC, firmware version)
 
 ## 3. DPU-Host Pairing
@@ -116,17 +116,17 @@ Before accepting a pairing, NICo validates:
 Once all DPUs are matched and validated, the host enters an "ingestable" state and Site Explorer kickstarts the ingestion process via the ManagedHost state machine.
 
 **Key file:**
-- `crates/api/src/site_explorer/mod.rs` — `identify_managed_hosts()` with the complete pairing algorithm
+- `crates/site-explorer/src/lib.rs`: `identify_managed_hosts()` with the complete pairing algorithm
 
 ## 4. DPU Provisioning
 
-After pairing, the DPU must be provisioned with NICo software. This is orchestrated via Temporal workflows (in `carbide-rest`) with Redfish power control (in `ncx-infra-controller-core`).
+After pairing, the DPU must be provisioned with NICo software. This is orchestrated via Temporal workflows (in `nico-rest`) with Redfish power control (in `infra-controller`).
 
 ### Boot Configuration
 
 The DPU is configured to boot from HTTP IPv4 UEFI, which directs it to the NICo PXE server. The PXE server serves different artifacts based on architecture:
 
-- **ARM (BlueField DPUs)**: `carbide.efi` with cloud-init user-data containing `machine_id` and `server_uri`
+- **ARM (BlueField DPUs)**: `nico.efi` with cloud-init user-data containing `machine_id` and `server_uri`
 - **x86 (Hosts)**: `scout.efi` with machine discovery parameters (`cli_cmd=auto-detect`)
 
 ### Power Cycle
@@ -143,15 +143,15 @@ The power control operation supports multiple reset types: `On`, `ForceOff`, `Gr
 ### Installation
 
 After PXE boot, the DPU:
-1. Fetches `carbide.efi` from the NICo PXE server over HTTP
+1. Fetches `nico.efi` from the NICo PXE server over HTTP
 2. Receives cloud-init configuration with its `machine_id` and NICo API endpoint
-3. Installs and starts the DPU agent (`dpu-agent`), which connects back to Carbide Core via gRPC
+3. Installs and starts the DPU agent (`dpu-agent`), which connects back to NICo Core via gRPC
 
 **Key files:**
 - `crates/api/src/ipxe.rs` — iPXE instruction generation per architecture
 - `pxe/ipxe/local/embed.ipxe` — iPXE boot script template
-- `carbide-rest/workflow/pkg/workflow/instance/reboot.go` — `RebootInstance` Temporal workflow
-- `carbide-rest/site-workflow/pkg/grpc/client/instance_powercycle.go` — Power cycle gRPC call to site agent
+- `nico-rest/workflow/pkg/workflow/instance/reboot.go` — `RebootInstance` Temporal workflow
+- `nico-rest/site-workflow/pkg/grpc/client/instance_powercycle.go` — Power cycle gRPC call to site agent
 
 ## 5. Host Configuration and Boot
 
@@ -194,12 +194,12 @@ Body: {"ResetType": "GracefulRestart"}
 Power cycles are rate-limited to avoid excessive reboots (checked via `time_since_redfish_powercycle` against `config.reset_rate_limit`).
 
 **Key files:**
-- `crates/api/src/site_explorer/redfish.rs` — `set_boot_order_dpu_first()`, `redfish_powercycle()`
-- `crates/api/src/site_explorer/bmc_endpoint_explorer.rs` — Orchestrates boot order with credential lookup
+- `crates/site-explorer/src/redfish.rs` — `set_boot_order_dpu_first()`, `redfish_powercycle()`
+- `crates/site-explorer/src/bmc_endpoint_explorer.rs` — Orchestrates boot order with credential lookup
 
 ## 6. Ongoing Monitoring
 
-Once hosts are provisioned, the `carbide-hw-health` service continuously monitors **both host BMCs and DPU BMCs** via Redfish. The endpoint discovery calls `find_machine_ids` with `include_dpus: true`, so every BMC known to NICo (host and DPU) gets its own set of collectors:
+Once hosts are provisioned, the `nico-hw-health` service continuously monitors **both host BMCs and DPU BMCs** via Redfish. The endpoint discovery calls `find_machine_ids` with `include_dpus: true`, so every BMC known to NICo (host and DPU) gets its own set of collectors:
 
 - **Health monitor** — sensor collection and health alert reporting
 - **Firmware collector** — firmware inventory polling
@@ -250,7 +250,7 @@ GET /redfish/v1/Chassis/{id}/Sensors/{sensor_id}
 
 Sensor types include: Temperature (Cel), Rotational/Fan (RPM), Power (W), and Current (A).
 
-All sensor data is exported as Prometheus metrics on the `/metrics` endpoint (port 9009) and fed into Carbide Core via `RecordHardwareHealthReport` for health aggregation.
+All sensor data is exported as Prometheus metrics on the `/metrics` endpoint (port 9009) and fed into NICo Core via `RecordHardwareHealthReport` for health aggregation.
 
 **Key files:**
 - `crates/health/src/firmware_collector.rs` — `FirmwareCollector` using nv-redfish
@@ -259,12 +259,12 @@ All sensor data is exported as Prometheus metrics on the `/metrics` endpoint (po
 
 ## Redfish Libraries
 
-NICo uses two Redfish client libraries concurrently. **nv-redfish** is replacing **libredfish** over time.
+NICo uses two Redfish client libraries concurrently. **nv-redfish** is replacing **libredfish** over time. Versions are pinned in the workspace dependencies in `Cargo.toml`.
 
 | Library | Version | Language | Used For | Location in Code |
 |---|---|---|---|---|
-| [libredfish](https://github.com/NVIDIA/libredfish) | 0.39.3 | Rust | Site Explorer: discovery, boot config, power control, BIOS, account management | `crates/api/src/site_explorer/` |
-| [nv-redfish](https://github.com/NVIDIA/nv-redfish) | 0.1.4 | Rust | Health monitoring: firmware inventory collection | `crates/health/src/` |
+| [libredfish](https://github.com/NVIDIA/libredfish) | v0.43.11 | Rust | Site Explorer: discovery, boot config, power control, BIOS, account management | `crates/site-explorer/`, via `crates/redfish/` |
+| [nv-redfish](https://github.com/NVIDIA/nv-redfish) | 0.7.1 | Rust | Site Explorer exploration and hardware health inventory collection | `crates/site-explorer/`, `crates/redfish/`, `crates/health/src/` |
 
 **libredfish** provides a `Redfish` trait with vendor-specific implementations (Dell, HPE, Lenovo, Supermicro, NVIDIA DPU/GB200/GH200/Viking). It handles the full breadth of BMC operations.
 

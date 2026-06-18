@@ -15,16 +15,29 @@
  * limitations under the License.
  */
 
+mod discovery;
+mod entity_metrics;
 mod firmware;
+pub(crate) mod inventory;
+mod leak_detector;
 mod logs;
 mod nmxt;
 mod nvue;
 mod runtime;
 mod sensors;
 
+pub use discovery::{EntityDiscoveryCollector, EntityDiscoveryCollectorConfig};
+pub use entity_metrics::{MetricsCollector, MetricsCollectorConfig};
 pub use firmware::{FirmwareCollector, FirmwareCollectorConfig};
-pub use logs::{LogsCollector, LogsCollectorConfig, SseLogCollector, SseLogCollectorConfig};
+pub(crate) use inventory::SharedInventory;
+pub use leak_detector::{LeakDetectorCollector, LeakDetectorCollectorConfig};
+pub(crate) use logs::auto::{AutoFailureBudget, BudgetDecision, FailureKind};
+pub use logs::{
+    DowngradeEvent, DowngradeReason, LogDowngradeRegistry, LogsCollector, LogsCollectorConfig,
+    SseLogCollector, SseLogCollectorConfig,
+};
 pub use nmxt::{NmxtCollector, NmxtCollectorConfig};
+pub use nvue::gnmi::subscriber::spawn_gnmi_collector;
 pub use nvue::rest::collector::{NvueRestCollector, NvueRestCollectorConfig};
 pub use runtime::{
     BackoffConfig, Collector, CollectorStartContext, EventStream, ExponentialBackoff,

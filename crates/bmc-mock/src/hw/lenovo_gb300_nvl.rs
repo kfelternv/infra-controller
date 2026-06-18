@@ -176,6 +176,7 @@ impl LenovoGB300Nvl<'_> {
                     secure_boot_available: false,
                     serial_number: Some(self.hgx_serial_number.to_string().into()),
                     storage: None,
+                    processors: None,
                 },
                 redfish::computer_system::SingleSystemConfig {
                     base_bios: Some(base_bios(system_id)),
@@ -195,6 +196,7 @@ impl LenovoGB300Nvl<'_> {
                     secure_boot_available: true,
                     serial_number: Some(self.system_0_serial_number.to_string().into()),
                     storage: None,
+                    processors: None,
                 },
             ],
         }
@@ -237,10 +239,13 @@ impl LenovoGB300Nvl<'_> {
                         redfish::sensor::Layout {
                             temperature: 47,
                             power: 2,
-                            leak: 12, // Leak + Voltage
+                            voltage: 12,
                             fan: 24,
                             current: 0,
                         },
+                    )),
+                    leak_detectors: Some(redfish::leak_detector::generate_chassis_leak_detectors(
+                        4,
                     )),
                     ..redfish::chassis::SingleChassisConfig::defaults()
                 }))

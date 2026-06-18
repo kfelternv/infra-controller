@@ -17,10 +17,10 @@
 use std::net::SocketAddr;
 use std::path::PathBuf;
 
-use forge_secrets::CredentialConfig;
+use carbide_secrets::CredentialConfig;
+use carbide_utils::HostPortPair;
 use tokio::sync::oneshot::Sender;
 use tokio_util::sync::CancellationToken;
-use utils::HostPortPair;
 
 use crate::utils::LOCALHOST_CERTS;
 
@@ -146,6 +146,13 @@ pub async fn start(
         start = "1024500"
         end = "1024550"
 
+        [pools.dpa-vni]
+        type = "integer"
+
+        [[pools.dpa-vni.ranges]]
+        start = "1024600"
+        end = "1024650"
+
         [pools.vpc-dpu-lo]
         type = "ipv4"
         prefix = "10.181.62.1/26"
@@ -199,7 +206,6 @@ pub async fn start(
         explorations_per_run = 90
         create_machines = true
         machines_created_per_run = 30
-        allow_zero_dpu_hosts = true
         allow_proxy_to_unknown_host = false
         {bmc_proxy_cfg}
         reset_rate_limit = "3600s"
@@ -243,7 +249,7 @@ pub async fn start(
         autoupdate = true
         host_enable_autoupdate = []
         host_disable_autoupdate = []
-        run_interval = "5s"
+        run_interval = "1s"
         max_uploads = 4
         concurrency_limit = 16
         firmware_directory = "{firmware_directory_str}"
@@ -281,12 +287,16 @@ pub async fn start(
         )
     };
 
+    let mut tmp = tempfile::NamedTempFile::new()?;
+    std::io::Write::write_all(&mut tmp, carbide_config_str.as_bytes())?;
     carbide::run(
         0,
-        carbide_config_str,
+        tmp.path().to_path_buf(),
         None,
         credential_config,
         true,
+        // The in-process test server does not serve the admin web UI.
+        None,
         cancel_token,
         ready_channel,
     )

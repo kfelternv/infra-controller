@@ -52,7 +52,7 @@ struct State {
 
 #[tokio::test]
 pub async fn test_network_monitor() -> eyre::Result<()> {
-    carbide_host_support::init_logging()?;
+    carbide_host_support::init_logging("nico-dpu-agent")?;
 
     let state: Arc<Mutex<State>> = Arc::new(Mutex::new(Default::default()));
 
@@ -166,10 +166,12 @@ async fn handle_get_dpu_info_list(
             rpc::DpuInfo {
                 id: DPU_ID.to_string(),
                 loopback_ip: "172.20.0.119".to_string(),
+                observed_status: None,
             },
             rpc::DpuInfo {
                 id: DEST_DPU_ID.to_string(),
                 loopback_ip: "172.20.0.200".to_string(),
+                observed_status: None,
             },
         ],
     })
@@ -281,12 +283,13 @@ impl Default for TestMeter {
             .without_target_info()
             .build()
             .unwrap();
-        let view = metrics::new_view(
-            metrics::Instrument::new().name("*_network_*"), // Match all instruments with "network" in their name
-            metrics::Stream::new().aggregation(metrics::Aggregation::ExplicitBucketHistogram {
+        let view = carbide_metrics_utils::new_view(
+            "*_network_*", // Match all instruments with "network" in their name
+            None,
+            metrics::Aggregation::ExplicitBucketHistogram {
                 boundaries: vec![0.1, 0.2, 0.5, 1.0, 2.0, 5.0, 10.0, 20.0, 50.0, 100.0],
                 record_min_max: true,
-            }),
+            },
         )
         .ok();
         let meter_provider = match view {

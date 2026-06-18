@@ -17,8 +17,9 @@
 use std::collections::HashSet;
 use std::sync::Arc;
 
+use bmc_mock::HostHardwareType;
 use futures::future::try_join_all;
-use rpc::forge::VpcVirtualizationType;
+use rpc::forge::{DpuMode, VpcVirtualizationType};
 use tokio::sync::mpsc;
 use uuid::Uuid;
 
@@ -97,20 +98,83 @@ impl MachineATron {
             })
             .collect();
 
-        for machine in &machines {
-            // Inform the API that we have finished our reboot (ie. scout is now running)
-            self.app_context
-                .api_client()
-                .add_expected_machine(
-                    machine.host_info().bmc_mac_address.to_string(),
-                    machine.host_info().serial.clone(),
+        if self.app_context.app_config.register_expected_machines {
+            for machine in &machines {
+                let host_info = machine.host_info();
+                let result = match host_info.hw_type {
+                    HostHardwareType::LiteOnPowerShelf => {
+                        self.app_context
+                            .api_client()
+                            .add_expected_power_shelf(
+                                host_info.bmc_mac_address.to_string(),
+                                host_info.serial.clone(),
+                            )
+                            .await
+                    }
+                    HostHardwareType::NvidiaSwitchNd5200Ld => {
+                        self.app_context
+                            .api_client()
+                            .add_expected_switch(
+                                host_info.bmc_mac_address.to_string(),
+                                host_info
+                                    .switch_serial_number
+                                    .clone()
+                                    .unwrap_or_else(|| host_info.serial.clone()),
+                                host_info
+                                    .nvos_mac_addresses
+                                    .iter()
+                                    .map(|mac| mac.to_string())
+                                    .collect(),
+                            )
+                            .await
+                    }
+                    _ => {
+                        // Derive the expected `dpu_mode` from the machine's
+                        // MachineConfig: zero-DPU hosts declare `NoDpu`, hosts
+                        // running their DPUs as NICs declare `NicMode`, everything
+                        // else defers to the absolute default (DpuMode).
+                        // Site-explorer's ingestion gate requires this explicit
+                        // declaration for any host without DPU PCIe devices.
+                        let dpu_mode = self
+                            .app_context
+                            .app_config
+                            .machines
+                            .get(machine.machine_config_section())
+                            .and_then(|config| {
+                                if config.dpu_per_host_count == 0 {
+                                    Some(DpuMode::NoDpu)
+                                } else if config.dpus_in_nic_mode {
+                                    Some(DpuMode::NicMode)
+                                } else {
+                                    None
+                                }
+                            });
+                        self.app_context
+                            .api_client()
+                            .add_expected_machine(
+                                host_info.bmc_mac_address.to_string(),
+                                host_info.serial.clone(),
+                                dpu_mode,
+                            )
+                            .await
+                    }
+                };
 
-                )
-                .await
-                .inspect_err(|e| {
-                    tracing::warn!(error=?e, "error adding expected machine, likely already ingested");
-                })
-                .ok();
+                result
+                    .inspect_err(|e| {
+                        tracing::warn!(
+                            error=?e,
+                            hw_type=%host_info.hw_type,
+                            "error adding expected inventory record, likely already ingested"
+                        );
+                    })
+                    .ok();
+            }
+        } else {
+            tracing::info!(
+                "register_expected_machines=false; skipping auto-registration of {} mock host(s)",
+                machines.len()
+            );
         }
 
         Ok(machines)
@@ -304,6 +368,7 @@ impl MachineATron {
 fn parse_network_virtualization_type(s: Option<&str>) -> Option<VpcVirtualizationType> {
     match s {
         Some("etv") => Some(VpcVirtualizationType::EthernetVirtualizer),
+        #[allow(deprecated)]
         Some("etv_nvue") => Some(VpcVirtualizationType::EthernetVirtualizerWithNvue),
         Some("fnn") => Some(VpcVirtualizationType::Fnn),
         Some(other) => {

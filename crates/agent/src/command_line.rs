@@ -18,6 +18,7 @@ use std::net::{IpAddr, Ipv4Addr};
 use std::path::PathBuf;
 use std::str::FromStr;
 
+use carbide_network::ip::prefix::Ipv4Net;
 use carbide_network::virtualization::VpcVirtualizationType;
 use carbide_uuid::machine::MachineId;
 use clap::Parser;
@@ -48,6 +49,11 @@ pub enum AgentCommand {
 
     #[clap(about = "Detect hardware and exit")]
     Hardware(HardwareOptions),
+
+    #[clap(
+        about = "Init-container entry point: download the root CA cert and snapshot hardware to the shared volume for the main container."
+    )]
+    InitContainer,
 
     #[clap(about = "One-off health check")]
     Health,
@@ -113,10 +119,10 @@ pub struct NvueOptions {
     pub uplinks: Vec<String>,
 
     #[clap(long, use_value_delimiter = true, help = "Comma separated")]
-    pub route_servers: Vec<String>,
+    pub route_servers: Vec<IpAddr>,
 
     #[clap(long, use_value_delimiter = true, help = "Comma separated")]
-    pub dhcp_servers: Vec<String>,
+    pub dhcp_servers: Vec<IpAddr>,
 
     #[clap(
         long,
@@ -171,13 +177,13 @@ pub struct NvueOptions {
         long,
         help = "IP to be used for a local VTEP when configuring an additional overlay network"
     )]
-    pub secondary_overlay_vtep_ip: Option<String>,
+    pub secondary_overlay_vtep_ip: Option<IpAddr>,
 
     #[clap(
         long,
         help = "Prefix to be used for configuring a set of internal bridges to be used with advanced routing for traffic interception.  Prefix length is expected to be /29 or smaller (i.e., 8 or more IP addresses)."
     )]
-    pub internal_bridge_routing_prefix: Option<String>,
+    pub internal_bridge_routing_prefix: Option<Ipv4Net>,
 
     #[clap(
         long,
@@ -312,6 +318,7 @@ pub struct RunOptions {
     )]
     pub fmds_grpc_server: Option<String>,
     #[clap(
+        long,
         default_value = "container-exec",
         help = "Set the configuration mode for HBN. Specify \"container-exec\" or \"nvue-rest\".",
         env = "HBN_CONFIG_MODE"
@@ -320,7 +327,7 @@ pub struct RunOptions {
     #[clap(
         long,
         default_value = "dpu-os",
-        help = "Set the platform type. Specify \"dpu-os\", \"containerized\", or \"init-container\".",
+        help = "Set the platform type. Specify \"dpu-os\" or \"containerized\".",
         env = "AGENT_PLATFORM_TYPE"
     )]
     pub agent_platform_type: AgentPlatformType,
@@ -369,9 +376,6 @@ pub enum AgentPlatformType {
     // inside a container with no direct access to the OS resources or any of
     // the other containers.
     Containerized,
-    // init - init-container. This mode is used to fetch hardware info as json and feed to
-    // containerized mode.
-    ContainerInitializer,
     // should "fake DPU" be modeled as a variant here?
 }
 
@@ -389,7 +393,6 @@ impl FromStr for AgentPlatformType {
         match s {
             "dpu-os" => Ok(DpuOs),
             "containerized" => Ok(Containerized),
-            "init-container" => Ok(ContainerInitializer),
             unknown_type => Err(eyre::eyre!("Unknown platform type \"{unknown_type}\"")),
         }
     }
@@ -405,7 +408,7 @@ pub struct HardwareOptions {
     #[clap(
         long,
         default_value = "dpu-os",
-        help = "Set the platform type. Specify \"dpu-os\", \"containerized\", or \"init-container\".",
+        help = "Set the platform type. Specify \"dpu-os\" or \"containerized\".",
         env = "AGENT_PLATFORM_TYPE"
     )]
     pub agent_platform_type: AgentPlatformType,
@@ -465,10 +468,6 @@ mod tests {
             "containerized".parse::<AgentPlatformType>().unwrap(),
             AgentPlatformType::Containerized
         ));
-        assert!(matches!(
-            "init-container".parse::<AgentPlatformType>().unwrap(),
-            AgentPlatformType::ContainerInitializer
-        ));
     }
 
     #[test]
@@ -481,6 +480,59 @@ mod tests {
     fn test_is_dpu_os_only_true_for_dpu_os() {
         assert!(AgentPlatformType::DpuOs.is_dpu_os());
         assert!(!AgentPlatformType::Containerized.is_dpu_os());
-        assert!(!AgentPlatformType::ContainerInitializer.is_dpu_os());
+    }
+
+    #[test]
+    fn test_init_container_platform_type_no_longer_accepted() {
+        // Guard against regressing the refactor: `init-container` is now a dedicated
+        // subcommand, not a platform-type value. Callers must use the subcommand instead.
+        let err = "init-container".parse::<AgentPlatformType>().unwrap_err();
+        assert!(err.to_string().contains("init-container"));
+    }
+
+    #[test]
+    fn test_init_container_subcommand_parses_without_args() {
+        // The init-container subcommand deliberately takes no flags: the output path
+        // is fixed so devs cannot misroute hardware data away from the main container.
+        let opts = Options::try_parse_from(["forge-dpu-agent", "init-container"]).unwrap();
+        assert!(matches!(opts.cmd, Some(AgentCommand::InitContainer)));
+    }
+
+    #[test]
+    fn test_init_container_subcommand_rejects_output_file_flag() {
+        // If someone tries to pass --output-file (or any other flag), parsing must fail.
+        let result = Options::try_parse_from([
+            "forge-dpu-agent",
+            "init-container",
+            "--output-file",
+            "/tmp/x",
+        ]);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_hardware_subcommand_rejects_init_container_platform_type() {
+        // `hardware --agent-platform-type=init-container` used to download certs + save.
+        // That behavior moved to the InitContainer subcommand; this value must now fail.
+        let result = Options::try_parse_from([
+            "forge-dpu-agent",
+            "hardware",
+            "--agent-platform-type=init-container",
+        ]);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_hardware_subcommand_accepts_remaining_platform_types() {
+        for value in ["dpu-os", "containerized"] {
+            let opts = Options::try_parse_from([
+                "forge-dpu-agent",
+                "hardware",
+                "--agent-platform-type",
+                value,
+            ])
+            .unwrap_or_else(|e| panic!("hardware --agent-platform-type={value} should parse: {e}"));
+            assert!(matches!(opts.cmd, Some(AgentCommand::Hardware(_))));
+        }
     }
 }

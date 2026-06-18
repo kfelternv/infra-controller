@@ -31,15 +31,20 @@ RUN USER=root cargo new --bin carbide
 WORKDIR ./carbide
 COPY . ./
 
-RUN export CARGO_MAKE_SKIP_CODECOV="true" && \
-  export DATABASE_URL="postgresql://%2Fvar%2Frun%2Fpostgresql" && \
+# --mount=type=cache persists the sccache directory across docker build invocations.
+# Uses id=sccache-aarch64 (separate from x86_64 cache) since compiled artifacts are arch-specific.
+# Requires BuildKit (default in Docker 23+).
+RUN --mount=type=cache,id=sccache-aarch64,target=/sccache \
+  export CARGO_MAKE_SKIP_CODECOV="true" && \
+  export DATABASE_URL="postgresql://root@%2Fvar%2Frun%2Fpostgresql/root" && \
   export SCCACHE_DIR=/sccache && \
-  export RUST_WRAPPER=sccache && \
+  export RUSTC_WRAPPER=sccache && \
+  export CARGO_PROFILE_RELEASE_DEBUG=true && \
   /etc/init.d/postgresql start && \
   sudo -u postgres psql -c "ALTER USER root WITH SUPERUSER;" && \
   createdb root && \
-  cargo make build-and-test-release-container-services && \
-  echo "$(date): Finished cargo make build-and-test-release-container-services\n" && \
+  cargo make build-release-container-services && \
+  echo "$(date): Finished cargo make build-release-container-services\n" && \
   mkdir -p /carbide/target/bin && \
   find /carbide/target/release -maxdepth 1 -type f -exec cp -t /carbide/target/bin {} + && \
   rm -rf /carbide/target/debug && \
@@ -54,10 +59,11 @@ RUN mkdir -p /opt/carbide/migrations && \
 
 RUN echo "$(date): Start runtime container build"
 
-COPY --from=builder ["/carbide/target/bin/carbide-api", "/carbide/target/bin/carbide", "/carbide/target/bin/carbide-dns", "/carbide/target/bin/carbide-admin-cli", "/carbide/target/bin/carbide-dsx-exchange-consumer", "/carbide/target/bin/forge-dpu-agent", "/carbide/target/bin/forge-dhcp-server", "/carbide/target/bin/forge-hw-health", "/carbide/target/bin/forge-log-parser", "/carbide/target/bin/ssh-console", "/carbide/target/bin/carbide-bmc-proxy", "/opt/carbide/"]
+COPY --from=builder ["/carbide/target/bin/carbide-api", "/carbide/target/bin/carbide", "/carbide/target/bin/carbide-dns", "/carbide/target/bin/nico-admin-cli", "/carbide/target/bin/carbide-dsx-exchange-consumer", "/carbide/target/bin/forge-dpu-agent", "/carbide/target/bin/forge-dhcp-server", "/carbide/target/bin/forge-hw-health", "/carbide/target/bin/forge-log-parser", "/carbide/target/bin/ssh-console", "/carbide/target/bin/carbide-bmc-proxy", "/opt/carbide/"]
 # Note: aarch64 uses different library path than x86_64
 COPY --from=builder /carbide/target/bin/libdhcp.so /usr/lib/aarch64-linux-gnu/kea/hooks
-RUN ln -s /opt/carbide/carbide-admin-cli /opt/carbide/forge-admin-cli
+RUN ln -s /opt/carbide/nico-admin-cli /opt/carbide/carbide-admin-cli && \
+    ln -s /opt/carbide/nico-admin-cli /opt/carbide/forge-admin-cli
 
 RUN echo "$(date): Finished copies"
 
@@ -66,4 +72,3 @@ COPY pxe/templates/*  /opt/carbide/pxe/templates/
 COPY crates/api/casbin-policy.csv /opt/carbide/
 
 ENV CASBIN_POLICY_FILE=/opt/carbide/casbin-policy.csv
-

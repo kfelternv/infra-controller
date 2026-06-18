@@ -20,13 +20,14 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering as AtomicOrdering};
 
 use arc_swap::ArcSwap;
-use chrono::Duration;
-use duration_str::{deserialize_duration, deserialize_duration_chrono};
-use serde::{Deserialize, Deserializer, Serialize, Serializer};
-use utils::HostPortPair;
-use utils::config::{
+use carbide_utils::HostPortPair;
+use carbide_utils::config::{
     as_duration, as_std_duration, deserialize_arc_atomic_bool, serialize_arc_atomic_bool,
 };
+use chrono::Duration;
+use duration_str::{deserialize_duration, deserialize_duration_chrono};
+use model::expected_machine::DpuMode;
+use serde::{Deserialize, Deserializer, Serialize, Serializer};
 
 /// SiteExplorer related configuration for hardware discovery and ingestion.
 #[derive(Clone, Debug, Deserialize, Serialize)]
@@ -38,6 +39,13 @@ pub struct SiteExplorerConfig {
         serialize_with = "serialize_arc_atomic_bool"
     )]
     pub enabled: Arc<AtomicBool>,
+    /// How long a retained boot interface pair stays applicable (`None` =
+    /// forever). Deliberately not part of the `[site_explorer]` section
+    /// (serde skips it): setup copies the top-level
+    /// `retained_boot_interface_window` here so site-explorer's ingest paths
+    /// honor the same knob as DHCP.
+    #[serde(skip)]
+    pub retained_boot_interface_window: Option<chrono::Duration>,
     /// The interval at which site explorer runs.
     /// Defaults to 5 Minutes if not specified.
     #[serde(
@@ -50,10 +58,14 @@ pub struct SiteExplorerConfig {
     /// Default is 5.
     #[serde(default = "SiteExplorerConfig::default_concurrent_explorations")]
     pub concurrent_explorations: u64,
-    /// How many nodes should be explored in a single run.
-    /// Default is 10.
-    /// This number divided by `concurrent_explorations` will determine how many
-    /// exploration batches are needed inside a run.
+    /// How many routine (non-requested) endpoints should be explored in a single run.
+    /// Default is 90.
+    /// This bounds only the background refresh work: previously unseen endpoints
+    /// and stale endpoints whose reports we want to update. Endpoints with the
+    /// `exploration_requested` flag set are always attempted, regardless of this
+    /// value, because operators rely on that flag for guaranteed next-tick attempts.
+    /// Parallelism for both routine and requested explorations is still bounded by
+    /// `concurrent_explorations`.
     /// If the value is set too high the site exploration will take a lot of time
     /// and the exploration report will be updated less frequent. Therefore it
     /// is recommended to reduce `run_interval` instead of increasing
@@ -61,7 +73,7 @@ pub struct SiteExplorerConfig {
     #[serde(default = "SiteExplorerConfig::default_explorations_per_run")]
     pub explorations_per_run: u64,
 
-    /// Whether SiteExplorer should create Managed Host state machine
+    /// When false, SiteExplorer skips creating ManagedHost state machines; the DPU agent (scout) must self-register via DiscoverMachine gRPC endpoint with create_machine=true
     #[serde(
         default = "SiteExplorerConfig::default_create_machines",
         deserialize_with = "deserialize_arc_atomic_bool",
@@ -90,13 +102,6 @@ pub struct SiteExplorerConfig {
     /// The port to connect to for redfish requests.
     /// This is a debug override and should not be used in production.
     pub override_target_port: Option<u16>,
-
-    /// Whether to allow hosts with zero DPUs in site-explorer. This should typically be set to
-    /// false in production environments where we expect all hosts to have DPUs. When false, if we
-    /// encounter a host with no DPUs, site-explorer will throw an error for that host (because it
-    /// should be assumed that there's a bug in detecting the DPUs).
-    #[serde(default)]
-    pub allow_zero_dpu_hosts: bool,
 
     /// The host:port to use as a proxy when making BMC calls to all hosts in NICo. This is used
     /// for integration testing, and for local development with machine-a-tron/bmc-mock. Should not
@@ -174,13 +179,15 @@ pub struct SiteExplorerConfig {
     #[serde(default = "SiteExplorerConfig::default_switches_created_per_run")]
     pub switches_created_per_run: u64,
 
-    /// Use onboard NIC for host networking instead of DPU NICs.
-    #[serde(
-        default = "SiteExplorerConfig::default_force_dpu_nic_mode",
-        deserialize_with = "deserialize_arc_atomic_bool",
-        serialize_with = "serialize_arc_atomic_bool"
-    )]
-    pub force_dpu_nic_mode: Arc<AtomicBool>,
+    /// Site-wide DPU operating mode. When set, applies to every host
+    /// that doesn't declare a per-host `ExpectedMachine.dpu_mode`
+    /// override (or that declares the default `DpuMode` variant,
+    /// which is indistinguishable from "unset"). Per-host `NicMode` /
+    /// `NoDpu` always wins. `None` means "site-wide setting unset"
+    /// and hosts fall back to the absolute default of
+    /// `DpuMode::DpuMode`.
+    #[serde(default)]
+    pub dpu_mode: Option<DpuMode>,
     /// Controls which Redfish client implementation is used
     /// for hardware discovery (LibRedfish, NvRedfish, or
     /// CompareResult for side-by-side validation).
@@ -192,6 +199,7 @@ impl Default for SiteExplorerConfig {
     fn default() -> Self {
         SiteExplorerConfig {
             enabled: Arc::new(true.into()),
+            retained_boot_interface_window: None,
             run_interval: Self::default_run_interval(),
             concurrent_explorations: Self::default_concurrent_explorations(),
             explorations_per_run: Self::default_explorations_per_run(),
@@ -199,7 +207,6 @@ impl Default for SiteExplorerConfig {
             machines_created_per_run: Self::default_machines_created_per_run(),
             override_target_ip: None,
             override_target_port: None,
-            allow_zero_dpu_hosts: false,
             bmc_proxy: bmc_proxy(None),
             allow_changing_bmc_proxy: None,
             reset_rate_limit: Self::default_reset_rate_limit(),
@@ -211,7 +218,7 @@ impl Default for SiteExplorerConfig {
             create_switches: Arc::new(true.into()),
             switches_created_per_run: Self::default_switches_created_per_run(),
             rotate_switch_nvos_credentials: Self::default_rotate_switch_nvos_credentials(),
-            force_dpu_nic_mode: Arc::new(false.into()),
+            dpu_mode: None,
             explore_mode: Self::default_explore_mode(),
         }
     }
@@ -285,10 +292,6 @@ impl SiteExplorerConfig {
 
     pub const fn default_switches_created_per_run() -> u64 {
         9
-    }
-
-    pub fn default_force_dpu_nic_mode() -> Arc<AtomicBool> {
-        Arc::new(false.into())
     }
 
     pub const fn default_explore_mode() -> SiteExplorerExploreMode {

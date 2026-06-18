@@ -1,7 +1,7 @@
 # AGENTS.md
 
 This file provides guidance for AI coding agents working in the
-`ncx-infra-controller-core` repository.
+`infra-controller` repository.
 
 ## Project Overview
 
@@ -26,13 +26,13 @@ to fast-track building next-generation AI Cloud offerings.
 ## Repository Structure
 
 ```
-ncx-infra-controller-core/
+infra-controller/
 ├── crates/              # Rust crate implementations. To discover all crates
 │                        # and their purpose, run `ls crates/` or see the
 │                        # [workspace] members list in `Cargo.toml` — each
 │                        # crate's own `Cargo.toml` has a `description` field.
 │                        # Note: the directory name does NOT always equal the
-│                        # crate name (e.g. crates/api/ → crate carbide-api).
+│                        # crate name (e.g. crates/api/ → crate nico-api).
 │                        # Use `grep '^name =' crates/<dir>/Cargo.toml | head -1`
 │                        # to get the actual crate name before running
 │                        # `cargo test -p <name>` or similar.
@@ -96,6 +96,11 @@ cargo test
 cargo make correctly-execute-tests
 ```
 
+When writing tests, prefer the **table-driven** style — see the [Testing section in `STYLE_GUIDE.md`](STYLE_GUIDE.md#testing).
+Enumerating a function's input variants as grouped `carbide-test-support` scenarios (`scenarios!` / `value_scenarios!`)
+or explicit cases (`check_cases` / `check_values`) is the easiest way to reach thorough coverage of parsers, validators,
+conversions, and the like.
+
 ### Linting and Formatting
 
 ```bash
@@ -104,9 +109,8 @@ cargo make pre-commit-verify-workspace
 
 # Individual checks:
 cargo make clippy              # Clippy linter (warnings = errors)
-cargo make carbide-lints       # Custom carbide lints (requires nightly setup)
-cargo make check-format-flow   # Check rustfmt formatting
-cargo make check-format-nightly # Check import grouping/sorting (requires nightly)
+cargo make carbide-lints       # Custom lints (requires nightly setup)
+cargo make check-format-nightly # Check rustfmt formatting
 cargo make check-workspace-deps # Validate dependency declarations in Cargo.toml
 cargo make check-licenses      # Validate no restricted licenses introduced
 cargo make check-bans          # Check for banned dependencies
@@ -119,6 +123,27 @@ cargo make format-nightly      # Also sort imports
 > **Note:** The nightly toolchain is used only for `check-format-nightly` and
 > `carbide-lints`. The stable toolchain pinned in `rust-toolchain.toml` is used
 > for everything else.
+
+### Top-level Makefile (rest-api entrypoint)
+
+A top-level [`Makefile`](Makefile) at the repo root provides a thin
+discoverable entrypoint for the `rest-api/` Go services. It just
+delegates to `rest-api/Makefile`.
+
+```bash
+make help                # default goal: list rest-* targets
+make rest-build          # build rest-api Go binaries
+make rest-test           # run rest-api unit tests
+make rest-lint           # lint rest-api
+make rest-fmt            # go fmt check on rest-api
+make rest-helm-lint      # helm lint rest charts
+make rest-docker-build-local
+make rest-kind-reset     # spin up the local kind dev cluster (~10 min)
+make rest-api/<target>   # pass any target through to rest-api/Makefile
+```
+
+Core (Rust) tasks are not in this Makefile; use cargo and `cargo make`
+directly as documented above.
 
 ## Coding Conventions
 

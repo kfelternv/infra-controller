@@ -20,10 +20,8 @@ use sqlx::PgConnection;
 
 use crate::DatabaseError;
 
-/// Insert a health report override into the `health_report_overrides`
-/// JSONB column of the given table (we're maintaining the "overrides" table
-/// name so we can leave machines/racks as is for now, and let switches
-/// and power shelves adopt it).
+/// Insert a health report into the `health_reports` JSONB column of the
+/// given table.
 ///
 /// The `id` parameter is bound as `$2` and must match the `id`
 /// column of `table_name`.
@@ -37,35 +35,40 @@ pub async fn insert_health_report<Id>(
 where
     for<'e> Id: sqlx::Encode<'e, sqlx::Postgres> + sqlx::Type<sqlx::Postgres> + Sync,
 {
-    let column_name = "health_report_overrides";
+    // NOTE: SQL injection risk is known here: this helper intentionally preserves the existing
+    // health-report SQL shape where table_name is an internal constant at call sites, but the JSONB
+    // path still includes the report source in the SQL text. We'll want to replace this with a
+    // bound text[] path or central source validation before accepting broader inputs.
     let path = match mode {
-        HealthReportApplyMode::Merge => format!("merges,\"{}\"", health_report.source),
-        HealthReportApplyMode::Replace => "replace".to_string(),
+        HealthReportApplyMode::Merge => vec!["merges".to_string(), health_report.source.clone()],
+        HealthReportApplyMode::Replace => vec!["replace".to_string()],
     };
 
-    let query = format!(
-        "UPDATE {table_name} SET {column_name} = jsonb_set(
-            coalesce({column_name}, '{{\"merges\": {{}}}}'::jsonb),
-            '{{{path}}}',
-            $1::jsonb
-        ) WHERE id = $2
-        RETURNING id"
+    let mut query = sqlx::QueryBuilder::new("UPDATE ");
+    query.push(table_name);
+    query.push(
+        " SET health_reports = jsonb_set(
+            coalesce(health_reports, '{\"merges\": {}}'::jsonb),
+            ",
     );
+    query.push_bind(path);
+    query.push(", ");
+    query.push_bind(sqlx::types::Json(health_report));
+    query.push(") WHERE id = ");
+    query.push_bind(id);
+    query.push(" RETURNING id");
 
-    sqlx::query(&query)
-        .bind(sqlx::types::Json(health_report))
-        .bind(id)
+    query
+        .build()
         .fetch_one(txn)
         .await
-        .map_err(|e| {
-            DatabaseError::new(&format!("insert {table_name} health report override"), e)
-        })?;
+        .map_err(|e| DatabaseError::new(format!("insert {table_name} health report"), e))?;
 
     Ok(())
 }
 
-/// Remove a health report override from the `health_report_overrides`
-/// JSONB column of the given table.
+/// Remove a health report from the `health_reports` JSONB column of the
+/// given table.
 pub async fn remove_health_report<Id>(
     txn: &mut PgConnection,
     table_name: &str,
@@ -76,23 +79,24 @@ pub async fn remove_health_report<Id>(
 where
     for<'e> Id: sqlx::Encode<'e, sqlx::Postgres> + sqlx::Type<sqlx::Postgres> + Sync,
 {
-    let column_name = "health_report_overrides";
     let path = match mode {
-        HealthReportApplyMode::Merge => format!("merges,{source}"),
-        HealthReportApplyMode::Replace => "replace".to_string(),
+        HealthReportApplyMode::Merge => vec!["merges".to_string(), source.to_string()],
+        HealthReportApplyMode::Replace => vec!["replace".to_string()],
     };
-    let query = format!(
-        "UPDATE {table_name} SET {column_name} = ({column_name} #- '{{{path}}}') WHERE id = $1
-            RETURNING id"
-    );
 
-    sqlx::query(&query)
-        .bind(id)
+    let mut query = sqlx::QueryBuilder::new("UPDATE ");
+    query.push(table_name);
+    query.push(" SET health_reports = (health_reports #- ");
+    query.push_bind(path);
+    query.push(") WHERE id = ");
+    query.push_bind(id);
+    query.push(" RETURNING id");
+
+    query
+        .build()
         .fetch_one(txn)
         .await
-        .map_err(|e| {
-            DatabaseError::new(&format!("remove {table_name} health report override"), e)
-        })?;
+        .map_err(|e| DatabaseError::new(format!("remove {table_name} health report"), e))?;
 
     Ok(())
 }

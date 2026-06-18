@@ -19,10 +19,10 @@ use std::borrow::Cow;
 use std::sync::Arc;
 
 use bmc_vendor::BMCVendor;
+use carbide_utils::arch::CpuArchitecture;
 use mac_address::MacAddress;
 use rpc::machine_discovery::{BlockDevice, CpuInfo, DiscoveryInfo, DmiData, MemoryDevice};
 use serde_json::json;
-use utils::models::arch::CpuArchitecture;
 
 use crate::{BootOptionKind, Callbacks, hw, redfish};
 
@@ -45,7 +45,7 @@ impl DellPowerEdgeR750<'_> {
             fan: 10,
             power: 20,
             current: 10,
-            leak: 0,
+            voltage: 0,
         }
     }
 
@@ -149,6 +149,7 @@ impl DellPowerEdgeR750<'_> {
                 // there. So we provide empty collection to avoid 404
                 // failure.
                 storage: Some(vec![]),
+                processors: None,
                 secure_boot_available: true,
                 base_bios: Some(redfish::bios::builder(&redfish::bios::resource(system_id))
                     .attributes(json!({
@@ -282,7 +283,7 @@ impl DellPowerEdgeR750<'_> {
                 })
                 .collect(),
             machine_type: CpuArchitecture::X86_64.to_string(),
-            machine_arch: Some(CpuArchitecture::X86_64.into()),
+            machine_arch: Some(rpc::utils::cpu_architecture_to_rpc(CpuArchitecture::X86_64)),
             nvme_devices: vec![],
             dmi_data: Some(DmiData {
                 board_name: "01J4WF".into(),

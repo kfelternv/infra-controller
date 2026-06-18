@@ -18,12 +18,28 @@ use std::net::IpAddr;
 
 use carbide_network::ip::{IdentifyAddressFamily, IpAddressFamily};
 use carbide_uuid::machine::{MachineId, MachineInterfaceId};
+use carbide_uuid::network::NetworkSegmentId;
+use mac_address::MacAddress;
 use model::allocation_type::{AllocationType, AssignStaticResult};
 use model::network_segment::NetworkSegmentType;
 use sqlx::{FromRow, PgConnection};
 
 use super::DatabaseError;
 use crate::db_read::DbReader;
+
+#[cfg(test)]
+mod test_find_by_address;
+
+/// Returned by allocation paths with `AddressSelectionStrategy::StaticAddress`
+/// when the target IP is already held by some other interface.
+#[derive(thiserror::Error, Debug)]
+#[error("Address already in use: {0} by {1} in network segment {2} (Interface: {3})")]
+pub struct AddressAlreadyInUseError(
+    pub IpAddr,
+    pub MacAddress,
+    pub NetworkSegmentId,
+    pub MachineInterfaceId,
+);
 
 #[derive(Debug, FromRow, Clone)]
 pub struct MachineInterfaceAddress {
@@ -157,8 +173,8 @@ pub async fn insert(
 /// allocation type:
 ///
 /// - `Static`: the old static address is replaced.
-/// - `Dhcp`: the DHCP allocation is removed and replaced with the
-///   static assignment.
+/// - `Dhcp` or `Slaac`: the managed allocation is removed and
+///   replaced with the static assignment.
 #[allow(txn_held_across_await)]
 pub async fn assign_static(
     txn: &mut PgConnection,
@@ -170,9 +186,8 @@ pub async fn assign_static(
     let existing = find_allocation_type_for_family(&mut *txn, interface_id, family).await?;
 
     let result = match existing {
-        Some(AllocationType::Dhcp) => {
-            delete_by_interface_family(&mut *txn, interface_id, family, AllocationType::Dhcp)
-                .await?;
+        Some(allocation_type @ (AllocationType::Dhcp | AllocationType::Slaac)) => {
+            delete_by_interface_family(&mut *txn, interface_id, family, allocation_type).await?;
             AssignStaticResult::ReplacedDhcp
         }
         Some(AllocationType::Static) => {
@@ -200,6 +215,32 @@ pub async fn delete_by_address(
     sqlx::query(query)
         .bind(address)
         .bind(allocation_type)
+        .execute(txn)
+        .await
+        .map(|r| r.rows_affected() > 0)
+        .map_err(|e| DatabaseError::query(query, e))
+}
+
+/// Delete an address allocation for a given (ip, mac) pair, which
+/// of course only actually deletes when the pair matches.
+///
+/// Returns true if a matching allocation was found and deleted.
+pub async fn delete_by_address_and_mac(
+    txn: &mut PgConnection,
+    address: IpAddr,
+    mac_address: mac_address::MacAddress,
+    allocation_type: AllocationType,
+) -> Result<bool, DatabaseError> {
+    let query = "DELETE FROM machine_interface_addresses mia
+        USING machine_interfaces mi
+        WHERE mia.interface_id = mi.id
+          AND mia.address = $1::inet
+          AND mia.allocation_type = $2
+          AND mi.mac_address = $3::macaddr";
+    sqlx::query(query)
+        .bind(address)
+        .bind(allocation_type)
+        .bind(mac_address)
         .execute(txn)
         .await
         .map(|r| r.rows_affected() > 0)
@@ -236,4 +277,50 @@ pub struct MachineInterfaceSearchResult {
     pub name: String,
     pub network_segment_type: NetworkSegmentType,
     pub allocation_type: AllocationType,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Verifies the new SLAAC allocation type survives a database round trip.
+    #[crate::sqlx_test]
+    async fn slaac_allocation_type_round_trips(
+        pool: sqlx::PgPool,
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let mut txn = pool.begin().await?;
+
+        // Create the minimal segment and interface rows needed to own an address.
+        let segment_id: NetworkSegmentId = sqlx::query_scalar(
+            "INSERT INTO network_segments (name, version) VALUES ($1, 'V1-T0') RETURNING id",
+        )
+        .bind("slaac-roundtrip")
+        .fetch_one(txn.as_mut())
+        .await?;
+        let interface_id: MachineInterfaceId = sqlx::query_scalar(
+            "INSERT INTO machine_interfaces (segment_id, mac_address, primary_interface, hostname)
+             VALUES ($1, $2::macaddr, true, 'slaac-roundtrip') RETURNING id",
+        )
+        .bind(segment_id)
+        .bind("02:00:00:00:00:01")
+        .fetch_one(txn.as_mut())
+        .await?;
+
+        // Insert a SLAAC allocation through the public helper and read it back.
+        insert(
+            txn.as_mut(),
+            interface_id,
+            "2001:db8::10".parse()?,
+            AllocationType::Slaac,
+        )
+        .await?;
+        let addresses = find_for_interface(txn.as_mut(), interface_id).await?;
+
+        // Verify the persisted row preserved the new allocation type.
+        assert_eq!(addresses.len(), 1);
+        assert_eq!(addresses[0].allocation_type, AllocationType::Slaac);
+
+        txn.rollback().await?;
+        Ok(())
+    }
 }

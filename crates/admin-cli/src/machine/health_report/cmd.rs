@@ -17,14 +17,14 @@
 
 use std::str::FromStr;
 
-use ::rpc::admin_cli::{CarbideCliResult, OutputFormat};
-use ::rpc::forge::RemoveHealthReportOverrideRequest;
+use ::rpc::admin_cli::OutputFormat;
 use chrono::Utc;
 use health_report::{
     HealthAlertClassification, HealthProbeAlert, HealthProbeId, HealthProbeSuccess, HealthReport,
 };
 
 use super::args::{Args, HealthReportTemplates};
+use crate::errors::CarbideCliResult;
 use crate::health_utils;
 use crate::rpc::ApiClient;
 
@@ -129,10 +129,29 @@ pub fn get_health_report(template: HealthReportTemplates, message: Option<String
                 HealthAlertClassification::suppress_external_alerting(),
             ];
         }
+
+        // Template to indicate that the instance is identified as unhealthy and
+        // is ready to be picked for OnlineRepair without releasing the instance.
+        // Adds `PreventInstanceDeletion` so carbide-api refuses `ReleaseInstance` until this merge is cleared
+        // (admin machine force-delete is unchanged). Merge source `request-online-repair` is separate
+        // from `tenant-reported-issue`.
+        HealthReportTemplates::RequestOnlineRepair => {
+            report.source = health_report::REQUEST_ONLINE_REPAIR_MERGE_SOURCE.to_string();
+            report.alerts[0].id = HealthProbeId::from_str("RequestOnlineRepair")
+                .expect("RequestOnlineRepair is a valid non-empty HealthProbeId");
+            report.alerts[0].target =
+                Some(health_report::REQUEST_ONLINE_REPAIR_MERGE_SOURCE.to_string());
+            report.alerts[0].classifications = vec![
+                HealthAlertClassification::prevent_allocations(),
+                HealthAlertClassification::suppress_external_alerting(),
+                HealthAlertClassification::prevent_instance_deletion(),
+            ];
+        }
+
         // Template to indicate that the instance is identified as unhealthy and
         // is ready to be picked by Repair System for diagnosis and fix.
         HealthReportTemplates::RequestRepair => {
-            report.source = "repair-request".to_string();
+            report.source = health_report::REPAIR_REQUEST_MERGE_SOURCE.to_string();
             report.alerts[0].id = HealthProbeId::from_str("RequestRepair")
                 .expect("RequestRepair is a valid non-empty HealthProbeId");
             report.alerts[0].target = Some("repair-requested".to_string());
@@ -153,10 +172,7 @@ pub async fn handle_health_report(
 ) -> CarbideCliResult<()> {
     match command {
         Args::Show { machine_id } => {
-            let response = api_client
-                .0
-                .list_health_report_overrides(machine_id)
-                .await?;
+            let response = api_client.machine_list_health_reports(machine_id).await?;
             health_utils::display_health_reports(response.health_report_entries, output_format)?;
         }
         Args::Add(options) => {
@@ -184,11 +200,7 @@ pub async fn handle_health_report(
             report_source,
         } => {
             api_client
-                .0
-                .remove_health_report_override(RemoveHealthReportOverrideRequest {
-                    machine_id: Some(machine_id),
-                    source: report_source,
-                })
+                .machine_remove_health_report(machine_id, report_source)
                 .await?;
         }
         Args::PrintEmptyTemplate => {
@@ -250,7 +262,7 @@ mod tests {
             Some("Hardware diagnostics indicate memory failure".to_string()),
         );
 
-        assert_eq!(report.source, "repair-request");
+        assert_eq!(report.source, health_report::REPAIR_REQUEST_MERGE_SOURCE);
         assert_eq!(report.alerts.len(), 1);
 
         let alert = &report.alerts[0];
@@ -288,7 +300,7 @@ mod tests {
     fn test_request_repair_template_with_empty_message() {
         let report = get_health_report(HealthReportTemplates::RequestRepair, None);
 
-        assert_eq!(report.source, "repair-request");
+        assert_eq!(report.source, health_report::REPAIR_REQUEST_MERGE_SOURCE);
         assert_eq!(report.alerts[0].message, "");
     }
 
@@ -315,6 +327,78 @@ mod tests {
                 .classifications
                 .contains(&HealthAlertClassification::suppress_external_alerting())
         );
+
+        let request_online_repair = get_health_report(
+            HealthReportTemplates::RequestOnlineRepair,
+            Some("test".to_string()),
+        );
+        assert!(
+            request_online_repair.alerts[0]
+                .classifications
+                .contains(&HealthAlertClassification::suppress_external_alerting())
+        );
+        assert!(
+            request_online_repair.alerts[0]
+                .classifications
+                .contains(&HealthAlertClassification::prevent_instance_deletion())
+        );
+    }
+
+    #[test]
+    fn test_request_online_repair_template() {
+        let report = get_health_report(
+            HealthReportTemplates::RequestOnlineRepair,
+            Some("Online repair handoff for stuck repair workflow".to_string()),
+        );
+
+        assert_eq!(
+            report.source,
+            health_report::REQUEST_ONLINE_REPAIR_MERGE_SOURCE
+        );
+        assert_eq!(report.alerts.len(), 1);
+
+        let alert = &report.alerts[0];
+        assert_eq!(
+            alert.id,
+            HealthProbeId::from_str("RequestOnlineRepair").unwrap()
+        );
+        assert_eq!(
+            alert.target,
+            Some(health_report::REQUEST_ONLINE_REPAIR_MERGE_SOURCE.to_string())
+        );
+        assert_eq!(
+            alert.message,
+            "Online repair handoff for stuck repair workflow"
+        );
+        assert!(alert.tenant_message.is_none());
+
+        assert_eq!(alert.classifications.len(), 3);
+        assert!(
+            alert
+                .classifications
+                .contains(&HealthAlertClassification::prevent_allocations())
+        );
+        assert!(
+            alert
+                .classifications
+                .contains(&HealthAlertClassification::suppress_external_alerting())
+        );
+        assert!(
+            alert
+                .classifications
+                .contains(&HealthAlertClassification::prevent_instance_deletion())
+        );
+    }
+
+    #[test]
+    fn test_request_online_repair_template_with_empty_message() {
+        let report = get_health_report(HealthReportTemplates::RequestOnlineRepair, None);
+
+        assert_eq!(
+            report.source,
+            health_report::REQUEST_ONLINE_REPAIR_MERGE_SOURCE
+        );
+        assert_eq!(report.alerts[0].message, "");
     }
 
     #[test]

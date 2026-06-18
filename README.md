@@ -1,7 +1,7 @@
-# NCX Infra Controller
+# NVIDIA Infra Controller
 
-NCX Infra Controller (NICo) delivers zero-touch lifecycle automation for bare-metal
-systems that secures datacenter infrastructure at its foundation.
+NVIDIA Infra Controller (NICo) delivers zero-touch lifecycle automation for
+bare-metal systems that secures datacenter infrastructure at its foundation.
 
 It is an API-based microservice that provides site-local, zero-trust,
 bare-metal lifecycle management with DPU-enforced isolation. NICo automates the complexity
@@ -9,20 +9,19 @@ of the bare-metal lifecycle to fast-track building next generation AI Cloud offe
 
 ## Getting Started
 
-- Go to the [NCX Infra Controller overview](https://docs.nvidia.com/infra-controller/documentation/introduction.html) to get an overview of NICo architecture and capabilities.
-- Or jump to the [Site Setup guide](https://docs.nvidia.com/infra-controller/documentation/manuals/site-setup.html) to start setting up your site for NICo.
-- Or jump to the [Building Containers guide](https://docs.nvidia.com/infra-controller/documentation/manuals/building-ni-co-containers.html) to see an overview for building the containers.
+- Go to the [NVIDIA Infra Controller overview](https://docs.nvidia.com/infra-controller/documentation/overview/what-is-nico) to get an overview of NICo architecture and capabilities.
+- Or jump to the [Quick Start Guide](https://docs.nvidia.com/infra-controller/documentation/getting-started/quick-start-guide) to start setting up your site for NICo.
 - Check out [Local Development with DevSpace](dev/deployment/devspace/README.md) to run NICo locally with mock systems.
 
 ## Bare-Metal Cluster Setup
 
-`helm-prereqs/setup.sh` deploys the full NCX stack onto a bare-metal Kubernetes cluster in three layers:
+`helm-prereqs/setup.sh` deploys the full NVIDIA Infra Controller stack onto a bare-metal Kubernetes cluster in three layers:
 
 | Layer | What it installs | Helm release |
 |-------|-----------------|--------------|
 | **Common services** | MetalLB, cert-manager, Vault, external-secrets, PostgreSQL | via `helmfile` in `helm-prereqs/` |
-| **Carbide Core** | NCX Infra Controller (this repo's `helm/` chart) | `carbide` in `forge-system` |
-| **Carbide REST** | NCX REST API, Temporal, Keycloak, site-agent | `carbide-rest` + `carbide-rest-site-agent` in `carbide-rest` |
+| **NICo Core** | NVIDIA Infra Controller (this repo's `helm/` chart) | `nico` in `nico-system` |
+| **NICo REST** | NVIDIA Infra Controller's REST API, Temporal, Keycloak, site-agent | `nico-rest` + `nico-rest-site-agent` in `nico-rest` |
 
 ### Prerequisites
 
@@ -34,32 +33,29 @@ of the bare-metal lifecycle to fast-track building next generation AI Cloud offe
 
 ```bash
 # 1. Build and push images to your registry
-#    Carbide Core image: <your-registry>/nvmetal-carbide:<tag>  (this repo)
-#    Carbide REST images: <your-registry>/carbide-rest-api:<tag>, etc.  (ncx-infra-controller-rest)
+#    NICo Core image: <your-registry>/nvmetal-nico:<tag>  (this repo)
+#    NICo REST images: <your-registry>/nico-rest-api:<tag>, etc.
 
 # 2. Set environment variables
 export KUBECONFIG=/path/to/kubeconfig
-export REGISTRY_PULL_SECRET=<your-registry-pull-secret-or-ngc-api-key>
-export NCX_IMAGE_REGISTRY=<your-registry>        # e.g. my-registry.example.com/ncx
-export NCX_CORE_IMAGE_TAG=<carbide-core-tag>     # e.g. v2025.12.30
-export NCX_REST_IMAGE_TAG=<carbide-rest-tag>     # e.g. v1.0.4
+export NICO_IMAGE_REGISTRY=<your-registry>           # e.g. my-registry.example.com/infra-controller
+export NICO_CORE_IMAGE_TAG=<nico-core-tag>           # e.g. 2.0.0-pr-58-g38a54a3f
+export NICO_REST_IMAGE_TAG=<nico-rest-tag>           # e.g. 2.0.0-pr-58-g38a54a3f
+# export REGISTRY_PULL_SECRET=<raw API key>          # optional; raw key for authenticated registries
 
 # 3. Customize site-specific values
-#    Edit helm-prereqs/values/ncx-core.yaml:
-#      carbide-api.hostname      — your site's external API hostname
-#      carbide-api.siteConfig    — network pools, VLAN ranges, IB config, MetalLB VIPs
+#    Edit helm-prereqs/values/nico-core.yaml:
+#      nico-api.hostname      — your site's external API hostname
+#      nico-api.siteConfig    — network pools, VLAN ranges, IB config, MetalLB VIPs
 #    Edit helm-prereqs/values/metallb-config.yaml:
 #      IPAddressPool, BGPPeer    — your site's VIP ranges and TOR switch config
 #    Edit helm-prereqs/values.yaml:
 #      siteName                  — short site identifier
 
-# 4. Point NCX_REPO at ncx-infra-controller-rest (auto-detected if a sibling directory)
-export NCX_REPO=/path/to/ncx-infra-controller-rest   # optional
-
-# 5. Run setup — installs common services, Carbide Core, and Carbide REST in order
+# 4. Run setup — installs common services, NICo Core, and NICo REST in order
 cd helm-prereqs
-./setup.sh        # interactive
-./setup.sh -y     # non-interactive (CI/CD)
+./setup.sh        # interactive — prompts before deploying Core and REST
+./setup.sh -y     # non-interactive — deploys everything (CI/CD)
 ```
 
 To tear everything down:

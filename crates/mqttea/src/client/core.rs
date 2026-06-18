@@ -65,6 +65,10 @@ pub struct MqtteaClient {
     // When the connection drops and needs to reconnect, fresh credentials
     // will be fetched from this provider (e.g., to get a new OAuth2 token).
     credentials_provider: Option<Arc<dyn CredentialsProvider>>,
+    // subscriptions tracks the topic patterns and QoS values passed
+    // to `subscribe()` so they can be replayed when the broker reports
+    // that a reconnect created a fresh session.
+    subscriptions: Arc<RwLock<HashMap<String, QoS>>>,
     // handlers stores message-type-specific handlers for processing
     // received messages
     handlers: Arc<RwLock<HashMap<String, ErasedHandler>>>,
@@ -97,23 +101,9 @@ impl MqtteaClient {
         client_id: &str,
         client_options: Option<ClientOptions>,
     ) -> Result<Arc<Self>, MqtteaClientError> {
-        let mut mqtt_options = MqttOptions::new(client_id, broker_host, broker_port);
-        mqtt_options.set_keep_alive(
-            client_options
-                .as_ref()
-                .and_then(|opts| opts.keep_alive)
-                .unwrap_or(DEFAULT_KEEP_ALIVE),
-        );
-        mqtt_options.set_clean_session(false);
-
-        // Fetch credentials from provider if configured.
-        if let Some(provider) = client_options
-            .as_ref()
-            .and_then(|opts| opts.credentials_provider.as_ref())
-        {
-            let credentials = provider.get_credentials().await?;
-            mqtt_options.set_credentials(credentials.username, credentials.password);
-        }
+        let mqtt_options =
+            build_mqtt_options(client_id, broker_host, broker_port, client_options.as_ref())
+                .await?;
 
         let (client, event_loop) = AsyncClient::new(
             mqtt_options,
@@ -151,11 +141,40 @@ impl MqtteaClient {
             concurrency_semaphore: Arc::new(Semaphore::new(concurrency_limit)),
             client_options,
             credentials_provider,
+            subscriptions: Arc::new(RwLock::new(HashMap::new())),
             handlers,
             queue_stats,
             publish_stats,
             registry,
         }))
+    }
+
+    async fn replay_subscriptions(&self) {
+        let subs_snapshot: Vec<(String, QoS)> = self
+            .subscriptions
+            .read()
+            .await
+            .iter()
+            .map(|(topic, qos)| (topic.clone(), *qos))
+            .collect();
+
+        if subs_snapshot.is_empty() {
+            return;
+        }
+
+        info!(
+            subscription_count = subs_snapshot.len(),
+            "Replaying MQTT subscriptions after broker reported a fresh session"
+        );
+
+        for (topic, qos) in subs_snapshot {
+            if let Err(e) = self.client.subscribe(topic.as_str(), qos).await {
+                error!(
+                    "Failed to re-subscribe to {} after fresh session: {:?}",
+                    topic, e
+                );
+            }
+        }
     }
 
     // connect actually connects and starts the event_loop for both
@@ -208,11 +227,24 @@ impl MqtteaClient {
         let queue_stats_producer = self.queue_stats.clone();
         let registry_clone = self.registry.clone();
         let credentials_provider = self.credentials_provider.clone();
+        let client_for_reconnect = self.clone();
+        let mut has_connected = false;
         let mut backoff_strategy = SuperBasicBackoff::new();
         tokio::spawn(async move {
             loop {
                 match event_loop.poll().await {
                     Ok(event) => {
+                        if let Event::Incoming(Packet::ConnAck(connack)) = &event {
+                            let should_replay =
+                                should_replay_subscriptions(has_connected, connack.session_present);
+                            has_connected = true;
+                            backoff_strategy.reset();
+
+                            if should_replay {
+                                client_for_reconnect.replay_subscriptions().await;
+                            }
+                        }
+
                         if let Event::Incoming(Packet::Publish(publish)) = event {
                             if let Some(msg) =
                                 ReceivedMessage::from_publish(&publish, registry_clone.clone())
@@ -412,7 +444,16 @@ impl MqtteaClient {
     }
 
     // subscribe subscribes to a topic with the specified QoS.
+    //
+    // The subscription is also stored in the client so it can be
+    // replayed after a reconnect when the broker reports that the
+    // previous session was not resumed.
     pub async fn subscribe(&self, topic: &str, qos: QoS) -> Result<(), MqtteaClientError> {
+        self.subscriptions
+            .write()
+            .await
+            .insert(topic.to_string(), qos);
+
         self.client
             .subscribe(topic, qos)
             .await
@@ -544,6 +585,34 @@ impl MqtteaClient {
     }
 }
 
+// build_mqtt_options assembles rumqttc `MqttOptions`, fetching fresh
+// credentials from the credentials provider if configured.
+async fn build_mqtt_options(
+    client_id: &str,
+    broker_host: &str,
+    broker_port: u16,
+    client_options: Option<&ClientOptions>,
+) -> Result<MqttOptions, MqtteaClientError> {
+    let mut mqtt_options = MqttOptions::new(client_id, broker_host, broker_port);
+    mqtt_options.set_keep_alive(
+        client_options
+            .and_then(|opts| opts.keep_alive)
+            .unwrap_or(DEFAULT_KEEP_ALIVE),
+    );
+    mqtt_options.set_clean_session(false);
+
+    if let Some(provider) = client_options.and_then(|opts| opts.credentials_provider.as_ref()) {
+        let credentials = provider.get_credentials().await?;
+        mqtt_options.set_credentials(credentials.username, credentials.password);
+    }
+
+    Ok(mqtt_options)
+}
+
+fn should_replay_subscriptions(has_connected_before: bool, session_present: bool) -> bool {
+    has_connected_before && !session_present
+}
+
 // SuperBasicBackoff is a basic backoff I'm implementing
 // to back off if there are errors during event loop
 // processing. Right now it's just hard-coded to start
@@ -575,5 +644,26 @@ impl SuperBasicBackoff {
 
     fn reset(&mut self) {
         self.current = std::time::Duration::from_millis(100);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::should_replay_subscriptions;
+
+    #[test]
+    fn does_not_replay_on_initial_connect() {
+        assert!(!should_replay_subscriptions(false, false));
+        assert!(!should_replay_subscriptions(false, true));
+    }
+
+    #[test]
+    fn replays_on_reconnect_when_broker_has_fresh_session() {
+        assert!(should_replay_subscriptions(true, false));
+    }
+
+    #[test]
+    fn does_not_replay_on_reconnect_when_broker_resumed_session() {
+        assert!(!should_replay_subscriptions(true, true));
     }
 }

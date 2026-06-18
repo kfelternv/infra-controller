@@ -15,7 +15,7 @@
  * limitations under the License.
  */
 mod dhcp_factory;
-mod kea;
+pub(crate) mod kea;
 
-pub use dhcp_factory::{DHCPFactory, RELAY_IP};
+pub use dhcp_factory::DHCPFactory;
 pub use kea::Kea;

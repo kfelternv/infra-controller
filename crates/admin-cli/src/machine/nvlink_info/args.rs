@@ -19,10 +19,20 @@ use carbide_uuid::machine::MachineId;
 use clap::{Parser, Subcommand};
 
 #[derive(Subcommand, Debug)]
+#[command(after_long_help = "\
+EXAMPLES:
+
+Show existing NVLink info for a machine:
+    $ nico-admin-cli machine nvlink-info show 12345678-1234-5678-90ab-cdef01234567
+
+Build NVLink info from Redfish + NMX-C and persist it:
+    $ nico-admin-cli machine nvlink-info populate 12345678-1234-5678-90ab-cdef01234567 --update-db
+
+")]
 pub enum Args {
     #[clap(about = "Show existing NVLink info")]
     Show(NvlinkInfoArgs),
-    #[clap(about = "Build NVLink info from Redfish + NMX-M and populate DB")]
+    #[clap(about = "Build NVLink info from Redfish + NMX-C and populate DB")]
     Populate(NvlinkInfoPopulateArgs),
 }
 

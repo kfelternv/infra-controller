@@ -11,6 +11,7 @@ name = "carbide_site_explorer"
 
 [features]
 default = []
+test-support = []
 
 [dependencies]
 bmc-explorer = { path = "../bmc-explorer" }
@@ -20,9 +21,9 @@ carbide-firmware = { path = "../firmware" }
 carbide-health-report = { path = "../health-report" }
 carbide-ipmi = { path = "../ipmi" }
 carbide-network = { path = "../network" }
+carbide-rack = { path = "../rack", default-features = false }
 carbide-redfish = { path = "../redfish" }
 carbide-secrets = { path = "../secrets" }
-carbide-ssh = { path = "../ssh" }
 carbide-utils = { path = "../utils" }
 carbide-uuid = { path = "../uuid" }
 config-version = { path = "../config-version" }
@@ -43,12 +44,27 @@ rand = { workspace = true }
 regex = { workspace = true }
 serde = { workspace = true, features = ["derive"] }
 serde_json = { workspace = true }
-sqlx = { workspace = true, features = [ "postgres" ] }
+sqlx = { workspace = true, features = ["postgres"] }
 tokio = { workspace = true }
 tokio-util = { workspace = true }
 tracing = { workspace = true }
 thiserror = { workspace = true }
 version-compare = { workspace = true }
+
+[dev-dependencies]
+bmc-vendor = { path = "../bmc-vendor" }
+carbide-api-model = { path = "../api-model", default-features = false, features = [
+  "test-support",
+] }
+carbide-test-harness = { path = "../test-harness" }
+carbide-redfish = { path = "../redfish", features = ["test-support"] }
+carbide-rpc = { path = "../rpc", features = ["test-support"] }
+carbide-site-explorer = { path = ".", features = ["test-support"] }
+carbide-test-support = { path = "../test-support" }
+
+tokio = { workspace = true, features = ["macros", "rt"] }
+tonic = { workspace = true }
+uuid = { workspace = true }
 
 [lints]
 workspace = true

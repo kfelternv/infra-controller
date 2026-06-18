@@ -17,17 +17,17 @@
 
 use std::collections::HashMap;
 
-use ::rpc::admin_cli::{CarbideCliError, CarbideCliResult};
 use ::rpc::forge::instance_interface_config::NetworkDetails;
 use ::rpc::forge::{
     self as rpc, BmcEndpointRequest, FindInstanceTypesByIdsRequest,
-    FindNetworkSecurityGroupsByIdsRequest, GetDpfStateRequest,
+    FindNetworkSecurityGroupsByIdsRequest, GetDpfHostSnapshotRequest, GetDpfStateRequest,
     GetNetworkSecurityGroupAttachmentsRequest, GetNetworkSecurityGroupPropagationStatusRequest,
     IdentifySerialRequest, MachineHardwareInfo, MachineHardwareInfoUpdateType,
     ModifyDpfStateRequest, NetworkPrefix, NetworkSecurityGroupAttributes,
     NetworkSegmentCreationRequest, NetworkSegmentType, Remediation, RemediationIdList,
-    RemediationList, UpdateMachineHardwareInfoRequest, UpdateNetworkSecurityGroupRequest,
-    VpcCreationRequest, VpcSearchFilter, VpcVirtualizationType, VpcsByIdsRequest,
+    RemediationList, SpxPartitionSearchFilter, UpdateMachineHardwareInfoRequest,
+    UpdateNetworkSecurityGroupRequest, VpcCreationRequest, VpcSearchFilter, VpcVirtualizationType,
+    VpcsByIdsRequest,
 };
 use ::rpc::forge_api_client::ForgeApiClient;
 use ::rpc::{Machine, NetworkSegment};
@@ -36,15 +36,18 @@ use carbide_uuid::dpu_remediations::RemediationId;
 use carbide_uuid::infiniband::IBPartitionId;
 use carbide_uuid::instance::InstanceId;
 use carbide_uuid::machine::{MachineId, MachineInterfaceId};
+use carbide_uuid::machine_validation::MachineValidationId;
 use carbide_uuid::network::NetworkSegmentId;
 use carbide_uuid::nvlink::{NvLinkLogicalPartitionId, NvLinkPartitionId};
 use carbide_uuid::power_shelf::PowerShelfId;
 use carbide_uuid::rack::RackId;
+use carbide_uuid::spx::SpxPartitionId;
 use carbide_uuid::switch::SwitchId;
-use carbide_uuid::vpc::VpcId;
+use carbide_uuid::vpc::{VpcId, VpcPrefixId};
 use mac_address::MacAddress;
 
 use crate::IntoOnlyOne;
+use crate::errors::{CarbideCliError, CarbideCliResult};
 use crate::expected_machines::common::ExpectedMachineJson;
 use crate::instance::AllocateInstance;
 use crate::machine::MachineAutoupdate;
@@ -53,6 +56,23 @@ use crate::machine::MachineAutoupdate;
 /// methods.
 #[derive(Clone)]
 pub struct ApiClient(pub ForgeApiClient);
+
+/// Returns `True` when `status` *can* mean the server does not implement
+/// the requested RPC, telling the caller to retry through the deprecated alias.
+///
+/// API servers that predate a renamed RPC answer it in one of two ways:
+///
+/// - `Unimplemented`, when the request reaches the gRPC router.
+/// - A bare HTTP 403 with no `grpc-status` trailer, when `carbide-api` RBAC
+///   rules reject a method name missing from its permission table (which
+///   happens before the gRPC router is even consulted). tonic maps that 403 to
+///   `PermissionDenied` on the client.
+fn maybe_unimplemented(status: &tonic::Status) -> bool {
+    matches!(
+        status.code(),
+        tonic::Code::Unimplemented | tonic::Code::PermissionDenied
+    )
+}
 
 // Note: You do *not* need to add every gRPC method to this wrapper. Callers can use `.0` to get
 // access to the underlying ForgeApiClient, if they want to simply call the gRPC methods themselves.
@@ -287,7 +307,10 @@ impl ApiClient {
     }
 
     async fn get_rack_ids(&self) -> CarbideCliResult<rpc::RackIdList> {
-        Ok(self.0.find_rack_ids().await?)
+        Ok(self
+            .0
+            .find_rack_ids(rpc::RackSearchFilter::default())
+            .await?)
     }
 
     pub async fn get_all_switches(
@@ -403,10 +426,51 @@ impl ApiClient {
     ) -> CarbideCliResult<rpc::NetworkSegmentList> {
         let request = rpc::NetworkSegmentsByIdsRequest {
             network_segments_ids: network_segments_ids.to_vec(),
-            include_history: network_segments_ids.len() == 1, // only request it when getting data for single resource
+            // Request inline history for single-segment lookups so old servers (lacking the
+            // FindNetworkSegmentStateHistories RPC) still populate the deprecated history field.
+            include_history: network_segments_ids.len() == 1,
             include_num_free_ips: true,
         };
         Ok(self.0.find_network_segments_by_ids(request).await?)
+    }
+
+    pub async fn get_segment_state_history(
+        &self,
+        segment_id: NetworkSegmentId,
+    ) -> CarbideCliResult<Vec<rpc::StateHistoryRecord>> {
+        let mut result = self
+            .0
+            .find_network_segment_state_histories(rpc::NetworkSegmentStateHistoriesRequest {
+                network_segment_ids: vec![segment_id],
+            })
+            .await?;
+
+        Ok(result
+            .histories
+            .remove(&segment_id.to_string())
+            .map(|h| h.records)
+            .unwrap_or_default())
+    }
+
+    /// Fetches controller state history for a single VPC prefix.
+    pub async fn get_vpc_prefix_state_history(
+        &self,
+        vpc_prefix_id: VpcPrefixId,
+    ) -> CarbideCliResult<Vec<rpc::StateHistoryRecord>> {
+        // Request the history through the generic state-history RPC.
+        let mut result = self
+            .0
+            .find_vpc_prefix_state_histories(rpc::VpcPrefixStateHistoriesRequest {
+                vpc_prefix_ids: vec![vpc_prefix_id],
+            })
+            .await?;
+
+        // Return an empty list when the object has no recorded transitions yet.
+        Ok(result
+            .histories
+            .remove(&vpc_prefix_id.to_string())
+            .map(|h| h.records)
+            .unwrap_or_default())
     }
 
     pub async fn get_domains(
@@ -423,7 +487,7 @@ impl ApiClient {
         report: ::rpc::health::HealthReport,
         replace: bool,
     ) -> CarbideCliResult<()> {
-        let request = ::rpc::forge::InsertHealthReportOverrideRequest {
+        let request = ::rpc::forge::InsertMachineHealthReportRequest {
             machine_id: Some(id),
             health_report_entry: Some(rpc::HealthReportEntry {
                 report: Some(report),
@@ -434,7 +498,51 @@ impl ApiClient {
                 } as i32,
             }),
         };
-        Ok(self.0.insert_health_report_override(request).await?)
+        match self.0.insert_machine_health_report(request.clone()).await {
+            Ok(()) => Ok(()),
+            Err(status) if maybe_unimplemented(&status) => {
+                // Fall back to the deprecated alias for older API servers
+                // that don't have the renamed RPC yet.
+                #[allow(deprecated)]
+                Ok(self.0.insert_health_report_override(request).await?)
+            }
+            Err(status) => Err(status.into()),
+        }
+    }
+
+    pub async fn machine_list_health_reports(
+        &self,
+        machine_id: MachineId,
+    ) -> CarbideCliResult<rpc::ListHealthReportResponse> {
+        match self.0.list_machine_health_reports(machine_id).await {
+            Ok(response) => Ok(response),
+            Err(status) if maybe_unimplemented(&status) => {
+                // Fall back to the deprecated alias for older API servers.
+                #[allow(deprecated)]
+                Ok(self.0.list_health_report_overrides(machine_id).await?)
+            }
+            Err(status) => Err(status.into()),
+        }
+    }
+
+    pub async fn machine_remove_health_report(
+        &self,
+        machine_id: MachineId,
+        source: String,
+    ) -> CarbideCliResult<()> {
+        let request = ::rpc::forge::RemoveMachineHealthReportRequest {
+            machine_id: Some(machine_id),
+            source,
+        };
+        match self.0.remove_machine_health_report(request.clone()).await {
+            Ok(()) => Ok(()),
+            Err(status) if maybe_unimplemented(&status) => {
+                // Fall back to the deprecated alias for older API servers.
+                #[allow(deprecated)]
+                Ok(self.0.remove_health_report_override(request).await?)
+            }
+            Err(status) => Err(status.into()),
+        }
     }
 
     pub async fn admin_power_control(
@@ -467,7 +575,7 @@ impl ApiClient {
         let endpoint_ids = match self.0.find_explored_endpoint_ids().await {
             Ok(endpoint_ids) => endpoint_ids,
             Err(status) => {
-                return if status.code() == tonic::Code::Unimplemented {
+                return if maybe_unimplemented(&status) {
                     Ok(self.0.get_site_exploration_report().await?)
                 } else {
                     Err(status.into())
@@ -507,7 +615,7 @@ impl ApiClient {
     ) -> CarbideCliResult<Vec<::rpc::site_explorer::ExploredManagedHost>> {
         let host_ids = match self.0.find_explored_managed_host_ids().await {
             Ok(host_ids) => host_ids,
-            Err(status) if status.code() == tonic::Code::Unimplemented => {
+            Err(status) if maybe_unimplemented(&status) => {
                 let hosts = self.0.get_site_exploration_report().await?.managed_hosts;
                 return Ok(hosts);
             }
@@ -569,6 +677,8 @@ impl ApiClient {
         dpf_enabled: Option<bool>,
         bmc_ip_address: Option<String>,
         bmc_retain_credentials: Option<bool>,
+        dpu_mode: Option<::rpc::forge::DpuMode>,
+        host_lifecycle_profile: Option<::rpc::forge::HostLifecycleProfile>,
     ) -> Result<(), CarbideCliError> {
         let get_req = match (bmc_mac_address, id) {
             (Some(_), Some(_)) => {
@@ -645,14 +755,14 @@ impl ApiClient {
             rack_id: rack_id.or(expected_machine.rack_id),
             default_pause_ingestion_and_poweron,
             #[allow(deprecated)]
-            dpf_enabled: dpf_enabled.unwrap_or_default(),
+            dpf_enabled: dpf_enabled.unwrap_or(true),
             is_dpf_enabled: dpf_enabled,
             bmc_ip_address: bmc_ip_address.or(expected_machine.bmc_ip_address),
             bmc_retain_credentials: bmc_retain_credentials
                 .or(expected_machine.bmc_retain_credentials),
-            // Patch doesn't expose `--dpu-mode` yet; preserve the existing
-            // server-side value.
-            dpu_mode: expected_machine.dpu_mode,
+            dpu_mode: dpu_mode.map(|m| m as i32).or(expected_machine.dpu_mode),
+            host_lifecycle_profile: host_lifecycle_profile
+                .or(expected_machine.host_lifecycle_profile),
         };
 
         Ok(self.0.update_expected_machine(request).await?)
@@ -683,11 +793,16 @@ impl ApiClient {
                     default_pause_ingestion_and_poweron: machine
                         .default_pause_ingestion_and_poweron,
                     #[allow(deprecated)]
-                    dpf_enabled: machine.dpf_enabled.unwrap_or_default(),
+                    dpf_enabled: machine.dpf_enabled.unwrap_or(true),
                     is_dpf_enabled: machine.dpf_enabled,
                     bmc_ip_address: machine.bmc_ip_address,
                     bmc_retain_credentials: machine.bmc_retain_credentials,
                     dpu_mode: machine.dpu_mode.map(|m| m as i32),
+                    host_lifecycle_profile: machine.host_lifecycle_profile.map(|hlp| {
+                        ::rpc::forge::HostLifecycleProfile {
+                            disable_lockdown: hlp.disable_lockdown,
+                        }
+                    }),
                 })
                 .collect(),
         };
@@ -748,6 +863,7 @@ impl ApiClient {
                         .bmc_ip_address
                         .map(|ip| ip.to_string())
                         .unwrap_or_default(),
+                    nvos_ip_address: switch.nvos_ip_address.map(|ip| ip.to_string()),
                     metadata: switch.metadata,
                     rack_id: switch.rack_id,
                     bmc_retain_credentials: switch.bmc_retain_credentials,
@@ -842,7 +958,6 @@ impl ApiClient {
         let vpc = match self
             .0
             .create_vpc(VpcCreationRequest {
-                name: name.to_string(),
                 vni: None,
                 routing_profile_type: None,
                 tenant_organization_id: "devenv_test_org".to_string(),
@@ -961,6 +1076,33 @@ impl ApiClient {
         Ok(all_list)
     }
 
+    pub async fn get_all_spx_partitions(
+        &self,
+        tenant_org_id: Option<String>,
+        name: Option<String>,
+        page_size: usize,
+    ) -> CarbideCliResult<rpc::SpxPartitionList> {
+        let all_ids = self.get_spx_partition_ids(tenant_org_id, name).await?;
+        let mut all_list = rpc::SpxPartitionList {
+            spx_partitions: Vec::with_capacity(all_ids.spx_partition_ids.len()),
+        };
+
+        for ids in all_ids.spx_partition_ids.chunks(page_size) {
+            let list = self.get_spx_partitions_by_ids(ids).await?;
+            all_list.spx_partitions.extend(list.spx_partitions);
+        }
+
+        Ok(all_list)
+    }
+
+    pub async fn get_one_spx_partition(
+        &self,
+        spx_partition_id: SpxPartitionId,
+    ) -> CarbideCliResult<rpc::SpxPartitionList> {
+        let partitions = self.get_spx_partitions_by_ids(&[spx_partition_id]).await?;
+        Ok(partitions)
+    }
+
     pub async fn get_one_ib_partition(
         &self,
         ib_partition_id: IBPartitionId,
@@ -982,6 +1124,19 @@ impl ApiClient {
         Ok(self.0.find_ib_partition_ids(request).await?)
     }
 
+    async fn get_spx_partition_ids(
+        &self,
+        tenant_org_id: Option<String>,
+        name: Option<String>,
+    ) -> CarbideCliResult<rpc::SpxPartitionIdList> {
+        let request = SpxPartitionSearchFilter {
+            tenant_org_id,
+            name,
+            label: None,
+        };
+        Ok(self.0.find_spx_partition_ids(request).await?)
+    }
+
     async fn get_ib_partitions_by_ids(
         &self,
         ids: &[IBPartitionId],
@@ -991,6 +1146,16 @@ impl ApiClient {
             include_history: ids.len() == 1,
         };
         Ok(self.0.find_ib_partitions_by_ids(request).await?)
+    }
+
+    async fn get_spx_partitions_by_ids(
+        &self,
+        ids: &[SpxPartitionId],
+    ) -> CarbideCliResult<rpc::SpxPartitionList> {
+        let request = rpc::SpxPartitionsByIdsRequest {
+            spx_partition_ids: Vec::from(ids),
+        };
+        Ok(self.0.find_spx_partitions_by_ids(request).await?)
     }
 
     pub async fn get_all_keysets(
@@ -1134,7 +1299,9 @@ impl ApiClient {
                     .pci_properties
                     .as_ref()
                     .map(|pci| &pci.vendor)
-                    .is_some_and(|v| v.to_ascii_lowercase().contains("mellanox"))
+                    .is_some_and(|v| {
+                        v.to_ascii_lowercase().contains("mellanox") || allocate_instance.zero_dpu
+                    })
             });
             let mut interface_config = Vec::default();
             let mut vf_chunk_iter = vf_network_segment_ids.chunks(vfs_per_pf);
@@ -1167,6 +1334,7 @@ impl ApiClient {
                     virtual_function_id: None,
                     ip_address: None,
                     ipv6_interface_config: None,
+                    routing_profile: None,
                 });
 
                 if let Some(vf_network_segment_chunks) = vf_chunk_iter.next() {
@@ -1182,6 +1350,7 @@ impl ApiClient {
                             virtual_function_id: Some(vf_function_id),
                             ip_address: None,
                             ipv6_interface_config: None,
+                            routing_profile: None,
                         });
                         vf_function_id += 1;
                     }
@@ -1193,7 +1362,7 @@ impl ApiClient {
                 allocate_instance
                     .tenant_org
                     .as_deref()
-                    .unwrap_or("Forge-simulation-tenant"),
+                    .unwrap_or("devenv_test_org"),
             )
         } else if !allocate_instance.vpc_prefix_id.is_empty() {
             let Some(discovery_info) = &machine.discovery_info else {
@@ -1256,6 +1425,7 @@ impl ApiClient {
                                     .get(map_index)
                                     .cloned(),
                             }),
+                        routing_profile: None,
                     };
                     tracing::debug!("Adding interface: {:?}", new_interface);
 
@@ -1286,6 +1456,7 @@ impl ApiClient {
                                                 .cloned()
                                         }),
                                     }),
+                                routing_profile: None,
                             };
                             vf_function_id += 1;
                             tracing::debug!("Adding interface: {:?}", new_interface);
@@ -1332,12 +1503,18 @@ impl ApiClient {
             tenant: Some(tenant_config),
             os: allocate_instance.os.clone(),
             network: Some(rpc::InstanceNetworkConfig {
-                interfaces: interface_configs,
+                interfaces: if allocate_instance.zero_dpu {
+                    vec![]
+                } else {
+                    interface_configs
+                },
+                auto: allocate_instance.zero_dpu,
             }),
             network_security_group_id: allocate_instance.network_security_group_id.clone(),
             infiniband: None,
             dpu_extension_services: None,
             nvlink: None,
+            spxconfig: allocate_instance.spxconfig.clone(),
         };
 
         let mut labels = vec![
@@ -1488,12 +1665,8 @@ impl ApiClient {
         &self,
         machine_id: Option<MachineId>,
         history: bool,
-        arg_validation_id: Option<String>,
+        validation_id: Option<MachineValidationId>,
     ) -> CarbideCliResult<rpc::MachineValidationResultList> {
-        let mut validation_id: Option<::rpc::common::Uuid> = None;
-        if let Some(value) = arg_validation_id {
-            validation_id = Some(::rpc::common::Uuid { value })
-        }
         let request = rpc::MachineValidationGetRequest {
             machine_id,
             include_history: history,
@@ -1519,7 +1692,7 @@ impl ApiClient {
         machine_id: MachineId,
         tags: Option<Vec<String>>,
         allowed_tests: Option<Vec<String>>,
-        run_unverfied_tests: bool,
+        run_unverified_tests: bool,
         contexts: Option<Vec<String>>,
     ) -> CarbideCliResult<rpc::MachineValidationOnDemandResponse> {
         let allowed_tests: Vec<String> = allowed_tests
@@ -1532,7 +1705,7 @@ impl ApiClient {
             tags: tags.unwrap_or_default(),
             allowed_tests,
             action: rpc::machine_validation_on_demand_request::Action::Start.into(),
-            run_unverfied_tests,
+            run_unverfied_tests: run_unverified_tests,
             contexts: contexts.unwrap_or_default(),
         };
         Ok(self.0.on_demand_machine_validation(request).await?)
@@ -1616,12 +1789,10 @@ impl ApiClient {
         &self,
         vpc_id: VpcId,
         version: String,
-        name: String,
         metadata: Option<rpc::Metadata>,
         network_security_group_id: Option<String>,
     ) -> CarbideCliResult<rpc::Vpc> {
         let request = rpc::VpcUpdateRequest {
-            name,
             id: Some(vpc_id),
             if_version_match: Some(version),
             metadata,
@@ -2152,5 +2323,54 @@ impl ApiClient {
         }
 
         Ok(all_dpf_states)
+    }
+
+    pub async fn get_dpf_host_snapshot(
+        &self,
+        host_machine_id: MachineId,
+    ) -> CarbideCliResult<String> {
+        let request = GetDpfHostSnapshotRequest {
+            host_machine_id: Some(host_machine_id),
+        };
+        let response = self.0.get_dpf_host_snapshot(request).await?;
+        Ok(response.json_payload)
+    }
+
+    pub async fn get_dpf_service_versions(&self) -> CarbideCliResult<Vec<rpc::DpfServiceVersion>> {
+        let response = self.0.get_dpf_service_versions().await?;
+        Ok(response.services)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::maybe_unimplemented;
+
+    /// `PermissionDenied` must trigger the deprecated-alias fallback: servers
+    /// that predate a renamed RPC reject its unknown method name with a bare
+    /// HTTP 403 based on our internal RBAC rules, which tonic surfaces as
+    /// `PermissionDenied` rather than `Unimplemented`.
+    #[test]
+    fn maybe_unimplemented_accepts_both_unknown_rpc_signals() {
+        assert!(maybe_unimplemented(&tonic::Status::unimplemented("")));
+        assert!(maybe_unimplemented(&tonic::Status::permission_denied("")));
+    }
+
+    #[test]
+    fn maybe_unimplemented_rejects_other_errors() {
+        for status in [
+            tonic::Status::not_found(""),
+            tonic::Status::unavailable(""),
+            tonic::Status::internal(""),
+            tonic::Status::invalid_argument(""),
+            tonic::Status::unauthenticated(""),
+            tonic::Status::failed_precondition(""),
+        ] {
+            assert!(
+                !maybe_unimplemented(&status),
+                "{:?} must not trigger the deprecated-alias fallback",
+                status.code()
+            );
+        }
     }
 }

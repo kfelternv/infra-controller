@@ -16,11 +16,13 @@
  */
 use std::sync::Arc;
 
-use crate::bug::InjectedBugs;
+use crate::injection::InjectionStore;
 use crate::redfish;
+use crate::redfish::account_service::AccountServiceState;
 use crate::redfish::chassis::ChassisState;
 use crate::redfish::computer_system::SystemState;
 use crate::redfish::manager::ManagerState;
+use crate::redfish::session_service::SessionServiceState;
 use crate::redfish::update_service::UpdateServiceState;
 
 #[derive(Clone)]
@@ -33,7 +35,9 @@ pub struct BmcState {
     pub system_state: Arc<SystemState>,
     pub chassis_state: Arc<ChassisState>,
     pub update_service_state: Arc<UpdateServiceState>,
-    pub injected_bugs: Arc<InjectedBugs>,
+    pub account_service_state: Arc<AccountServiceState>,
+    pub session_service_state: Arc<SessionServiceState>,
+    pub injection: Arc<InjectionStore>,
     pub callbacks: Option<Arc<dyn crate::Callbacks>>,
 }
 

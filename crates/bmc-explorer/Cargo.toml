@@ -33,38 +33,47 @@ carbide-api-model = { path = "../api-model", default-features = false }
 itertools = { workspace = true }
 mac_address = { workspace = true }
 nv-redfish = { workspace = true, features = [
-    "assembly",
-    "bios",
-    "boot-options",
-    "chassis",
-    "computer-systems",
-    "ethernet-interfaces",
-    "host-interfaces",
-    "network-adapters",
-    "network-device-functions",
-    "managers",
-    "pcie-devices",
-    "power-supplies",
-    "update-service",
-    "secure-boot",
-    "oem-nvidia-bluefield",
-    "oem-nvidia-baseboard",
-    "oem-dell-attributes",
-    "oem-lenovo",
-    "oem-supermicro",
-    "oem-hpe",
-    "oem-ami",
-    "oem-liteon",
-    "bmc-http"
+  "assembly",
+  "bios",
+  "boot-options",
+  "chassis",
+  "computer-systems",
+  "ethernet-interfaces",
+  "host-interfaces",
+  "network-adapters",
+  "network-device-functions",
+  "managers",
+  "pcie-devices",
+  "power-supplies",
+  "update-service",
+  "secure-boot",
+  "oem-nvidia-bluefield",
+  "oem-nvidia-baseboard",
+  "oem-dell-attributes",
+  "oem-lenovo",
+  "oem-supermicro",
+  "oem-hpe",
+  "oem-ami",
+  "oem-liteon",
+  "bmc-http",
 ] }
 regex = { workspace = true }
 lazy_static = { workspace = true }
 tokio = { workspace = true }
 tracing = { workspace = true }
 
+[features]
+default = []
+# Exposes src/test_support.rs (test-only helpers) without shipping them in a
+# production build.
+test-support = []
+
 [dev-dependencies]
 axum = { workspace = true }
 bmc-mock = { path = "../bmc-mock" }
+# Self dev-dependency so the crate's own integration tests get the test-support
+# helpers; applies only to test/bench targets, never the production library.
+bmc-explorer = { path = ".", features = ["test-support"] }
 tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }
 
 [lints]

@@ -3,12 +3,19 @@
 
 use serde::{Deserialize, Serialize};
 
-#[derive(Debug, Clone, Deserialize, Serialize)]
+use crate::compute_tray_manager::Backend as ComputeBackend;
+use crate::nv_switch_manager::Backend as NvSwitchBackend;
+use crate::power_shelf_manager::Backend as PowerShelfBackend;
+
+#[derive(Debug, Clone, Default, Deserialize, Serialize)]
 pub struct ComponentManagerConfig {
-    #[serde(default = "default_nsm_backend")]
-    pub nv_switch_backend: String,
-    #[serde(default = "default_psm_backend")]
-    pub power_shelf_backend: String,
+    #[serde(default)]
+    pub nv_switch_backend: NvSwitchBackend,
+    #[serde(default)]
+    pub power_shelf_backend: PowerShelfBackend,
+    #[serde(default)]
+    pub compute_tray_backend: ComputeBackend,
+
     #[serde(default)]
     pub nsm: Option<BackendEndpointConfig>,
     #[serde(default)]
@@ -32,6 +39,14 @@ pub struct ComponentManagerConfig {
     /// Defaults to `false`.
     #[serde(default)]
     pub power_shelf_use_state_controller: bool,
+
+    /// When `true`, compute power control and firmware update calls
+    /// go through the state controller instead of being dispatched
+    /// directly.
+    ///
+    /// Defaults to `false`.
+    #[serde(default)]
+    pub compute_tray_use_state_controller: bool,
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
@@ -43,7 +58,7 @@ pub struct BackendEndpointConfig {
 
 /// TLS configuration for a backend gRPC connection.
 ///
-/// Follows the same SPIFFE cert convention used by RLA: a directory
+/// Follows the same SPIFFE cert convention used by NICo Flow: a directory
 /// containing `ca.crt`, `tls.crt`, and `tls.key`. Alternatively, each
 /// path can be set individually.
 #[derive(Debug, Clone, Deserialize, Serialize)]
@@ -91,30 +106,17 @@ impl BackendTlsConfig {
     }
 }
 
-fn default_nsm_backend() -> String {
-    "nsm".into()
-}
-
-fn default_psm_backend() -> String {
-    "psm".into()
-}
-
-impl Default for ComponentManagerConfig {
-    fn default() -> Self {
-        Self {
-            nv_switch_backend: default_nsm_backend(),
-            power_shelf_backend: default_psm_backend(),
-            nsm: None,
-            psm: None,
-            nv_switch_use_state_controller: false,
-            power_shelf_use_state_controller: false,
-        }
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn default_backends_are_rms() {
+        let cfg = ComponentManagerConfig::default();
+        assert_eq!(cfg.nv_switch_backend, NvSwitchBackend::Rms);
+        assert_eq!(cfg.power_shelf_backend, PowerShelfBackend::Rms);
+        assert_eq!(cfg.compute_tray_backend, ComputeBackend::Rms);
+    }
 
     fn tls_config(
         cert_dir: Option<&str>,

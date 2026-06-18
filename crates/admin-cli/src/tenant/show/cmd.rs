@@ -15,12 +15,13 @@
  * limitations under the License.
  */
 
-use ::rpc::admin_cli::{CarbideCliError, CarbideCliResult, OutputFormat};
+use ::rpc::admin_cli::OutputFormat;
 use ::rpc::forge as forgerpc;
 use prettytable::{Table, row};
 use rpc::forge::TenantByOrganizationIdsRequest;
 
 use super::args::Args;
+use crate::errors::{CarbideCliError, CarbideCliResult};
 use crate::rpc::ApiClient;
 
 /// Produces a table for printing a non-JSON representation of a
@@ -44,16 +45,7 @@ pub(crate) fn convert_tenants_to_table(
 
     for tenant in tenants {
         let metadata = tenant.metadata.as_ref().unwrap_or(&default_metadata);
-
-        let labels = metadata
-            .labels
-            .iter()
-            .map(|label| {
-                let key = &label.key;
-                let value = label.value.as_deref().unwrap_or_default();
-                format!("\"{key}:{value}\"")
-            })
-            .collect::<Vec<_>>();
+        let labels = crate::metadata::fmt_labels_as_kv_pairs(Some(metadata));
 
         table.add_row(row![
             tenant.organization_id,

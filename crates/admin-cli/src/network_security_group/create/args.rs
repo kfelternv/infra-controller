@@ -16,12 +16,25 @@
  */
 
 use clap::Parser;
-use rpc::admin_cli::{CarbideCliError, CarbideCliResult};
 use rpc::forge::{
     self as forgerpc, CreateNetworkSecurityGroupRequest, NetworkSecurityGroupAttributes,
 };
 
+use crate::errors::{CarbideCliError, CarbideCliResult};
+
 #[derive(Parser, Debug, Clone)]
+#[command(after_long_help = "\
+EXAMPLES:
+
+Create a network security group for a tenant:
+    $ nico-admin-cli network-security-group create --tenant-organization-id fds34511233a \
+    --name web-tier
+
+Create one with stateful egress and labels:
+    $ nico-admin-cli network-security-group create --tenant-organization-id fds34511233a \
+    --name web-tier --stateful-egress --labels '{\"env\":\"prod\"}'
+
+")]
 pub struct Args {
     #[clap(
         short = 'i',

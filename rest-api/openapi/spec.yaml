@@ -279,6 +279,44 @@ tags:
       - `rackLevelAdministration` capability attribute was deprecated in favor of `flow` and was removed on May 13th, 2026 0:00 UTC. Please use `flow` instead.
       - `isRackLevelAdministrationEnabled` query parameter was deprecated in favor of `isFlowEnabled` and was removed on May 13th, 2026 0:00 UTC. Please use `isFlowEnabled` instead.
 paths:
+  '/v2/org/{org}/nico/credential/bmc':
+    parameters:
+      - schema:
+          type: string
+        name: org
+        in: path
+        required: true
+        description: Name of the Org
+    put:
+      summary: Set a BMC credential (Provider Admin)
+      tags:
+        - BMC Credential
+      parameters:
+        - schema:
+            type: string
+            format: uuid
+          name: siteId
+          in: query
+          required: true
+          description: ID of the Site
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/BMCCredentialRequest'
+      responses:
+        '204':
+          description: No Content
+        '403':
+          $ref: '#/components/responses/ForbiddenError'
+      operationId: set-bmc-credential
+      description: |-
+        Store a site-wide or per-BMC root credential, proxied to NICo Core
+        CreateCredential through the generic site gRPC proxy. Equivalent to
+        `carbide-admin-cli credential add-bmc`.
+
+        User must have authorization role with `PROVIDER_ADMIN` suffix.
   '/v2/org/{org}/nico/service-account/current':
     parameters:
       - schema:
@@ -12904,6 +12942,29 @@ paths:
           $ref: '#/components/responses/GenericHttpError'
 components:
   schemas:
+    BMCCredentialRequest:
+      type: object
+      title: BMCCredentialRequest
+      description: Request to set (create or overwrite) a BMC credential.
+      required:
+        - kind
+        - password
+      properties:
+        kind:
+          type: string
+          description: Which BMC credential to store.
+          enum:
+            - site-wide-root
+            - bmc-root
+        password:
+          type: string
+          description: Credential password.
+        username:
+          type: string
+          description: Optional username; Core defaults to "root" for bmc-root when omitted.
+        macAddress:
+          type: string
+          description: BMC MAC address. Required for kind bmc-root, ignored for site-wide-root.
     InfrastructureProvider:
       description: Infrastructure providers own and manage datacenters
       type: object

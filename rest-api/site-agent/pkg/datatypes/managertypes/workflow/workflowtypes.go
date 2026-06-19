@@ -4,6 +4,8 @@
 package workflowtypes
 
 import (
+	stdatomic "sync/atomic"
+
 	"go.temporal.io/sdk/client"
 	"go.temporal.io/sdk/worker"
 	"go.uber.org/atomic"
@@ -18,9 +20,9 @@ type State struct {
 	// HealthStatus current health state
 	HealthStatus atomic.Uint64
 	// Err is error message
-	Err *string
+	Err stdatomic.Value
 	// ConnectionTime time when attempted to connect
-	ConnectionTime string
+	ConnectionTime stdatomic.Value
 }
 
 // MgrState - Mgr state

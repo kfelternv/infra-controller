@@ -13,11 +13,11 @@ import (
 	"go.temporal.io/sdk/workflow"
 )
 
-// InvokeCoreGRPC is the single generic workflow that proxies a curated REST
-// request to a NICo Core (forge.Forge) gRPC method on the site. It replaces the
-// per-resource workflow/activity pairs: the cloud handler validates and builds
-// the typed request, and this workflow forwards it to the site activity that
-// holds the Core connection.
+// InvokeCoreGRPC is the generic workflow that proxies one already-built NICo
+// Core (forge.Forge) gRPC request on the site. It replaces per-method
+// workflow/activity pairs: the cloud handler validates and builds each typed
+// request, and this workflow forwards one proxy invocation to the site activity
+// that holds the Core connection.
 //
 // The function name must match coreproxy.WorkflowName.
 func InvokeCoreGRPC(ctx workflow.Context, req coreproxy.Request) (coreproxy.Response, error) {

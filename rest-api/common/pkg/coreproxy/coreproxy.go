@@ -4,11 +4,13 @@
 // Package coreproxy holds the contract shared between the cloud REST API and
 // the on-site agent for the generic NICo Core gRPC proxy.
 //
-// Instead of a bespoke Temporal workflow + activity + typed request per REST
-// operation, every curated REST handler validates its input, builds the typed
-// forge.Forge request, and funnels it through ONE generic workflow. The on-site
-// site-agent worker runs ONE generic activity that performs the actual gRPC
-// call against Core. The REST surface stays curated and designed; this is
+// Instead of a bespoke Temporal workflow + activity + typed request for every
+// Core-backed REST operation, curated REST handlers can validate their input,
+// build typed forge.Forge requests, and dispatch each Core invocation through
+// this generic workflow. A single REST request may dispatch zero, one, or many
+// proxied Core calls; this package defines the transport for one such call. The
+// on-site site-agent worker runs a generic activity that performs the actual
+// gRPC call against Core. The REST surface stays curated and designed; this is
 // purely the internal cloud->site transport.
 //
 // The request/response payloads are carried as protojson (json.RawMessage) so

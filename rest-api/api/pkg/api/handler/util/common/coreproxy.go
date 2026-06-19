@@ -22,12 +22,13 @@ import (
 	"github.com/NVIDIA/infra-controller/rest-api/workflow/pkg/queue"
 )
 
-// ExecuteCoreGRPC proxies a single curated REST request to a NICo Core
-// (forge.Forge) gRPC method via the generic site proxy workflow
-// (coreproxy.WorkflowName). The caller supplies the already-validated typed
-// request proto; it is protojson-encoded for transport so it is readable in the
-// Temporal UI, and the protojson response is decoded into resp (which may be
-// nil for methods with an empty response).
+// ExecuteCoreGRPC proxies one already-validated NICo Core (forge.Forge) gRPC
+// request via the generic site proxy workflow (coreproxy.WorkflowName). A REST
+// handler may call this helper zero, one, or many times depending on how many
+// Core invocations it needs. The caller supplies the typed request proto; it is
+// protojson-encoded for transport so it is readable in the Temporal UI, and the
+// protojson response is decoded into resp (which may be nil for methods with an
+// empty response).
 //
 // It returns an HTTP status code appropriate for the outcome (http.StatusOK on
 // success) so the handler can surface a consistent error response.

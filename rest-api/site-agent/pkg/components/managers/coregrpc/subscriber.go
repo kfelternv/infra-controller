@@ -8,11 +8,11 @@ import (
 	sww "github.com/NVIDIA/infra-controller/rest-api/site-workflow/pkg/workflow"
 )
 
-// RegisterSubscriber registers the single generic Core gRPC proxy workflow and
-// activity with Temporal. This one pair serves every curated REST operation
-// that proxies to NICo Core, instead of a per-resource workflow/activity pair.
-// It lives on the Core gRPC manager because that manager owns the connection
-// the activity uses.
+// RegisterSubscriber registers the generic Core gRPC proxy workflow and
+// activity with Temporal. This pair can serve any curated REST handler that
+// dispatches a Core call through the proxy, avoiding a dedicated workflow and
+// activity for each proxied Core method. It lives on the Core gRPC manager
+// because that manager owns the connection the activity uses.
 func (api *API) RegisterSubscriber() error {
 	ManagerAccess.Data.EB.Log.Info().Msg("CoreGrpc: Registering generic Core gRPC proxy workflow and activity")
 

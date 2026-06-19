@@ -165,11 +165,11 @@ impl<P: MqttPublisher> ManagedHostStateRepublisher<P> {
     ///
     /// Hosts are processed in bounded batches: the full ID list is fetched
     /// cheaply up front (IDs only, no per-host snapshot JSON), then each batch
-    /// hydrates full snapshots via a short-lived pooled connection. This keeps
-    /// peak memory flat and builds each host's snapshot exactly once, so it
-    /// scales to fleets with hundreds of thousands of hosts without loading
-    /// every snapshot at once or pinning a DB connection open for the whole
-    /// (possibly paced) sweep.
+    /// hydrates full snapshots via a short-lived pooled connection. Unpaced
+    /// sweeps use larger batches to keep DB load reasonable; paced sweeps load
+    /// one host at a time so each publish stays close to its read. This keeps
+    /// peak memory flat and avoids pinning a DB connection open for the whole
+    /// sweep.
     async fn run_sweep(
         &self,
         publish_healthy: bool,
@@ -201,14 +201,12 @@ impl<P: MqttPublisher> ManagedHostStateRepublisher<P> {
         let total = host_ids.len();
 
         let pacing = self.config.max_publishes_per_second.pacing_delay();
-        // One timestamp for the whole sweep: it marks when NICo asserts this
-        // state, not when each individual publish happened.
-        let timestamp = Utc::now();
+        let batch_size = snapshot_batch_size(pacing);
         let mut reader: db::db_read::PgPoolReader = self.db_pool.clone().into();
         let mut published = 0usize;
         let mut skipped_healthy = 0usize;
 
-        'sweep: for batch in host_ids.chunks(REPUBLISH_BATCH_SIZE) {
+        'sweep: for batch in host_ids.chunks(batch_size) {
             if cancel_token.is_cancelled() {
                 break;
             }
@@ -249,7 +247,7 @@ impl<P: MqttPublisher> ManagedHostStateRepublisher<P> {
                     &self.metrics,
                     &snapshot.host_snapshot.id,
                     &snapshot.managed_state,
-                    timestamp,
+                    Utc::now(),
                 )
                 .await;
                 published += 1;
@@ -301,6 +299,14 @@ fn should_publish(unhealthy: bool, publish_healthy: bool) -> bool {
 /// alert.
 fn is_report_unhealthy(report: &HealthReport) -> bool {
     !report.alerts.is_empty()
+}
+
+fn snapshot_batch_size(pacing: Option<Duration>) -> usize {
+    if pacing.is_some() {
+        1
+    } else {
+        REPUBLISH_BATCH_SIZE
+    }
 }
 
 /// Serialize and publish a single managed host's current state, bounded by
@@ -466,6 +472,16 @@ mod tests {
             Some(Duration::from_millis(100))
         );
         assert_eq!(PublishRate(1).pacing_delay(), Some(Duration::from_secs(1)));
+    }
+
+    #[test]
+    fn unpaced_sweeps_use_bounded_snapshot_batches() {
+        assert_eq!(snapshot_batch_size(None), REPUBLISH_BATCH_SIZE);
+    }
+
+    #[test]
+    fn paced_sweeps_load_and_publish_one_host_at_a_time() {
+        assert_eq!(snapshot_batch_size(Some(Duration::from_secs(1))), 1);
     }
 
     #[tokio::test]

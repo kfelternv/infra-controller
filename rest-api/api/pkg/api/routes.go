@@ -35,7 +35,7 @@ func NewAPIRoutes(dbSession *cdb.Session, tc tClient.Client, tnc tClient.Namespa
 		{
 			Path:    apiPathPrefix + "/credential/bmc",
 			Method:  http.MethodPut,
-			Handler: apiHandler.NewSetBMCCredentialHandler(dbSession, scp, cfg),
+			Handler: apiHandler.NewCreateOrUpdateBMCCredentialHandler(dbSession, scp, cfg),
 		},
 		// User endpoint
 		{

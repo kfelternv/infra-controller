@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+// SPDX-License-Identifier: Apache-2.0
+
 /*
 NVIDIA Infra Controller REST API
 
@@ -22,44 +25,36 @@ import (
 // BMCCredentialAPIService BMCCredentialAPI service
 type BMCCredentialAPIService service
 
-type ApiSetBmcCredentialRequest struct {
+type ApiCreateOrUpdateBmcCredentialRequest struct {
 	ctx                  context.Context
 	ApiService           *BMCCredentialAPIService
-	siteId               *string
 	org                  string
 	bMCCredentialRequest *BMCCredentialRequest
 }
 
-// ID of the Site
-func (r ApiSetBmcCredentialRequest) SiteId(siteId string) ApiSetBmcCredentialRequest {
-	r.siteId = &siteId
-	return r
-}
-
-func (r ApiSetBmcCredentialRequest) BMCCredentialRequest(bMCCredentialRequest BMCCredentialRequest) ApiSetBmcCredentialRequest {
+func (r ApiCreateOrUpdateBmcCredentialRequest) BMCCredentialRequest(bMCCredentialRequest BMCCredentialRequest) ApiCreateOrUpdateBmcCredentialRequest {
 	r.bMCCredentialRequest = &bMCCredentialRequest
 	return r
 }
 
-func (r ApiSetBmcCredentialRequest) Execute() (*http.Response, error) {
-	return r.ApiService.SetBmcCredentialExecute(r)
+func (r ApiCreateOrUpdateBmcCredentialRequest) Execute() (*BMCCredential, *http.Response, error) {
+	return r.ApiService.CreateOrUpdateBmcCredentialExecute(r)
 }
 
 /*
-SetBmcCredential Set a BMC credential (Provider Admin)
+CreateOrUpdateBmcCredential Create Or Update BMC Credential
 
-Store a site-wide or per-BMC root credential, proxied to NICo Core
-CreateCredential through the generic site gRPC proxy. Equivalent to
-`carbide-admin-cli credential add-bmc`.
+Create or update a site-wide or per-BMC root credential. Equivalent
+to `carbide-admin-cli credential add-bmc`.
 
 User must have authorization role with `PROVIDER_ADMIN` suffix.
 
 	@param ctx context.Context - for authentication, logging, cancellation, deadlines, tracing, etc. Passed from http.Request or context.Background().
 	@param org Name of the Org
-	@return ApiSetBmcCredentialRequest
+	@return ApiCreateOrUpdateBmcCredentialRequest
 */
-func (a *BMCCredentialAPIService) SetBmcCredential(ctx context.Context, org string) ApiSetBmcCredentialRequest {
-	return ApiSetBmcCredentialRequest{
+func (a *BMCCredentialAPIService) CreateOrUpdateBmcCredential(ctx context.Context, org string) ApiCreateOrUpdateBmcCredentialRequest {
+	return ApiCreateOrUpdateBmcCredentialRequest{
 		ApiService: a,
 		ctx:        ctx,
 		org:        org,
@@ -67,16 +62,19 @@ func (a *BMCCredentialAPIService) SetBmcCredential(ctx context.Context, org stri
 }
 
 // Execute executes the request
-func (a *BMCCredentialAPIService) SetBmcCredentialExecute(r ApiSetBmcCredentialRequest) (*http.Response, error) {
+//
+//	@return BMCCredential
+func (a *BMCCredentialAPIService) CreateOrUpdateBmcCredentialExecute(r ApiCreateOrUpdateBmcCredentialRequest) (*BMCCredential, *http.Response, error) {
 	var (
-		localVarHTTPMethod = http.MethodPut
-		localVarPostBody   interface{}
-		formFiles          []formFile
+		localVarHTTPMethod  = http.MethodPut
+		localVarPostBody    interface{}
+		formFiles           []formFile
+		localVarReturnValue *BMCCredential
 	)
 
-	localBasePath, err := a.client.cfg.ServerURLWithContext(r.ctx, "BMCCredentialAPIService.SetBmcCredential")
+	localBasePath, err := a.client.cfg.ServerURLWithContext(r.ctx, "BMCCredentialAPIService.CreateOrUpdateBmcCredential")
 	if err != nil {
-		return nil, &GenericOpenAPIError{error: err.Error()}
+		return localVarReturnValue, nil, &GenericOpenAPIError{error: err.Error()}
 	}
 
 	localVarPath := localBasePath + "/v2/org/{org}/nico/credential/bmc"
@@ -85,14 +83,10 @@ func (a *BMCCredentialAPIService) SetBmcCredentialExecute(r ApiSetBmcCredentialR
 	localVarHeaderParams := make(map[string]string)
 	localVarQueryParams := url.Values{}
 	localVarFormParams := url.Values{}
-	if r.siteId == nil {
-		return nil, reportError("siteId is required and must be specified")
-	}
 	if r.bMCCredentialRequest == nil {
-		return nil, reportError("bMCCredentialRequest is required and must be specified")
+		return localVarReturnValue, nil, reportError("bMCCredentialRequest is required and must be specified")
 	}
 
-	parameterAddToHeaderOrQuery(localVarQueryParams, "siteId", r.siteId, "form", "")
 	// to determine the Content-Type header
 	localVarHTTPContentTypes := []string{"application/json"}
 
@@ -114,19 +108,19 @@ func (a *BMCCredentialAPIService) SetBmcCredentialExecute(r ApiSetBmcCredentialR
 	localVarPostBody = r.bMCCredentialRequest
 	req, err := a.client.prepareRequest(r.ctx, localVarPath, localVarHTTPMethod, localVarPostBody, localVarHeaderParams, localVarQueryParams, localVarFormParams, formFiles)
 	if err != nil {
-		return nil, err
+		return localVarReturnValue, nil, err
 	}
 
 	localVarHTTPResponse, err := a.client.callAPI(req)
 	if err != nil || localVarHTTPResponse == nil {
-		return localVarHTTPResponse, err
+		return localVarReturnValue, localVarHTTPResponse, err
 	}
 
 	localVarBody, err := io.ReadAll(localVarHTTPResponse.Body)
 	localVarHTTPResponse.Body.Close()
 	localVarHTTPResponse.Body = io.NopCloser(bytes.NewBuffer(localVarBody))
 	if err != nil {
-		return localVarHTTPResponse, err
+		return localVarReturnValue, localVarHTTPResponse, err
 	}
 
 	if localVarHTTPResponse.StatusCode >= 300 {
@@ -139,13 +133,22 @@ func (a *BMCCredentialAPIService) SetBmcCredentialExecute(r ApiSetBmcCredentialR
 			err = a.client.decode(&v, localVarBody, localVarHTTPResponse.Header.Get("Content-Type"))
 			if err != nil {
 				newErr.error = err.Error()
-				return localVarHTTPResponse, newErr
+				return localVarReturnValue, localVarHTTPResponse, newErr
 			}
 			newErr.error = formatErrorMessage(localVarHTTPResponse.Status, &v)
 			newErr.model = v
 		}
-		return localVarHTTPResponse, newErr
+		return localVarReturnValue, localVarHTTPResponse, newErr
 	}
 
-	return localVarHTTPResponse, nil
+	err = a.client.decode(&localVarReturnValue, localVarBody, localVarHTTPResponse.Header.Get("Content-Type"))
+	if err != nil {
+		newErr := &GenericOpenAPIError{
+			body:  localVarBody,
+			error: err.Error(),
+		}
+		return localVarReturnValue, localVarHTTPResponse, newErr
+	}
+
+	return localVarReturnValue, localVarHTTPResponse, nil
 }

@@ -288,17 +288,9 @@ paths:
         required: true
         description: Name of the Org
     put:
-      summary: Set a BMC credential (Provider Admin)
+      summary: Create Or Update BMC Credential
       tags:
         - BMC Credential
-      parameters:
-        - schema:
-            type: string
-            format: uuid
-          name: siteId
-          in: query
-          required: true
-          description: ID of the Site
       requestBody:
         required: true
         content:
@@ -306,15 +298,18 @@ paths:
             schema:
               $ref: '#/components/schemas/BMCCredentialRequest'
       responses:
-        '204':
-          description: No Content
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/BMCCredential'
         '403':
           $ref: '#/components/responses/ForbiddenError'
-      operationId: set-bmc-credential
+      operationId: create-or-update-bmc-credential
       description: |-
-        Store a site-wide or per-BMC root credential, proxied to NICo Core
-        CreateCredential through the generic site gRPC proxy. Equivalent to
-        `carbide-admin-cli credential add-bmc`.
+        Create or update a site-wide or per-BMC root credential. Equivalent
+        to `carbide-admin-cli credential add-bmc`.
 
         User must have authorization role with `PROVIDER_ADMIN` suffix.
   '/v2/org/{org}/nico/service-account/current':
@@ -12945,11 +12940,16 @@ components:
     BMCCredentialRequest:
       type: object
       title: BMCCredentialRequest
-      description: Request to set (create or overwrite) a BMC credential.
+      description: Request to create or update a BMC credential.
       required:
+        - siteId
         - kind
         - password
       properties:
+        siteId:
+          type: string
+          format: uuid
+          description: ID of the Site where the credential is stored.
         kind:
           type: string
           description: Which BMC credential to store.
@@ -12959,6 +12959,30 @@ components:
         password:
           type: string
           description: Credential password.
+        username:
+          type: string
+          description: Optional username; Core defaults to "root" for bmc-root when omitted.
+        macAddress:
+          type: string
+          description: BMC MAC address. Required for kind bmc-root, ignored for site-wide-root.
+    BMCCredential:
+      type: object
+      title: BMCCredential
+      description: BMC credential metadata returned after create or update. Password is never returned.
+      required:
+        - siteId
+        - kind
+      properties:
+        siteId:
+          type: string
+          format: uuid
+          description: ID of the Site where the credential is stored.
+        kind:
+          type: string
+          description: Which BMC credential was stored.
+          enum:
+            - site-wide-root
+            - bmc-root
         username:
           type: string
           description: Optional username; Core defaults to "root" for bmc-root when omitted.

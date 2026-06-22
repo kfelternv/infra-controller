@@ -39,15 +39,16 @@ type bmcCredentialBase struct {
 }
 
 // authorizeSite validates the caller is a Provider Admin for org, resolves the
-// site from the required ?siteId query parameter, and confirms it belongs to
-// the org's Infrastructure Provider. Returns the per-site Temporal client. A
-// non-nil error is the echo response the caller must return.
+// Site from the request body, and confirms it belongs to the org's
+// Infrastructure Provider. Returns the per-site Temporal client. A non-nil
+// error is the echo response the caller must return.
 func (b bmcCredentialBase) authorizeSite(
 	ctx context.Context,
 	c echo.Context,
 	logger zerolog.Logger,
 	org string,
 	dbUser *cdbm.User,
+	siteStrID string,
 ) (tClient.Client, string, error) {
 	if dbUser == nil {
 		logger.Error().Msg("invalid User object found in request context")
@@ -76,14 +77,9 @@ func (b bmcCredentialBase) authorizeSite(
 		return nil, "", cutil.NewAPIErrorResponse(c, http.StatusBadRequest, "Failed to retrieve Infrastructure Provider for org", nil)
 	}
 
-	siteStrID := c.QueryParam("siteId")
-	if siteStrID == "" {
-		return nil, "", cutil.NewAPIErrorResponse(c, http.StatusBadRequest, "siteId query parameter is required", nil)
-	}
-
 	site, err := common.GetSiteFromIDString(ctx, nil, siteStrID, b.dbSession)
 	if err != nil {
-		if errors.Is(err, cdb.ErrDoesNotExist) {
+		if errors.Is(err, cdb.ErrDoesNotExist) || errors.Is(err, common.ErrInvalidID) {
 			return nil, "", cutil.NewAPIErrorResponse(c, http.StatusBadRequest, "Site specified in request does not exist", nil)
 		}
 		logger.Error().Err(err).Msg("error retrieving Site from DB")
@@ -104,34 +100,33 @@ func (b bmcCredentialBase) authorizeSite(
 	return stc, site.ID.String(), nil
 }
 
-// ~~~~~ Set BMC credential ~~~~~ //
+// ~~~~~ Create Or Update BMC Credential ~~~~~ //
 
-// SetBMCCredentialHandler stores (creates or overwrites) a BMC credential.
-type SetBMCCredentialHandler struct {
+// CreateOrUpdateBMCCredentialHandler stores (creates or overwrites) a BMC credential.
+type CreateOrUpdateBMCCredentialHandler struct {
 	bmcCredentialBase
 }
 
-// NewSetBMCCredentialHandler returns a handler for setting a BMC credential.
-func NewSetBMCCredentialHandler(dbSession *cdb.Session, scp *sc.ClientPool, cfg *config.Config) SetBMCCredentialHandler {
-	return SetBMCCredentialHandler{
+// NewCreateOrUpdateBMCCredentialHandler returns a handler for creating or updating a BMC credential.
+func NewCreateOrUpdateBMCCredentialHandler(dbSession *cdb.Session, scp *sc.ClientPool, cfg *config.Config) CreateOrUpdateBMCCredentialHandler {
+	return CreateOrUpdateBMCCredentialHandler{
 		bmcCredentialBase{dbSession: dbSession, scp: scp, cfg: cfg, tracerSpan: cutil.NewTracerSpan()},
 	}
 }
 
 // Handle godoc
-// @Summary Set a BMC credential (Provider Admin)
-// @Description Store a site-wide or per-BMC root credential. Proxies to NICo Core CreateCredential. Equivalent to `carbide-admin-cli credential add-bmc`.
+// @Summary Create Or Update BMC Credential
+// @Description Create or update a site-wide or per-BMC root credential. Equivalent to `carbide-admin-cli credential add-bmc`.
 // @Tags bmc-credential
 // @Accept json
 // @Produce json
 // @Security ApiKeyAuth
 // @Param org path string true "Name of NGC organization"
-// @Param siteId query string true "ID of the Site"
 // @Param request body model.APIBMCCredentialRequest true "BMC credential"
-// @Success 204 "No Content"
+// @Success 200 {object} model.APIBMCCredential
 // @Router /v2/org/{org}/nico/credential/bmc [put]
-func (h SetBMCCredentialHandler) Handle(c echo.Context) error {
-	org, dbUser, ctx, logger, handlerSpan := common.SetupHandler("BMCCredential", "Set", c, h.tracerSpan)
+func (h CreateOrUpdateBMCCredentialHandler) Handle(c echo.Context) error {
+	org, dbUser, ctx, logger, handlerSpan := common.SetupHandler("BMCCredential", "CreateOrUpdate", c, h.tracerSpan)
 	if handlerSpan != nil {
 		defer handlerSpan.End()
 	}
@@ -144,20 +139,20 @@ func (h SetBMCCredentialHandler) Handle(c echo.Context) error {
 		return cutil.NewAPIErrorResponse(c, http.StatusBadRequest, err.Error(), nil)
 	}
 
-	stc, siteID, errResp := h.authorizeSite(ctx, c, logger, org, dbUser)
+	stc, siteID, errResp := h.authorizeSite(ctx, c, logger, org, dbUser, apiReq.SiteID)
 	if errResp != nil {
 		return errResp
 	}
 
 	// Do not log the request: it contains the credential password.
-	logger.Info().Str("kind", apiReq.Kind).Msg("setting BMC credential via Core proxy")
+	logger.Info().Str("kind", apiReq.Kind).Str("siteID", apiReq.SiteID).Msg("creating or updating BMC credential via Core proxy")
 
 	// "password" is redacted from the Temporal payload and carried encrypted.
 	code, err := common.ExecuteCoreGRPC(ctx, stc, createCredentialMethod, apiReq.ToProto(), nil, siteID, "password")
 	if err != nil {
-		logger.Error().Err(err).Msg("failed to set BMC credential")
-		return cutil.NewAPIErrorResponse(c, code, "Failed to set BMC credential", nil)
+		logger.Error().Err(err).Msg("failed to create or update BMC credential")
+		return cutil.NewAPIErrorResponse(c, code, "Failed to create or update BMC credential", nil)
 	}
 
-	return c.NoContent(http.StatusNoContent)
+	return c.JSON(http.StatusOK, apiReq.ToResponse())
 }

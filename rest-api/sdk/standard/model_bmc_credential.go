@@ -1,6 +1,3 @@
-// SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
-// SPDX-License-Identifier: Apache-2.0
-
 /*
 NVIDIA Infra Controller REST API
 
@@ -19,47 +16,44 @@ import (
 	"fmt"
 )
 
-// checks if the BMCCredentialRequest type satisfies the MappedNullable interface at compile time
-var _ MappedNullable = &BMCCredentialRequest{}
+// checks if the BMCCredential type satisfies the MappedNullable interface at compile time
+var _ MappedNullable = &BMCCredential{}
 
-// BMCCredentialRequest Request to create or update a BMC credential.
-type BMCCredentialRequest struct {
+// BMCCredential BMC credential metadata returned after create or update. Password is never returned.
+type BMCCredential struct {
 	// ID of the Site where the credential is stored.
 	SiteId string `json:"siteId"`
-	// Which BMC credential to store.
+	// Which BMC credential was stored.
 	Kind string `json:"kind"`
-	// Credential password.
-	Password string `json:"password"`
 	// Optional username; Core defaults to \"root\" for bmc-root when omitted.
 	Username *string `json:"username,omitempty"`
 	// BMC MAC address. Required for kind bmc-root, ignored for site-wide-root.
 	MacAddress *string `json:"macAddress,omitempty"`
 }
 
-type _BMCCredentialRequest BMCCredentialRequest
+type _BMCCredential BMCCredential
 
-// NewBMCCredentialRequest instantiates a new BMCCredentialRequest object
+// NewBMCCredential instantiates a new BMCCredential object
 // This constructor will assign default values to properties that have it defined,
 // and makes sure properties required by API are set, but the set of arguments
 // will change when the set of required properties is changed
-func NewBMCCredentialRequest(siteId string, kind string, password string) *BMCCredentialRequest {
-	this := BMCCredentialRequest{}
+func NewBMCCredential(siteId string, kind string) *BMCCredential {
+	this := BMCCredential{}
 	this.SiteId = siteId
 	this.Kind = kind
-	this.Password = password
 	return &this
 }
 
-// NewBMCCredentialRequestWithDefaults instantiates a new BMCCredentialRequest object
+// NewBMCCredentialWithDefaults instantiates a new BMCCredential object
 // This constructor will only assign default values to properties that have it defined,
 // but it doesn't guarantee that properties required by API are set
-func NewBMCCredentialRequestWithDefaults() *BMCCredentialRequest {
-	this := BMCCredentialRequest{}
+func NewBMCCredentialWithDefaults() *BMCCredential {
+	this := BMCCredential{}
 	return &this
 }
 
 // GetSiteId returns the SiteId field value
-func (o *BMCCredentialRequest) GetSiteId() string {
+func (o *BMCCredential) GetSiteId() string {
 	if o == nil {
 		var ret string
 		return ret
@@ -70,7 +64,7 @@ func (o *BMCCredentialRequest) GetSiteId() string {
 
 // GetSiteIdOk returns a tuple with the SiteId field value
 // and a boolean to check if the value has been set.
-func (o *BMCCredentialRequest) GetSiteIdOk() (*string, bool) {
+func (o *BMCCredential) GetSiteIdOk() (*string, bool) {
 	if o == nil {
 		return nil, false
 	}
@@ -78,12 +72,12 @@ func (o *BMCCredentialRequest) GetSiteIdOk() (*string, bool) {
 }
 
 // SetSiteId sets field value
-func (o *BMCCredentialRequest) SetSiteId(v string) {
+func (o *BMCCredential) SetSiteId(v string) {
 	o.SiteId = v
 }
 
 // GetKind returns the Kind field value
-func (o *BMCCredentialRequest) GetKind() string {
+func (o *BMCCredential) GetKind() string {
 	if o == nil {
 		var ret string
 		return ret
@@ -94,7 +88,7 @@ func (o *BMCCredentialRequest) GetKind() string {
 
 // GetKindOk returns a tuple with the Kind field value
 // and a boolean to check if the value has been set.
-func (o *BMCCredentialRequest) GetKindOk() (*string, bool) {
+func (o *BMCCredential) GetKindOk() (*string, bool) {
 	if o == nil {
 		return nil, false
 	}
@@ -102,36 +96,12 @@ func (o *BMCCredentialRequest) GetKindOk() (*string, bool) {
 }
 
 // SetKind sets field value
-func (o *BMCCredentialRequest) SetKind(v string) {
+func (o *BMCCredential) SetKind(v string) {
 	o.Kind = v
 }
 
-// GetPassword returns the Password field value
-func (o *BMCCredentialRequest) GetPassword() string {
-	if o == nil {
-		var ret string
-		return ret
-	}
-
-	return o.Password
-}
-
-// GetPasswordOk returns a tuple with the Password field value
-// and a boolean to check if the value has been set.
-func (o *BMCCredentialRequest) GetPasswordOk() (*string, bool) {
-	if o == nil {
-		return nil, false
-	}
-	return &o.Password, true
-}
-
-// SetPassword sets field value
-func (o *BMCCredentialRequest) SetPassword(v string) {
-	o.Password = v
-}
-
 // GetUsername returns the Username field value if set, zero value otherwise.
-func (o *BMCCredentialRequest) GetUsername() string {
+func (o *BMCCredential) GetUsername() string {
 	if o == nil || IsNil(o.Username) {
 		var ret string
 		return ret
@@ -141,7 +111,7 @@ func (o *BMCCredentialRequest) GetUsername() string {
 
 // GetUsernameOk returns a tuple with the Username field value if set, nil otherwise
 // and a boolean to check if the value has been set.
-func (o *BMCCredentialRequest) GetUsernameOk() (*string, bool) {
+func (o *BMCCredential) GetUsernameOk() (*string, bool) {
 	if o == nil || IsNil(o.Username) {
 		return nil, false
 	}
@@ -149,7 +119,7 @@ func (o *BMCCredentialRequest) GetUsernameOk() (*string, bool) {
 }
 
 // HasUsername returns a boolean if a field has been set.
-func (o *BMCCredentialRequest) HasUsername() bool {
+func (o *BMCCredential) HasUsername() bool {
 	if o != nil && !IsNil(o.Username) {
 		return true
 	}
@@ -158,12 +128,12 @@ func (o *BMCCredentialRequest) HasUsername() bool {
 }
 
 // SetUsername gets a reference to the given string and assigns it to the Username field.
-func (o *BMCCredentialRequest) SetUsername(v string) {
+func (o *BMCCredential) SetUsername(v string) {
 	o.Username = &v
 }
 
 // GetMacAddress returns the MacAddress field value if set, zero value otherwise.
-func (o *BMCCredentialRequest) GetMacAddress() string {
+func (o *BMCCredential) GetMacAddress() string {
 	if o == nil || IsNil(o.MacAddress) {
 		var ret string
 		return ret
@@ -173,7 +143,7 @@ func (o *BMCCredentialRequest) GetMacAddress() string {
 
 // GetMacAddressOk returns a tuple with the MacAddress field value if set, nil otherwise
 // and a boolean to check if the value has been set.
-func (o *BMCCredentialRequest) GetMacAddressOk() (*string, bool) {
+func (o *BMCCredential) GetMacAddressOk() (*string, bool) {
 	if o == nil || IsNil(o.MacAddress) {
 		return nil, false
 	}
@@ -181,7 +151,7 @@ func (o *BMCCredentialRequest) GetMacAddressOk() (*string, bool) {
 }
 
 // HasMacAddress returns a boolean if a field has been set.
-func (o *BMCCredentialRequest) HasMacAddress() bool {
+func (o *BMCCredential) HasMacAddress() bool {
 	if o != nil && !IsNil(o.MacAddress) {
 		return true
 	}
@@ -190,11 +160,11 @@ func (o *BMCCredentialRequest) HasMacAddress() bool {
 }
 
 // SetMacAddress gets a reference to the given string and assigns it to the MacAddress field.
-func (o *BMCCredentialRequest) SetMacAddress(v string) {
+func (o *BMCCredential) SetMacAddress(v string) {
 	o.MacAddress = &v
 }
 
-func (o BMCCredentialRequest) MarshalJSON() ([]byte, error) {
+func (o BMCCredential) MarshalJSON() ([]byte, error) {
 	toSerialize, err := o.ToMap()
 	if err != nil {
 		return []byte{}, err
@@ -202,11 +172,10 @@ func (o BMCCredentialRequest) MarshalJSON() ([]byte, error) {
 	return json.Marshal(toSerialize)
 }
 
-func (o BMCCredentialRequest) ToMap() (map[string]interface{}, error) {
+func (o BMCCredential) ToMap() (map[string]interface{}, error) {
 	toSerialize := map[string]interface{}{}
 	toSerialize["siteId"] = o.SiteId
 	toSerialize["kind"] = o.Kind
-	toSerialize["password"] = o.Password
 	if !IsNil(o.Username) {
 		toSerialize["username"] = o.Username
 	}
@@ -216,14 +185,13 @@ func (o BMCCredentialRequest) ToMap() (map[string]interface{}, error) {
 	return toSerialize, nil
 }
 
-func (o *BMCCredentialRequest) UnmarshalJSON(data []byte) (err error) {
+func (o *BMCCredential) UnmarshalJSON(data []byte) (err error) {
 	// This validates that all required properties are included in the JSON object
 	// by unmarshalling the object into a generic map with string keys and checking
 	// that every required field exists as a key in the generic map.
 	requiredProperties := []string{
 		"siteId",
 		"kind",
-		"password",
 	}
 
 	allProperties := make(map[string]interface{})
@@ -240,53 +208,53 @@ func (o *BMCCredentialRequest) UnmarshalJSON(data []byte) (err error) {
 		}
 	}
 
-	varBMCCredentialRequest := _BMCCredentialRequest{}
+	varBMCCredential := _BMCCredential{}
 
 	decoder := json.NewDecoder(bytes.NewReader(data))
 	decoder.DisallowUnknownFields()
-	err = decoder.Decode(&varBMCCredentialRequest)
+	err = decoder.Decode(&varBMCCredential)
 
 	if err != nil {
 		return err
 	}
 
-	*o = BMCCredentialRequest(varBMCCredentialRequest)
+	*o = BMCCredential(varBMCCredential)
 
 	return err
 }
 
-type NullableBMCCredentialRequest struct {
-	value *BMCCredentialRequest
+type NullableBMCCredential struct {
+	value *BMCCredential
 	isSet bool
 }
 
-func (v NullableBMCCredentialRequest) Get() *BMCCredentialRequest {
+func (v NullableBMCCredential) Get() *BMCCredential {
 	return v.value
 }
 
-func (v *NullableBMCCredentialRequest) Set(val *BMCCredentialRequest) {
+func (v *NullableBMCCredential) Set(val *BMCCredential) {
 	v.value = val
 	v.isSet = true
 }
 
-func (v NullableBMCCredentialRequest) IsSet() bool {
+func (v NullableBMCCredential) IsSet() bool {
 	return v.isSet
 }
 
-func (v *NullableBMCCredentialRequest) Unset() {
+func (v *NullableBMCCredential) Unset() {
 	v.value = nil
 	v.isSet = false
 }
 
-func NewNullableBMCCredentialRequest(val *BMCCredentialRequest) *NullableBMCCredentialRequest {
-	return &NullableBMCCredentialRequest{value: val, isSet: true}
+func NewNullableBMCCredential(val *BMCCredential) *NullableBMCCredential {
+	return &NullableBMCCredential{value: val, isSet: true}
 }
 
-func (v NullableBMCCredentialRequest) MarshalJSON() ([]byte, error) {
+func (v NullableBMCCredential) MarshalJSON() ([]byte, error) {
 	return json.Marshal(v.value)
 }
 
-func (v *NullableBMCCredentialRequest) UnmarshalJSON(src []byte) error {
+func (v *NullableBMCCredential) UnmarshalJSON(src []byte) error {
 	v.isSet = true
 	return json.Unmarshal(src, &v.value)
 }

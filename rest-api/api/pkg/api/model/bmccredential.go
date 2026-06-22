@@ -7,6 +7,8 @@ import (
 	"fmt"
 
 	cwssaws "github.com/NVIDIA/infra-controller/rest-api/workflow-schema/schema/site-agent/workflows/v1"
+	validation "github.com/go-ozzo/ozzo-validation/v4"
+	validationis "github.com/go-ozzo/ozzo-validation/v4/is"
 )
 
 // BMC credential kinds exposed by the REST API. These map to the admin CLI
@@ -22,6 +24,8 @@ const (
 
 // APIBMCCredentialRequest sets (creates or overwrites) a BMC credential.
 type APIBMCCredentialRequest struct {
+	// SiteID is the ID of the Site where the credential is stored.
+	SiteID string `json:"siteId"`
 	// Kind selects which BMC credential to store: "site-wide-root" or "bmc-root".
 	Kind string `json:"kind"`
 	// Password is the credential password (required).
@@ -32,13 +36,33 @@ type APIBMCCredentialRequest struct {
 	MacAddress *string `json:"macAddress,omitempty"`
 }
 
+// APIBMCCredential is the BMC credential response with secret fields omitted.
+type APIBMCCredential struct {
+	// SiteID is the ID of the Site where the credential is stored.
+	SiteID string `json:"siteId"`
+	// Kind selects which BMC credential was stored: "site-wide-root" or "bmc-root".
+	Kind string `json:"kind"`
+	// Username is optional; Core defaults to "root" when omitted for bmc-root.
+	Username *string `json:"username,omitempty"`
+	// MacAddress is required for kind "bmc-root" and ignored for "site-wide-root".
+	MacAddress *string `json:"macAddress,omitempty"`
+}
+
 // Validate checks the request shape before it is converted to a proto.
 func (r *APIBMCCredentialRequest) Validate() error {
-	if err := validateBMCCredentialKind(r.Kind, r.MacAddress); err != nil {
+	if err := validation.ValidateStruct(r,
+		validation.Field(&r.SiteID,
+			validation.Required.Error(validationErrorValueRequired),
+			validationis.UUID.Error(validationErrorInvalidUUID)),
+		validation.Field(&r.Kind,
+			validation.Required.Error(validationErrorValueRequired)),
+		validation.Field(&r.Password,
+			validation.Required.Error("password is required")),
+	); err != nil {
 		return err
 	}
-	if r.Password == "" {
-		return fmt.Errorf("password is required")
+	if err := validateBMCCredentialKind(r.Kind, r.MacAddress); err != nil {
+		return err
 	}
 	return nil
 }
@@ -51,6 +75,16 @@ func (r *APIBMCCredentialRequest) ToProto() *cwssaws.CredentialCreationRequest {
 		Password:       r.Password,
 		Username:       r.Username,
 		MacAddress:     r.MacAddress,
+	}
+}
+
+// ToResponse returns the accepted request data without the credential password.
+func (r *APIBMCCredentialRequest) ToResponse() *APIBMCCredential {
+	return &APIBMCCredential{
+		SiteID:     r.SiteID,
+		Kind:       r.Kind,
+		Username:   r.Username,
+		MacAddress: r.MacAddress,
 	}
 }
 

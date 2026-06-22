@@ -138,6 +138,9 @@ func (h CreateOrUpdateBMCCredentialHandler) Handle(c echo.Context) error {
 	if err := apiReq.Validate(); err != nil {
 		return cutil.NewAPIErrorResponse(c, http.StatusBadRequest, err.Error(), nil)
 	}
+	if apiReq.Kind == model.BMCCredentialKindSiteWideRoot {
+		apiReq.MacAddress = nil
+	}
 
 	stc, siteID, errResp := h.authorizeSite(ctx, c, logger, org, dbUser, apiReq.SiteID)
 	if errResp != nil {

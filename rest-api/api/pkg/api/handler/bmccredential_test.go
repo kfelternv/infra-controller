@@ -37,9 +37,7 @@ func TestCreateOrUpdateBMCCredentialHandlerClearsMacAddressForSiteWideRoot(t *te
 	site := common.TestBuildSite(t, dbSession, ip, "Test Site", user)
 
 	cfg := common.GetTestConfig()
-	tcfg, err := cfg.GetTemporalConfig()
-	require.NoError(t, err)
-	scp := sc.NewClientPool(tcfg)
+	scp := sc.NewClientPool(nil)
 
 	var proxiedReq coreproxy.Request
 	wrun := &tmocks.WorkflowRun{}

@@ -17,6 +17,7 @@ We welcome contributions of all sizes — from fixing a typo in the docs to addi
 - [Developer Certificate of Origin (DCO)](#developer-certificate-of-origin-dco)
 - [Fork and Setup](#fork-and-setup)
 - [Contribution Process](#contribution-process)
+- [Engineering Guidelines](#engineering-guidelines)
 - [Pull Request Guidelines](#pull-request-guidelines)
 
 ## Developer Certificate of Origin (DCO)
@@ -171,6 +172,66 @@ Use descriptive branch names like:
 2. **Make your changes** following our coding guidelines.
 3. **Sign off all your commits** using `git commit -s`.
 4. **Submit a pull request** with a clear description of your changes.
+
+## Engineering Guidelines
+
+Apply these guidelines to every code change, whether it is handwritten,
+generated, or produced with automation. They are intended to keep changes
+reviewable, low risk, and consistent with the existing codebase.
+
+### Scope and ownership
+
+- Make the smallest correct change that solves the problem. Avoid unrelated
+  refactors, formatting churn, new configuration paths, compatibility layers,
+  or feature flags unless the change requires them.
+- Work with the current tree. Do not discard, rewrite, or revert someone else's
+  changes unless the owner explicitly asks for that.
+- Keep pull requests focused on one behavioral or documentation outcome. Remove
+  unused code, temporary logging, skipped assertions, placeholders, and hidden
+  TODOs before asking for review.
+- Do not commit secrets, credentials, local environment files, generated
+  private keys, or machine-specific artifacts.
+
+### Reuse before adding code
+
+Before introducing code or dependencies, check in this order:
+
+1. Does this code need to exist, or can the caller use an existing behavior?
+2. Does the standard library already solve it?
+3. Does Rust, Go, Kubernetes, SQL, the OS, or another platform feature solve it
+   natively?
+4. Does an existing workspace dependency or local helper already solve it?
+5. Can the change be expressed clearly inline instead of adding an abstraction?
+
+Only add a helper, abstraction, dependency, compatibility path, or migration
+when it removes real complexity, matches an established pattern, or is required
+for the requested behavior.
+
+### Evidence and assumptions
+
+- Treat implementation claims as assumptions until they are backed by code,
+  generated types, route registration, service definitions, schema, tests,
+  documentation, or runtime output.
+- Do not infer contracts from similar names or nearby code alone. Prove data
+  flow, ownership, authorization, persistence, API shape, and deployment
+  behavior before relying on them.
+- If an assumption cannot be checked cheaply, state it in the pull request or
+  review notes instead of presenting it as fact. If new evidence contradicts an
+  assumption, update the design before continuing.
+
+### Verification
+
+- Verification should exercise the behavior that changed. Do not claim a fix is
+  covered by an unrelated build, a nearby test, generated examples, or a mocked
+  path that avoids the real integration being changed.
+- Add or update focused tests for bug fixes, shared behavior, API contracts,
+  migrations, and cross-module changes. For narrow documentation-only changes,
+  a diff review is usually sufficient.
+- Keep OpenAPI specs, protobufs, database migrations, Helm manifests, generated
+  code, and documentation in sync with the behavior they describe.
+- Stop and get maintainer approval before running deploys, external writes,
+  destructive data operations, production-impacting commands, or migrations
+  outside an isolated local development environment.
 
 ## Pull Request Guidelines
 

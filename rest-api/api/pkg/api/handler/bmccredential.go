@@ -135,6 +135,13 @@ func (h CreateOrUpdateBMCCredentialHandler) Handle(c echo.Context) error {
 	if err := c.Bind(&apiReq); err != nil {
 		return cutil.NewAPIErrorResponse(c, http.StatusBadRequest, "Invalid request body", nil)
 	}
+	if querySiteID := c.QueryParam("siteId"); querySiteID != "" {
+		if apiReq.SiteID == "" {
+			apiReq.SiteID = querySiteID
+		} else if apiReq.SiteID != querySiteID {
+			return cutil.NewAPIErrorResponse(c, http.StatusBadRequest, "siteId query parameter does not match request body", nil)
+		}
+	}
 	if err := apiReq.Validate(); err != nil {
 		return cutil.NewAPIErrorResponse(c, http.StatusBadRequest, err.Error(), nil)
 	}

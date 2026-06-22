@@ -26,56 +26,15 @@ import (
 )
 
 func TestCreateOrUpdateBMCCredentialHandlerClearsMacAddressForSiteWideRoot(t *testing.T) {
-	dbSession := common.TestInitDB(t)
-	defer dbSession.Close()
-
-	common.TestSetupSchema(t, dbSession)
-
-	org := "test-org"
-	user := common.TestBuildUser(t, dbSession, "test-starfleet-id", org, []string{authz.ProviderAdminRole})
-	ip := common.TestBuildInfrastructureProvider(t, dbSession, "Test Infrastructure Provider", org, user)
-	site := common.TestBuildSite(t, dbSession, ip, "Test Site", user)
-
-	cfg := common.GetTestConfig()
-	scp := sc.NewClientPool(nil)
-
-	var proxiedReq coreproxy.Request
-	wrun := &tmocks.WorkflowRun{}
-	wrun.On("Get", mock.Anything, mock.Anything).Return(nil)
-
-	tsc := &tmocks.Client{}
-	tsc.On(
-		"ExecuteWorkflow",
-		mock.Anything,
-		mock.Anything,
-		coreproxy.WorkflowName,
-		mock.MatchedBy(func(req coreproxy.Request) bool {
-			proxiedReq = req
-			return true
-		}),
-	).Return(wrun, nil)
-	scp.IDClientMap[site.ID.String()] = tsc
+	fixture := newBMCCredentialHandlerFixture(t)
 
 	mac := "aa:bb:cc:dd:ee:ff"
-	body, err := json.Marshal(model.APIBMCCredentialRequest{
-		SiteID:     site.ID.String(),
+	rec, proxiedReq := fixture.request(t, "/", model.APIBMCCredentialRequest{
+		SiteID:     fixture.siteID,
 		Kind:       model.BMCCredentialKindSiteWideRoot,
 		Password:   "secret-password",
 		MacAddress: &mac,
 	})
-	require.NoError(t, err)
-
-	e := echo.New()
-	req := httptest.NewRequest(http.MethodPut, "/", strings.NewReader(string(body)))
-	req.Header.Set(echo.HeaderContentType, echo.MIMEApplicationJSON)
-	rec := httptest.NewRecorder()
-	ec := e.NewContext(req, rec)
-	ec.SetParamNames("orgName")
-	ec.SetParamValues(org)
-	ec.Set("user", user)
-
-	handler := NewCreateOrUpdateBMCCredentialHandler(dbSession, scp, cfg)
-	require.NoError(t, handler.Handle(ec))
 	assert.Equal(t, http.StatusOK, rec.Code)
 
 	var coreReq cwssaws.CredentialCreationRequest
@@ -86,8 +45,100 @@ func TestCreateOrUpdateBMCCredentialHandlerClearsMacAddressForSiteWideRoot(t *te
 
 	var resp model.APIBMCCredential
 	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &resp))
-	assert.Equal(t, site.ID.String(), resp.SiteID)
+	assert.Equal(t, fixture.siteID, resp.SiteID)
 	assert.Equal(t, model.BMCCredentialKindSiteWideRoot, resp.Kind)
 	assert.Nil(t, resp.MacAddress)
 	assert.NotContains(t, rec.Body.String(), "macAddress")
+}
+
+func TestCreateOrUpdateBMCCredentialHandlerAcceptsQuerySiteID(t *testing.T) {
+	fixture := newBMCCredentialHandlerFixture(t)
+
+	rec, _ := fixture.request(t, "/?siteId="+fixture.siteID, model.APIBMCCredentialRequest{
+		Kind:     model.BMCCredentialKindSiteWideRoot,
+		Password: "secret-password",
+	})
+	assert.Equal(t, http.StatusOK, rec.Code)
+
+	var resp model.APIBMCCredential
+	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &resp))
+	assert.Equal(t, fixture.siteID, resp.SiteID)
+}
+
+func TestCreateOrUpdateBMCCredentialHandlerRejectsConflictingSiteIDs(t *testing.T) {
+	fixture := newBMCCredentialHandlerFixture(t)
+
+	rec, _ := fixture.request(t, "/?siteId=00000000-0000-0000-0000-000000000001", model.APIBMCCredentialRequest{
+		SiteID:   fixture.siteID,
+		Kind:     model.BMCCredentialKindSiteWideRoot,
+		Password: "secret-password",
+	})
+	assert.Equal(t, http.StatusBadRequest, rec.Code)
+}
+
+type bmcCredentialHandlerFixture struct {
+	org        string
+	siteID     string
+	user       interface{}
+	handler    CreateOrUpdateBMCCredentialHandler
+	proxiedReq *coreproxy.Request
+}
+
+func newBMCCredentialHandlerFixture(t *testing.T) bmcCredentialHandlerFixture {
+	t.Helper()
+
+	dbSession := common.TestInitDB(t)
+	t.Cleanup(dbSession.Close)
+	common.TestSetupSchema(t, dbSession)
+
+	org := "test-org"
+	user := common.TestBuildUser(t, dbSession, "test-starfleet-id", org, []string{authz.ProviderAdminRole})
+	ip := common.TestBuildInfrastructureProvider(t, dbSession, "Test Infrastructure Provider", org, user)
+	site := common.TestBuildSite(t, dbSession, ip, "Test Site", user)
+
+	proxiedReq := &coreproxy.Request{}
+	wrun := &tmocks.WorkflowRun{}
+	wrun.On("Get", mock.Anything, mock.Anything).Return(nil)
+
+	tsc := &tmocks.Client{}
+	tsc.On(
+		"ExecuteWorkflow",
+		mock.Anything,
+		mock.Anything,
+		coreproxy.WorkflowName,
+		mock.MatchedBy(func(req coreproxy.Request) bool {
+			*proxiedReq = req
+			return true
+		}),
+	).Return(wrun, nil)
+
+	scp := sc.NewClientPool(nil)
+	scp.IDClientMap[site.ID.String()] = tsc
+
+	return bmcCredentialHandlerFixture{
+		org:        org,
+		siteID:     site.ID.String(),
+		user:       user,
+		handler:    NewCreateOrUpdateBMCCredentialHandler(dbSession, scp, common.GetTestConfig()),
+		proxiedReq: proxiedReq,
+	}
+}
+
+func (f bmcCredentialHandlerFixture) request(t *testing.T, target string, apiReq model.APIBMCCredentialRequest) (*httptest.ResponseRecorder, coreproxy.Request) {
+	t.Helper()
+
+	body, err := json.Marshal(apiReq)
+	require.NoError(t, err)
+
+	e := echo.New()
+	req := httptest.NewRequest(http.MethodPut, target, strings.NewReader(string(body)))
+	req.Header.Set(echo.HeaderContentType, echo.MIMEApplicationJSON)
+	rec := httptest.NewRecorder()
+	ec := e.NewContext(req, rec)
+	ec.SetParamNames("orgName")
+	ec.SetParamValues(f.org)
+	ec.Set("user", f.user)
+
+	require.NoError(t, f.handler.Handle(ec))
+	return rec, *f.proxiedReq
 }

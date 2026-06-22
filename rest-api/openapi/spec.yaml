@@ -12958,6 +12958,7 @@ components:
             - bmc-root
         password:
           type: string
+          minLength: 1
           description: Credential password.
         username:
           type: string

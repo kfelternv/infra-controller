@@ -229,9 +229,6 @@ for the requested behavior.
   a diff review is usually sufficient.
 - Keep OpenAPI specs, protobufs, database migrations, Helm manifests, generated
   code, and documentation in sync with the behavior they describe.
-- Stop and get maintainer approval before running deploys, external writes,
-  destructive data operations, production-impacting commands, or migrations
-  outside an isolated local development environment.
 
 ## Pull Request Guidelines
 

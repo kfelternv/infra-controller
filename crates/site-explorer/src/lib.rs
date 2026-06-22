@@ -95,7 +95,7 @@ use carbide_redfish::libredfish::RedfishClientPool;
 use carbide_redfish::nv_redfish::NvRedfishClientPool;
 use errors::{SiteExplorerError, SiteExplorerResult};
 
-use self::metrics::{PairingBlockerReason, exploration_error_to_metric_label};
+use self::metrics::{DpuMigrationSignal, PairingBlockerReason, exploration_error_to_metric_label};
 use crate::config::SiteExplorerExploreMode;
 use crate::explored_endpoint_index::ExploredEndpointIndex;
 
@@ -1121,6 +1121,7 @@ impl SiteExplorer {
                         host_dpu_mode,
                         &ep,
                         &mut dpu_exploration,
+                        metrics,
                     )
                     .await;
                 }
@@ -1138,6 +1139,7 @@ impl SiteExplorer {
                             host_dpu_mode,
                             &ep,
                             &mut dpu_exploration,
+                            metrics,
                         )
                         .await;
                     }
@@ -1179,6 +1181,7 @@ impl SiteExplorer {
                                     &dpu_ep,
                                     dpu_ep.report.model().unwrap_or_default(),
                                     host_dpu_mode,
+                                    metrics,
                                 )
                                 .await,
                             );
@@ -1243,11 +1246,12 @@ impl SiteExplorer {
 
                         if !all_dpus_configured_properly_in_host {
                             // A queued `set_nic_mode` only takes effect after a host
-                            // power cycle, so drive one for every vendor -- the
-                            // Redfish `ComputerSystem.Reset` action is standard
-                            // across BMCs -- throttled by `reset_rate_limit`. A BMC
-                            // that refuses the request surfaces the host as needing
-                            // a manual power cycle via the pairing-blocker metric.
+                            // power cycle, so drive one for every vendor --
+                            // `redfish_powercycle` issues `PowerCycle` and falls back
+                            // to a cold `ACPowercycle` for vendors that refuse it --
+                            // throttled by `reset_rate_limit`. A BMC that refuses both
+                            // surfaces the host as needing a manual power cycle via
+                            // the pairing-blocker metric.
                             let time_since_redfish_powercycle = Utc::now().signed_duration_since(
                                 ep.last_redfish_powercycle.unwrap_or_default(),
                             );
@@ -1255,6 +1259,9 @@ impl SiteExplorer {
                                 tracing::warn!(
                                     "power cycling host {} to apply nic mode change for its incorrectly configured DPUs; time since last powercycle: {time_since_redfish_powercycle}",
                                     ep.address,
+                                );
+                                metrics.increment_dpu_migration_signal(
+                                    DpuMigrationSignal::ResetRequested,
                                 );
 
                                 if let Err(err) = self.redfish_powercycle(ep.address).await {
@@ -1277,10 +1284,11 @@ impl SiteExplorer {
                                 // loop stays visible to operators instead of
                                 // rebooting hourly in silence.
                                 //
-                                // TODO(chet): If the power cycle doesn't appear to
-                                // be flipping the NIC to the expected mode, this is
-                                // where we'd want to introduce a cold power cycle
-                                // (`ForceOff`/`On` or similar).
+                                // The reset above already escalates a refused
+                                // `PowerCycle` to a cold `ACPowercycle`
+                                // (`redfish_powercycle`), so a host still unflipped
+                                // here is mid-flight or genuinely stuck -- either way
+                                // it stays visible via the metric.
                                 metrics.increment_host_dpu_pairing_blocker(
                                     PairingBlockerReason::ManualPowerCycleRequired,
                                 );
@@ -1323,9 +1331,15 @@ impl SiteExplorer {
             // If we know the booting interface of the host, we should use this for deciding
             // primary interface.
             let mut is_sorted = false;
+            // A declared `ExpectedHostNic.primary` (when the matched expected
+            // machine sets one) wins over the automatic DPU-PF pick, so the
+            // explored default names the same NIC the managed store will.
+            let declared_primary = expected_explored_endpoint_index
+                .matched_expected_machine(&ep.address)
+                .and_then(|expected| expected.data.declared_primary_mac());
             if let Some(mac_address) = ep
                 .report
-                .fetch_host_primary_interface_mac(&dpus_explored_for_host)
+                .fetch_host_primary_interface_mac(&dpus_explored_for_host, declared_primary)
             {
                 // Capture the boot interface's [stable] Redfish interface id
                 // alongside its MAC. Only persist when both resolve from the
@@ -1400,7 +1414,12 @@ impl SiteExplorer {
             // earlier on after detecting the host_dpu_mode as such, so
             // this shouldn't fire.
             let dpus = match host_dpu_mode {
-                DpuMode::NicMode => Vec::new(),
+                DpuMode::NicMode => {
+                    metrics.increment_dpu_migration_signal(
+                        DpuMigrationSignal::RegisteredZeroDpuForNicMode,
+                    );
+                    Vec::new()
+                }
                 DpuMode::DpuMode => dpus_explored_for_host,
                 // Now that we continue/return early for NoDpu hosts,
                 // we shouldn't actually get here. Probably could be
@@ -1469,6 +1488,7 @@ impl SiteExplorer {
     /// `set_nic_mode` to auto-correct a mismatch -- happens here; the actual
     /// classification of its result lives in [`classify_matched_dpu`], which is
     /// unit-tested directly. Both the PCIe loop and the chassis fallback call this.
+    #[allow(clippy::too_many_arguments)]
     async fn record_host_dpu_device(
         &self,
         part_number: Option<&str>,
@@ -1477,6 +1497,7 @@ impl SiteExplorer {
         host_dpu_mode: DpuMode,
         host_ep: &ExploredEndpoint,
         exploration: &mut DpuExplorationState,
+        metrics: &mut SiteExplorationMetrics,
     ) {
         // Count every DPU the host reports, independent of whether we've
         // discovered its BMC yet.
@@ -1498,8 +1519,13 @@ impl SiteExplorer {
         // I/O, and may issue a `set_nic_mode` (in which case it returns `Ok(false)`).
         let mode_check = match part_number {
             Some(model) => Some(
-                self.check_and_configure_dpu_mode(dpu_ep, model.to_string(), host_dpu_mode)
-                    .await,
+                self.check_and_configure_dpu_mode(
+                    dpu_ep,
+                    model.to_string(),
+                    host_dpu_mode,
+                    metrics,
+                )
+                .await,
             ),
             None => None,
         };
@@ -2546,9 +2572,30 @@ impl SiteExplorer {
             })
     }
 
+    /// Drive a power cycle to apply a queued BlueField NIC-mode change.
+    ///
+    /// `PowerCycle` (Redfish `ComputerSystem.Reset`) is implemented only by Dell
+    /// and the DPU BMCs; other host vendors -- and Vikings -- refuse it. Fall
+    /// back to `ACPowercycle`, the cold AC cycle the HPE/Lenovo/Supermicro/GBx00
+    /// wrappers implement, so the queued change still applies without an
+    /// operator. If both are refused the error propagates and the caller
+    /// surfaces `ManualPowerCycleRequired`.
     async fn redfish_powercycle(&self, bmc_ip_address: IpAddr) -> SiteExplorerResult<()> {
-        self.redfish_power_control(bmc_ip_address, libredfish::SystemPowerControl::PowerCycle)
+        if let Err(power_cycle_err) = self
+            .redfish_power_control(bmc_ip_address, libredfish::SystemPowerControl::PowerCycle)
+            .await
+        {
+            tracing::warn!(
+                %bmc_ip_address,
+                error = %power_cycle_err,
+                "PowerCycle failed; falling back to ACPowercycle to apply the queued NIC mode change",
+            );
+            self.redfish_power_control(
+                bmc_ip_address,
+                libredfish::SystemPowerControl::ACPowercycle,
+            )
             .await?;
+        }
 
         let mut txn = self.txn_begin().await?;
 
@@ -2836,6 +2883,7 @@ impl SiteExplorer {
         dpu_ep: &ExploredEndpoint,
         dpu_model: String,
         host_dpu_mode: DpuMode,
+        metrics: &mut SiteExplorationMetrics,
     ) -> SiteExplorerResult<bool> {
         // Compute the target NIC mode. `None` means "no opinion -- don't
         // attempt to reconfigure" (e.g., BF2 where the heuristic doesn't
@@ -2871,7 +2919,9 @@ impl SiteExplorer {
                     ?host_dpu_mode,
                     "site explorer found a DPU with a mode that does not match the target; will try to reconfigure"
                 );
+                metrics.increment_dpu_migration_signal(DpuMigrationSignal::ModeMismatchFound);
                 self.set_nic_mode(dpu_ep, target_nic_mode).await?;
+                metrics.increment_dpu_migration_signal(DpuMigrationSignal::SetNicModeIssued);
                 Ok(false)
             }
             None => {

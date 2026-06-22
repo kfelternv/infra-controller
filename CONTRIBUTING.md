@@ -184,6 +184,12 @@ reviewable, low risk, and consistent with the existing codebase.
 - Make the smallest correct change that solves the problem. Avoid unrelated
   refactors, formatting churn, new configuration paths, compatibility layers,
   or feature flags unless the change requires them.
+- If requirements are unclear, ask before changing scope. Do not silently
+  simplify, rename, collapse, or replace the requested behavior with an adjacent
+  improvement or quick win.
+- Do not redefine success around an easier path. If the real workflow is
+  blocked, report the concrete missing input, artifact, tool, permission, or
+  configuration.
 - Work with the current tree. Do not discard, rewrite, or revert someone else's
   changes unless the owner explicitly asks for that.
 - Keep pull requests focused on one behavioral or documentation outcome. Remove
@@ -215,6 +221,9 @@ for the requested behavior.
 - Do not infer contracts from similar names or nearby code alone. Prove data
   flow, ownership, authorization, persistence, API shape, and deployment
   behavior before relying on them.
+- Back claims with concrete evidence: diffs, generated output, logs, test
+  results, API responses, screenshots, or direct observations from the relevant
+  system.
 - If an assumption cannot be checked cheaply, state it in the pull request or
   review notes instead of presenting it as fact. If new evidence contradicts an
   assumption, update the design before continuing.
@@ -224,6 +233,9 @@ for the requested behavior.
 - Verification should exercise the behavior that changed. Do not claim a fix is
   covered by an unrelated build, a nearby test, generated examples, or a mocked
   path that avoids the real integration being changed.
+- Use the real service, repository, dataset, device, workflow, command, and
+  integration path that the change affects whenever practical. Call out any
+  lower-fidelity substitute instead of treating it as equivalent coverage.
 - Add or update focused tests for bug fixes, shared behavior, API contracts,
   migrations, and cross-module changes. For narrow documentation-only changes,
   a diff review is usually sufficient.

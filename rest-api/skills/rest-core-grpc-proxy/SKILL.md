@@ -25,7 +25,11 @@ Confirm these details before editing:
 - Target Core method, usually `/forge.Forge/<Method>`, and whether it is unary. The proxy does not support streaming methods.
 - Typed protobuf request and optional typed protobuf response.
 - Secret fields that must not appear in Temporal history. These must be top-level protojson field names such as `password`.
-- Whether the Core operation is non-idempotent. The shared proxy workflow intentionally runs the activity once with no automatic retry.
+- Whether the REST operation maps to one Core call or must compose multiple
+  calls to `ExecuteCoreGRPC`. A single REST handler may invoke the proxy helper
+  more than once when the API operation requires multiple Core gRPC calls.
+- Whether each Core operation is non-idempotent. The shared proxy workflow
+  intentionally runs each activity once with no automatic retry.
 
 ## Implementation Workflow
 

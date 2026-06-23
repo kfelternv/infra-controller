@@ -194,40 +194,9 @@ verification expectations.
 
 ### REST endpoints through the Core gRPC proxy
 
-Use the generic Core gRPC proxy when a curated REST handler needs to call an
-on-site unary `forge.Forge` NICo Core method. The REST handler still owns auth,
-org/site scoping, validation, request shaping, and response semantics; the
-proxy is only the cloud-to-site transport.
-
-Before coding, confirm the REST path, method, auth role, site scoping, request
-model, response model, target `/forge.Forge/<Method>` method, typed protobuf
-request/response, and top-level protojson secret fields that must not appear in
-Temporal history. The proxy does not support streaming methods.
-
-Implementation checklist:
-
-1. Add or update the API model with validation, REST-to-proto mapping, and
-   password-free response shaping.
-2. Build a generated protobuf request in the handler. Do not send maps or ad
-   hoc JSON through the proxy.
-3. Call `common.ExecuteCoreGRPC(ctx, siteTemporalClient, fullMethod, reqProto,
-   respProtoOrNil, siteID, secretFields...)`; pass the site ID string as the
-   secret key for site-scoped redaction.
-4. Never log full request bodies when they can contain secrets. Log method,
-   kind, site ID, or other non-secret metadata only.
-5. Register the route, update `openapi/spec.yaml`, and regenerate SDK files
-   when the endpoint changes the public API.
-
-Add tests for model validation, REST-to-proto mapping, handler proxy arguments
-including secret field names, route registration, and OpenAPI/schema behavior.
-Only change shared `coreproxy` tests when changing the proxy itself.
-
-The Temporal payload currently uses protojson so non-secret fields remain
-readable in Temporal UI while selected fields are carried in
-`EncryptedSecrets`. The final site-to-Core call is still binary gRPC. Sending
-protobuf bytes through Temporal is possible, but it is a shared proxy design
-change because it would make Temporal history opaque or require a different
-secret-redaction strategy.
+When building or converting a REST endpoint that calls on-site NICo Core through
+the generic gRPC proxy, follow
+[`docs/rest-core-grpc-proxy-skill.md`](docs/rest-core-grpc-proxy-skill.md).
 
 ### Prefer range-based iteration over C-style `for` loops
 

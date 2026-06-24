@@ -11295,6 +11295,88 @@ paths:
           $ref: '#/components/responses/NotFoundError'
       tags:
         - Tray
+  '/v2/org/{org}/nico/ipxe-template':
+    parameters:
+      - schema:
+          type: string
+        name: org
+        in: path
+        required: true
+        description: Name of the Org
+    get:
+      summary: Get all iPXE templates
+      description: 'Get all iPXE templates propagated from nico-core. Optionally restrict to one or more sites with the siteId query parameter.'
+      operationId: get-all-ipxe-template
+      tags:
+        - iPXE Template
+      parameters:
+        - schema:
+            type: array
+            items:
+              type: string
+              format: uuid
+          name: siteId
+          in: query
+          required: false
+          description: 'Optional site ID(s); may be repeated to restrict results to templates available at any of the sites'
+        - schema:
+            type: integer
+          name: pageNumber
+          in: query
+          required: false
+        - schema:
+            type: integer
+          name: pageSize
+          in: query
+          required: false
+        - schema:
+            type: string
+          name: orderBy
+          in: query
+          required: false
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/IpxeTemplate'
+        '403':
+          $ref: '#/components/responses/ForbiddenError'
+  '/v2/org/{org}/nico/ipxe-template/{ipxeTemplateId}':
+    parameters:
+      - schema:
+          type: string
+        name: org
+        in: path
+        required: true
+        description: Name of the Org
+      - schema:
+          type: string
+          format: uuid
+        name: ipxeTemplateId
+        in: path
+        required: true
+        description: Stable template ID (UUID from core)
+    get:
+      summary: Retrieve an iPXE template
+      description: 'Retrieve an iPXE template by its stable core ID. The caller must be authorized for at least one Site at which the template is available.'
+      operationId: get-ipxe-template
+      tags:
+        - iPXE Template
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/IpxeTemplate'
+        '403':
+          $ref: '#/components/responses/ForbiddenError'
+        '404':
+          $ref: '#/components/responses/NotFoundError'
   '/v2/org/{org}/nico/network-security-group':
     parameters:
       - schema:
@@ -15730,6 +15812,26 @@ components:
             - string
             - 'null'
           description: 'iPXE script or URL, only applicable for iPXE-based Operating System'
+        ipxeTemplateId:
+          type:
+            - string
+            - 'null'
+          description: 'ID of the iPXE template used, only present for Templated iPXE Operating System'
+        ipxeTemplateParameters:
+          type: array
+          items:
+            $ref: '#/components/schemas/OperatingSystemIpxeParameter'
+          description: 'Parameters passed to the iPXE template (Templated iPXE only)'
+        ipxeTemplateArtifacts:
+          type: array
+          items:
+            $ref: '#/components/schemas/OperatingSystemIpxeArtifact'
+          description: 'Artifacts for the iPXE OS definition (Templated iPXE only). authToken is redacted.'
+        scope:
+          type:
+            - string
+            - 'null'
+          description: 'Synchronization scope for iPXE-based Operating Systems (Local, Global, or Limited)'
         userData:
           type:
             - string
@@ -15787,6 +15889,92 @@ components:
         - Deleting
         - Error
         - Deactivated
+    OperatingSystemIpxeParameter:
+      title: OperatingSystemIpxeParameter
+      type: object
+      description: A name/value parameter passed to an iPXE template
+      properties:
+        name:
+          type: string
+          description: Parameter name (used as a variable in the template)
+        value:
+          type: string
+          description: Parameter value
+    OperatingSystemIpxeArtifact:
+      title: OperatingSystemIpxeArtifact
+      type: object
+      description: An artifact (kernel, initrd, ISO, ...) referenced by an iPXE OS definition
+      properties:
+        name:
+          type: string
+          description: Artifact name
+        url:
+          type: string
+          description: Original URL for the artifact
+        sha:
+          type:
+            - string
+            - 'null'
+          description: Optional SHA256 checksum
+        authType:
+          type:
+            - string
+            - 'null'
+          description: 'Optional auth type: Basic or Bearer'
+        authToken:
+          type:
+            - string
+            - 'null'
+          description: 'Optional auth token. Redacted in API responses.'
+        cacheStrategy:
+          type: string
+          enum:
+            - CacheAsNeeded
+            - LocalOnly
+            - CachedOnly
+            - RemoteOnly
+          description: How to handle caching for this artifact
+    IpxeTemplate:
+      title: IpxeTemplate
+      type: object
+      description: An iPXE script template propagated (read-only) from nico-core
+      properties:
+        id:
+          type: string
+          format: uuid
+          description: Stable template UUID assigned by core
+        name:
+          type: string
+          description: Globally unique template name
+        template:
+          type: string
+          description: Raw iPXE script content
+        requiredParams:
+          type: array
+          items:
+            type: string
+          description: Parameters that must be provided to render the template
+        reservedParams:
+          type: array
+          items:
+            type: string
+          description: Parameters reserved by the template and not user-supplied
+        requiredArtifacts:
+          type: array
+          items:
+            type: string
+          description: Artifact names required for the template
+        scope:
+          type: string
+          description: 'Template visibility: Internal or Public'
+        created:
+          type: string
+          format: date-time
+          readOnly: true
+        updated:
+          type: string
+          format: date-time
+          readOnly: true
     OperatingSystemSiteAssociation:
       title: OperatingSystemSiteAssociation
       type: object
@@ -15961,6 +16149,31 @@ components:
         allowOverride:
           type: boolean
           description: Indicates if the user data can be overridden at Instance creation time
+        ipxeTemplateId:
+          type:
+            - string
+            - 'null'
+          description: 'ID of the iPXE template to use; identifies a Templated iPXE Operating System. Mutually exclusive with ipxeScript and imageUrl.'
+        ipxeTemplateParameters:
+          type: array
+          items:
+            $ref: '#/components/schemas/OperatingSystemIpxeParameter'
+          description: 'Parameters passed to the iPXE template (Templated iPXE only).'
+        ipxeTemplateArtifacts:
+          type: array
+          items:
+            $ref: '#/components/schemas/OperatingSystemIpxeArtifact'
+          description: 'Artifacts (kernel, initrd, ISO, ...) for the iPXE OS definition (Templated iPXE only).'
+        scope:
+          type:
+            - string
+            - 'null'
+          enum:
+            - Local
+            - Global
+            - Limited
+            - null
+          description: 'Synchronization scope for iPXE-based Operating Systems. Required for Templated iPXE (Global or Limited; Local is created only in nico-core).'
       required:
         - name
     OperatingSystemUpdateRequest:
@@ -16068,6 +16281,26 @@ components:
             - string
             - 'null'
           description: Optional deactivation note if OS is inactive
+        ipxeTemplateId:
+          type:
+            - string
+            - 'null'
+          description: 'ID of the iPXE template to use (Templated iPXE only). Mutually exclusive with ipxeScript and imageUrl.'
+        ipxeTemplateParameters:
+          type: array
+          items:
+            $ref: '#/components/schemas/OperatingSystemIpxeParameter'
+          description: 'Parameters passed to the iPXE template (Templated iPXE only).'
+        ipxeTemplateArtifacts:
+          type: array
+          items:
+            $ref: '#/components/schemas/OperatingSystemIpxeArtifact'
+          description: 'Artifacts (kernel, initrd, ISO, ...) for the iPXE OS definition (Templated iPXE only).'
+        scope:
+          type:
+            - string
+            - 'null'
+          description: 'Scope is immutable after creation; if provided the request is rejected.'
     InstanceType:
       title: InstanceType
       type: object

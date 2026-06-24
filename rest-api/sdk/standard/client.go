@@ -69,6 +69,8 @@ type APIClient struct {
 
 	IPBlockAPI *IPBlockAPIService
 
+	IPXETemplateAPI *IPXETemplateAPIService
+
 	InfiniBandPartitionAPI *InfiniBandPartitionAPIService
 
 	InfrastructureProviderAPI *InfrastructureProviderAPIService
@@ -147,6 +149,7 @@ func NewAPIClient(cfg *Configuration) *APIClient {
 	c.ExpectedRackAPI = (*ExpectedRackAPIService)(&c.common)
 	c.ExpectedSwitchAPI = (*ExpectedSwitchAPIService)(&c.common)
 	c.IPBlockAPI = (*IPBlockAPIService)(&c.common)
+	c.IPXETemplateAPI = (*IPXETemplateAPIService)(&c.common)
 	c.InfiniBandPartitionAPI = (*InfiniBandPartitionAPIService)(&c.common)
 	c.InfrastructureProviderAPI = (*InfrastructureProviderAPIService)(&c.common)
 	c.InstanceAPI = (*InstanceAPIService)(&c.common)

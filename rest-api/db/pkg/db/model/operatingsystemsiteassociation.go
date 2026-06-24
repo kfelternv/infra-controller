@@ -16,6 +16,8 @@ import (
 	"github.com/uptrace/bun"
 
 	stracer "github.com/NVIDIA/infra-controller/rest-api/db/pkg/tracer"
+
+	cwssaws "github.com/NVIDIA/infra-controller/rest-api/workflow-schema/schema/site-agent/workflows/v1"
 )
 
 var (
@@ -55,6 +57,15 @@ var (
 		OperatingSystemSiteAssociationStatusSynced:   true,
 		OperatingSystemSiteAssociationStatusError:    true,
 		OperatingSystemSiteAssociationStatusDeleting: true,
+	}
+
+	// OperatingSystemSiteAssociationStatusFromProtoMap maps nico-core tenant states to per-site association status values.
+	OperatingSystemSiteAssociationStatusFromProtoMap = map[cwssaws.TenantState]string{
+		cwssaws.TenantState_PROVISIONING: OperatingSystemSiteAssociationStatusSyncing,
+		cwssaws.TenantState_READY:        OperatingSystemSiteAssociationStatusSynced,
+		cwssaws.TenantState_CONFIGURING:  OperatingSystemSiteAssociationStatusSyncing,
+		cwssaws.TenantState_TERMINATING:  OperatingSystemSiteAssociationStatusDeleting,
+		cwssaws.TenantState_FAILED:       OperatingSystemSiteAssociationStatusError,
 	}
 )
 

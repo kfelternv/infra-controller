@@ -109,6 +109,21 @@ var (
 		OperatingSystemIpxeArtifactCacheStrategyCachedOnly:    cwssaws.IpxeTemplateArtifactCacheStrategy_CACHED_ONLY,
 		OperatingSystemIpxeArtifactCacheStrategyRemoteOnly:    cwssaws.IpxeTemplateArtifactCacheStrategy_REMOTE_ONLY,
 	}
+
+	// OperatingSystemTypeFromProtoMap maps nico-core OS types to their model string values.
+	OperatingSystemTypeFromProtoMap = map[cwssaws.OperatingSystemType]string{
+		cwssaws.OperatingSystemType_OS_TYPE_IPXE:           OperatingSystemTypeIPXE,
+		cwssaws.OperatingSystemType_OS_TYPE_TEMPLATED_IPXE: OperatingSystemTypeTemplatedIPXE,
+	}
+
+	// OperatingSystemStatusFromProtoMap maps nico-core tenant states to OperatingSystem status values.
+	OperatingSystemStatusFromProtoMap = map[cwssaws.TenantState]string{
+		cwssaws.TenantState_PROVISIONING: OperatingSystemStatusProvisioning,
+		cwssaws.TenantState_READY:        OperatingSystemStatusReady,
+		cwssaws.TenantState_CONFIGURING:  OperatingSystemStatusSyncing,
+		cwssaws.TenantState_TERMINATING:  OperatingSystemStatusDeleting,
+		cwssaws.TenantState_FAILED:       OperatingSystemStatusError,
+	}
 )
 
 // IsIPXEType returns true if the given OS type is any iPXE variant (raw script or templated).
@@ -292,6 +307,9 @@ func (os *OperatingSystem) ToDeletionRequestProto(tenantOrg string) *cwssaws.Del
 
 // OperatingSystemCreateInput input parameters for Create method
 type OperatingSystemCreateInput struct {
+	// ID optionally pre-specifies the primary key. When set (e.g. during inventory sync from
+	// nico-core), the same UUID is used on both sides. When zero, a new UUID is generated.
+	ID                          uuid.UUID
 	Name                        string
 	Description                 *string
 	Org                         string
@@ -460,8 +478,12 @@ func (ossd OperatingSystemSQLDAO) Create(ctx context.Context, tx *db.Tx, input O
 		ossd.tracerSpan.SetAttribute(operatingSystemSQLDAOSpan, "name", input.Name)
 	}
 
+	id := input.ID
+	if id == uuid.Nil {
+		id = uuid.New()
+	}
 	os := &OperatingSystem{
-		ID:                          uuid.New(),
+		ID:                          id,
 		Name:                        input.Name,
 		Description:                 input.Description,
 		Org:                         input.Org,

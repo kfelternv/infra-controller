@@ -26,7 +26,7 @@ use std::sync::atomic::Ordering;
 use std::time::Instant;
 
 use carbide_firmware::{FirmwareConfig, FirmwareConfigSnapshot};
-use carbide_network::sanitized_mac;
+use carbide_network::{is_locally_administered_mac, sanitized_mac};
 use carbide_redfish::libredfish::conv::IntoModel;
 use carbide_secrets::credentials::CredentialManager;
 use carbide_utils::periodic_timer::PeriodicTimer;
@@ -76,8 +76,9 @@ pub use machine_creator::MachineCreator;
 pub mod explored_endpoint_index;
 mod managed_host;
 use db::ObjectColumnFilter;
-use db::work_lock_manager::{AcquireLockError, WorkLockManagerHandle};
+use db::work_lock_manager::WorkLockManagerHandle;
 pub use managed_host::is_endpoint_in_managed_host;
+use model::DpuModel;
 use model::expected_machine::DpuMode;
 use model::firmware::FirmwareComponentType;
 use model::machine_interface_address::MachineInterfaceAssociation;
@@ -106,6 +107,7 @@ pub fn new_bmc_explorer(
     credential_manager: Arc<dyn CredentialManager>,
     rotate_switch_nvos_credentials: Arc<AtomicBool>,
     mode: SiteExplorerExploreMode,
+    database_connection: PgPool,
 ) -> Arc<BmcEndpointExplorer> {
     BmcEndpointExplorer::new(
         redfish_client_pool,
@@ -114,6 +116,7 @@ pub fn new_bmc_explorer(
         credential_manager,
         rotate_switch_nvos_credentials,
         mode,
+        Some(database_connection),
     )
     .into()
 }
@@ -251,14 +254,6 @@ impl<'a> Endpoint<'a> {
 }
 
 pub type SiteIdentifiedHosts = Vec<(ExploredManagedHost, EndpointExplorationReport)>;
-
-/// Work-lock key for a single endpoint exploration.
-///
-/// Both the site-explorer loop (`update_explored_endpoints`) and the adhoc
-/// `RefreshEndpointReport` handler acquire this key before probing Redfish.
-pub fn endpoint_exploration_work_key(bmc_ip: IpAddr) -> String {
-    format!("SiteExplorer::endpoint_exploration::{bmc_ip}")
-}
 
 /// The SiteExplorer periodically runs [modules](machine_update_module::MachineUpdateModule) to initiate upgrades of machine components.
 /// On each iteration the SiteExplorer will:
@@ -1188,14 +1183,33 @@ impl SiteExplorer {
                 }
             }
 
-            // A DPU can show up as a chassis network adapter instead of a PCIe
-            // device on some BMCs; fall back to those only if the PCIe scan found none.
+            // A DPU can show up as a chassis instead of a PCIe device on some
+            // BMCs; fall back to the chassis inventory only if the PCIe scan
+            // found none.
             if dpu_exploration.expected_managed_total() == 0 {
                 for chassis in ep.report.chassis.iter() {
-                    for network_adapter in chassis.network_adapters.iter() {
+                    // Some BMCs (e.g. the AMI/Lenovo GB300 host BMC) report the
+                    // BlueField as the chassis object itself -- model, part_number
+                    // and serial_number live on the chassis, while its nested
+                    // network adapter carries an empty serial. Match on the
+                    // chassis identity in that case; otherwise fall back to the
+                    // chassis's network adapters (other vendors put the DPU
+                    // serial there). Matching only one of the two per chassis
+                    // keeps a single DPU from being counted twice.
+                    let chassis_is_bluefield = chassis
+                        .part_number
+                        .as_deref()
+                        .map(str::trim)
+                        .is_some_and(is_bluefield_model);
+                    let chassis_has_serial = chassis
+                        .serial_number
+                        .as_deref()
+                        .map(str::trim)
+                        .is_some_and(|serial| !serial.is_empty());
+                    if chassis_is_bluefield && chassis_has_serial {
                         self.record_host_dpu_device(
-                            network_adapter.part_number.as_deref(),
-                            network_adapter.serial_number.as_deref(),
+                            chassis.part_number.as_deref(),
+                            chassis.serial_number.as_deref(),
                             &dpu_sn_to_endpoint,
                             host_dpu_mode,
                             &ep,
@@ -1203,6 +1217,19 @@ impl SiteExplorer {
                             metrics,
                         )
                         .await;
+                    } else {
+                        for network_adapter in chassis.network_adapters.iter() {
+                            self.record_host_dpu_device(
+                                network_adapter.part_number.as_deref(),
+                                network_adapter.serial_number.as_deref(),
+                                &dpu_sn_to_endpoint,
+                                host_dpu_mode,
+                                &ep,
+                                &mut dpu_exploration,
+                                metrics,
+                            )
+                            .await;
+                        }
                     }
                 }
             }
@@ -1961,7 +1988,6 @@ impl SiteExplorer {
             let bmc_target_addr = SocketAddr::new(endpoint.address, bmc_target_port);
             let fw_config_snapshot = fw_config_snapshot.clone();
             let database_connection = self.database_connection.clone();
-            let work_lock_manager_handle = self.work_lock_manager_handle.clone();
 
             task_set.push(
                 async move {
@@ -1976,26 +2002,6 @@ impl SiteExplorer {
                         .acquire()
                         .await
                         .expect("Semaphore can't be closed");
-
-                    // If the endpoint is locked, we skip exploration.
-                    let work_key = endpoint_exploration_work_key(endpoint.address);
-                    let _work_lock = match work_lock_manager_handle.try_acquire_lock(work_key).await
-                    {
-                        Ok(work_lock) => work_lock,
-                        Err(AcquireLockError::WorkAlreadyLocked(_)) => {
-                            tracing::info!(
-                                address = %endpoint.address,
-                                "Skipping periodic endpoint exploration; adhoc refresh already in progress"
-                            );
-                            return Ok(None);
-                        }
-                        Err(e) => {
-                            return Err(SiteExplorerError::internal(format!(
-                                "Failed to acquire per-endpoint work lock for {}: {e}",
-                                endpoint.address
-                            )));
-                        }
-                    };
 
                     let mut result = endpoint_explorer
                         .explore_endpoint(
@@ -3161,26 +3167,118 @@ fn get_base_mac_from_sys_image_version(sys_image_version: &String) -> Result<Str
 /// The method should be migrated to the DPU directly providing the
 /// MAC address: https://redmine.mellanox.com/issues/3749837
 fn find_host_pf_mac_address(dpu_ep: &ExploredEndpoint) -> Result<MacAddress, String> {
-    // First, try to grab a MAC from explored Redfish data,
-    // which lives under ComputerSystem. Otherwise, just fall
-    // back to the legacy method via get_sys_image_version.
+    // Base-MAC derivation has three paths, tried in order of trust:
+    //   1. Primary  : the explored ComputerSystem base_mac (OEM Redfish BaseMAC).
+    //   2. Legacy    : derived from UpdateService/FirmwareInventory/DPU_SYS_IMAGE.Version.
+    //   3. BMC offset: derived from the BMC manager eth0 MAC minus a per-platform
+    //                  offset (fallback-only; see derive_base_mac_from_bmc_eth0).
+    // We only hard-fail if all three paths fail.
 
-    // Try the explored computer-system base_mac first
+    // Path 1: explored computer-system base_mac.
     if let Some(system_mac) = dpu_ep.report.systems.first().and_then(|s| s.base_mac) {
         return Ok(system_mac.to_mac());
     }
 
-    tracing::warn!("ComputerSystem doesn't have base_mac, falling back to legacy method");
-    let legacy_mac = get_base_mac_from_sys_image_version(get_sys_image_version(
-        dpu_ep.report.service.as_ref(),
-    )?)?;
+    // Path 2: legacy DPU_SYS_IMAGE derivation. Soft-fail so we can try path 3.
+    tracing::warn!("ComputerSystem doesn't have base_mac, falling back to DPU_SYS_IMAGE method");
+    let legacy_err = match get_sys_image_version(dpu_ep.report.service.as_ref())
+        .and_then(get_base_mac_from_sys_image_version)
+        .and_then(|legacy_mac| {
+            sanitized_mac(&legacy_mac).map_err(|e| {
+                format!("Failed to build sanitized MAC from legacy/service MAC: {e} (source_mac: {legacy_mac})")
+            })
+        }) {
+        Ok(mac) => return Ok(mac),
+        Err(e) => {
+            tracing::warn!("DPU_SYS_IMAGE derivation failed, falling back to BMC eth0 offset: {e}");
+            e
+        }
+    };
 
-    // Sanitize the legacy MAC and return it
-    sanitized_mac(&legacy_mac).map_err(|e| {
-        format!(
-            "Failed to build sanitized MAC from legacy/service MAC: {e} (source_mac: {legacy_mac})"
-        )
-    })
+    // Path 3: BMC manager eth0 MAC minus a per-platform offset. If this path is
+    // also unavailable, surface the legacy error so we still fail the old way.
+    derive_base_mac_from_bmc_eth0(&dpu_ep.report).ok_or(legacy_err)
+}
+
+// The PF0 base MAC sits a fixed offset below the DPU BMC's eth0 MAC, within the
+// contiguous MAC block allocated to the card. Per the BlueField-3 DPU Controller
+// User Manual (§10.1, "DPU Controller Board Label"):
+//   * host high-speed ports are `base + port_index`
+//   * `DPU_BMC_MAC = OOB_MAC + 1`
+// so the offset decomposes as `(OOB - base) + 1`.
+//
+// Measured on a real BF3 DPU (offset = 0x25 = 37):
+//   DPU BMC eth0                              : 5c:25:73:9e:ac:eb
+//   base (DPU_SYS_IMAGE 5c25:7303:009e:acc6)  : 5c:25:73:9e:ac:c6
+// which implies OOB = bmc - 1 = ...ea and a host-reservation gap of
+// (OOB - base) = 0x24 = 36, consistent with the manual's `BMC = OOB + 1`.
+//
+// The host-reservation gap is not published and could differ on other SKUs
+// (e.g. 1- vs 2-port); revisit if a card of a different SKU mis-derives.
+const BF3_ETH0_TO_BASE_MAC_OFFSET: u64 = 0x25; // measured: BlueField-3, see above
+
+/// The per-platform offset to subtract from the BMC manager eth0 MAC to obtain
+/// the DPU PF0 base MAC, or `None` for platforms we can't classify (we never guess).
+fn bmc_eth0_to_base_mac_offset(report: &EndpointExplorationReport) -> Option<u64> {
+    match report.identify_dpu()? {
+        DpuModel::BlueField3 => Some(BF3_ETH0_TO_BASE_MAC_OFFSET),
+        // BlueField-2 is not supported by the BMC eth0 offset fallback.
+        DpuModel::BlueField2 | DpuModel::Unknown => None,
+    }
+}
+
+/// Fallback-only (item #2 of issue #1076): derive the DPU PF0 base MAC from the
+/// BMC manager eth0 MAC minus a platform-specific offset. Returns `None` if the
+/// eth0 interface MAC is missing, locally-administered (pre-sync), the platform
+/// is unknown, or the subtraction would underflow.
+fn derive_base_mac_from_bmc_eth0(report: &EndpointExplorationReport) -> Option<MacAddress> {
+    let offset = bmc_eth0_to_base_mac_offset(report)?;
+
+    // Pick the eth0 interface specifically -- the OOB interface also lives in
+    // the manager's ethernet_interfaces list.
+    let bmc_eth0 = report
+        .managers
+        .iter()
+        .flat_map(|m| m.ethernet_interfaces.iter())
+        .find(|e| {
+            e.id.as_deref()
+                .is_some_and(|id| id.eq_ignore_ascii_case("eth0"))
+        })
+        .and_then(|e| e.mac_address)?;
+
+    // A real NVIDIA BMC MAC is globally unique. A locally-administered MAC means
+    // the BMC hasn't synced its burned-in address yet (transient post-boot
+    // state) -- refuse to derive a base MAC from it rather than hand back a
+    // plausible-but-wrong value.
+    if is_locally_administered_mac(bmc_eth0) {
+        tracing::warn!(
+            bmc_eth0 = %bmc_eth0,
+            "BMC eth0 MAC is locally-administered (pre-sync?); skipping offset derivation",
+        );
+        return None;
+    }
+
+    let derived = mac_to_u64(bmc_eth0).checked_sub(offset)?;
+    let mac = u64_to_mac(derived);
+    tracing::warn!(
+        bmc_eth0 = %bmc_eth0,
+        derived = %mac,
+        "derived DPU base MAC from BMC eth0 via offset fallback",
+    );
+    Some(mac)
+}
+
+/// MAC address as a 48-bit big-endian integer (top two bytes of the u64 are zero).
+fn mac_to_u64(mac: MacAddress) -> u64 {
+    mac.bytes()
+        .iter()
+        .fold(0u64, |acc, &byte| (acc << 8) | u64::from(byte))
+}
+
+/// Inverse of [`mac_to_u64`]; the high 16 bits are discarded.
+fn u64_to_mac(value: u64) -> MacAddress {
+    let b = value.to_be_bytes();
+    MacAddress::new([b[2], b[3], b[4], b[5], b[6], b[7]])
 }
 
 /// Whether a discovered DPU BMC is reporting that it's running as a plain NIC.
@@ -3370,6 +3468,89 @@ mod tests {
     use model::site_explorer::PreingestionState;
 
     use super::*;
+
+    #[test]
+    fn mac_u64_roundtrip() {
+        let mac: MacAddress = "a0:88:c2:46:0c:68".parse().unwrap();
+        assert_eq!(mac_to_u64(mac), 0x0000_a088_c246_0c68);
+        assert_eq!(u64_to_mac(mac_to_u64(mac)), mac);
+    }
+
+    #[test]
+    fn u64_to_mac_discards_high_bits() {
+        // High 16 bits set must not leak into the MAC bytes.
+        assert_eq!(
+            u64_to_mac(0xffff_a088_c246_0c68),
+            "a0:88:c2:46:0c:68".parse().unwrap()
+        );
+    }
+
+    #[test]
+    fn bf3_offset_derives_measured_base_mac() {
+        // Real BF3 DPU measurement (see BF3_ETH0_TO_BASE_MAC_OFFSET):
+        // BMC eth0 - offset must yield the DPU_SYS_IMAGE-derived base MAC.
+        let bmc_eth0: MacAddress = "5c:25:73:9e:ac:eb".parse().unwrap();
+        let base: MacAddress = "5c:25:73:9e:ac:c6".parse().unwrap();
+        let derived = u64_to_mac(mac_to_u64(bmc_eth0) - BF3_ETH0_TO_BASE_MAC_OFFSET);
+        assert_eq!(derived, base);
+        // Cross-check the documented BMC = OOB + 1 relationship.
+        let oob = u64_to_mac(mac_to_u64(bmc_eth0) - 1);
+        assert_eq!(oob, "5c:25:73:9e:ac:ea".parse().unwrap());
+    }
+
+    // Minimal BlueField-3 report with a single manager eth0 interface carrying
+    // `eth0_mac`. Classifies as BF3 (system id "Bluefield" + Card1 BF3 chassis).
+    fn bf3_report_with_eth0(eth0_mac: &str) -> EndpointExplorationReport {
+        use model::site_explorer::{Chassis, ComputerSystem, EthernetInterface, Manager};
+        EndpointExplorationReport {
+            systems: vec![ComputerSystem {
+                id: "Bluefield".to_string(),
+                ..Default::default()
+            }],
+            chassis: vec![Chassis {
+                id: "Card1".to_string(),
+                model: Some("NVIDIA BlueField 3 DPU".to_string()),
+                ..Default::default()
+            }],
+            managers: vec![Manager {
+                id: "Bluefield_BMC".to_string(),
+                ethernet_interfaces: vec![EthernetInterface {
+                    id: Some("eth0".to_string()),
+                    mac_address: Some(eth0_mac.parse().unwrap()),
+                    ..Default::default()
+                }],
+            }],
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn bmc_eth0_offset_skips_locally_administered_mac() {
+        // Transient pre-sync MAC (locally-administered bit set) must not derive
+        // a base MAC, even though the platform classifies and an eth0 exists.
+        let transient = bf3_report_with_eth0("9a:72:d5:07:ae:7e");
+        assert_eq!(bmc_eth0_to_base_mac_offset(&transient), Some(0x25));
+        assert!(derive_base_mac_from_bmc_eth0(&transient).is_none());
+
+        // Sanity: the same report with the real (globally-unique) eth0 derives.
+        let synced = bf3_report_with_eth0("5c:25:73:9e:ac:eb");
+        assert_eq!(
+            derive_base_mac_from_bmc_eth0(&synced),
+            Some("5c:25:73:9e:ac:c6".parse().unwrap())
+        );
+    }
+
+    #[test]
+    fn bmc_eth0_offset_fallback_unsupported_for_bf2() {
+        // BlueField-2 is intentionally not supported by the BMC eth0 offset
+        // fallback, so derivation must return None even when an eth0 MAC exists.
+        let mut report = load_bf2_ep_report();
+        for s in report.systems.iter_mut() {
+            s.base_mac = None;
+        }
+        assert!(bmc_eth0_to_base_mac_offset(&report).is_none());
+        assert!(derive_base_mac_from_bmc_eth0(&report).is_none());
+    }
 
     fn load_bf2_ep_report() -> EndpointExplorationReport {
         let path = concat!(env!("CARGO_MANIFEST_DIR"), "/src/test_data/bf2_report.json");

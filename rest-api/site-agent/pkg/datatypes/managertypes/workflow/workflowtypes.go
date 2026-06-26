@@ -4,7 +4,7 @@
 package workflowtypes
 
 import (
-	stdatomic "sync/atomic"
+	"sync"
 
 	"go.temporal.io/sdk/client"
 	"go.temporal.io/sdk/worker"
@@ -13,6 +13,7 @@ import (
 
 // State - temporal state
 type State struct {
+	mu sync.RWMutex
 	// ConnectionAttempted the number of times the connection has been attempted
 	ConnectionAttempted atomic.Uint64
 	// ConnectionSucc the number of times the connection has succeded
@@ -20,9 +21,37 @@ type State struct {
 	// HealthStatus current health state
 	HealthStatus atomic.Uint64
 	// Err is error message
-	Err stdatomic.Value
+	err string
 	// ConnectionTime time when attempted to connect
-	ConnectionTime stdatomic.Value
+	connectionTime string
+}
+
+// SetErr records the last Temporal connection error.
+func (s *State) SetErr(err string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.err = err
+}
+
+// Err returns the last Temporal connection error.
+func (s *State) Err() string {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return s.err
+}
+
+// SetConnectionTime records the last Temporal connection attempt time.
+func (s *State) SetConnectionTime(connectionTime string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.connectionTime = connectionTime
+}
+
+// ConnectionTime returns the last Temporal connection attempt time.
+func (s *State) ConnectionTime() string {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return s.connectionTime
 }
 
 // MgrState - Mgr state

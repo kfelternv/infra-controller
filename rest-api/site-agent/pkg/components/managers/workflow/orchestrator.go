@@ -45,14 +45,14 @@ func Orchestrator() {
 
 	// keep track how many events we've seen.
 	state.ConnectionAttempted.Inc()
-	state.ConnectionTime.Store(time.Now().String())
+	state.SetConnectionTime(time.Now().String())
 
 	err := workflowOrchestrator()
 	if err != nil {
 		state.HealthStatus.Store(uint64(computils.CompUnhealthy))
-		tStr := err.Error()
-		state.Err.Store(tStr)
-		log.Error().Msg(tStr)
+		errMsg := err.Error()
+		state.SetErr(errMsg)
+		log.Error().Msg(errMsg)
 	} else {
 		// keep track how many succeeded.
 		state.ConnectionSucc.Inc()
@@ -212,6 +212,11 @@ func workflowOrchestrator() error {
 
 	// Register all manager flows here
 	// TODO: all RegisterSubscriber calls return an error and we ignore them. Should we?
+	err = ManagerAccess.API.Site.RegisterPublisher()
+	if err != nil {
+		return err
+	}
+
 	ManagerAccess.API.VPC.RegisterSubscriber()
 	ManagerAccess.API.VPC.RegisterPublisher()
 

@@ -1332,8 +1332,13 @@ pub struct EthernetInterface {
 pub struct UefiDevicePath(String);
 
 lazy_static! {
+    // Not anchored at start: GB300/Grace UEFI device paths prefix the PciRoot
+    // node with vendor/MMIO nodes, e.g.
+    // VenHw(<guid>)/MemoryMapped(0xB,...)/PciRoot(0x16)/Pci(0x0,0x0)/Pci(0x0,0x0)
+    // An `^PciRoot` anchor never matches those and aborts the whole exploration
+    // (`Could not match regex in PCI Device Path`). Match PciRoot wherever it appears.
     static ref PCI_ROOT_REGEX: Regex =
-        Regex::new(r"^PciRoot\(([^)]*)\)").expect("must always compile");
+        Regex::new(r"PciRoot\(([^)]*)\)").expect("must always compile");
     static ref PCI_NODE_REGEX: Regex = Regex::new(r"/Pci\(([^)]*)\)").expect("must always compile");
 }
 
@@ -1713,6 +1718,30 @@ impl EndpointExplorationReport {
                 dpu_bmc_ip: None,
                 nic_mode: None,
             })
+            .collect()
+    }
+
+    /// Whether this report's Redfish PCIe inventory holds any BlueField/Mellanox
+    /// device -- i.e. whether it would yield any [`ExploredMlxDevice`].
+    pub fn has_bluefield_devices(&self) -> bool {
+        self.systems
+            .iter()
+            .flat_map(|system| system.pcie_devices.iter())
+            .any(|device| device.is_bluefield())
+    }
+
+    /// The (trimmed, non-empty) serial numbers of the BlueField devices in this
+    /// report's PCIe inventory -- the keys used to match each device to its DPU
+    /// endpoint, the same serials [`collect_explored_mlx_devices`] joins on.
+    pub fn bluefield_device_serials(&self) -> Vec<String> {
+        self.systems
+            .iter()
+            .flat_map(|system| system.pcie_devices.iter())
+            .filter(|device| device.is_bluefield())
+            .filter_map(|device| device.serial_number.as_deref())
+            .map(str::trim)
+            .filter(|serial| !serial.is_empty())
+            .map(str::to_string)
             .collect()
     }
 }

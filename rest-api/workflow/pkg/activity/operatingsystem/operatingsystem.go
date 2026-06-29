@@ -270,7 +270,7 @@ func (mos ManageOsImage) updateOperatingSystemSiteAssociationStatusInDB(ctx cont
 		}
 
 		statusDetailDAO := cdbm.NewStatusDetailDAO(mos.dbSession)
-		_, err = statusDetailDAO.CreateFromParams(ctx, tx, ossaID.String(), *status, statusMessage)
+		_, err = statusDetailDAO.Create(ctx, tx, cdbm.StatusDetailCreateInput{EntityID: ossaID.String(), Status: *status, Message: statusMessage})
 		if err != nil {
 			return err
 		}
@@ -396,7 +396,7 @@ func (mos ManageOsImage) UpdateOperatingSystemStatusInDB(ctx context.Context, os
 	}
 
 	statusDetailDAO := cdbm.NewStatusDetailDAO(mos.dbSession)
-	_, err = statusDetailDAO.CreateFromParams(ctx, nil, osID.String(), *osStatus, osMessage)
+	_, err = statusDetailDAO.Create(ctx, nil, cdbm.StatusDetailCreateInput{EntityID: osID.String(), Status: *osStatus, Message: osMessage})
 	if err != nil {
 		return err
 	}

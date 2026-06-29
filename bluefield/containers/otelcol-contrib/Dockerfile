@@ -30,7 +30,7 @@
 # in opentelemetry-collector-contrib).
 
 ARG GO_VERSION=1.26.4
-ARG OTELCOL_VERSION=0.101.0
+ARG OTELCOL_VERSION=0.155.0
 
 # ---------------------------------------------------------------------------
 # Builder (host-native Go, cross-compiles to arm64)

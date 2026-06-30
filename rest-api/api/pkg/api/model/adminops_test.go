@@ -13,10 +13,10 @@ import (
 )
 
 func TestAPIDpuReprovisionRequestValidateAndToProto(t *testing.T) {
-	req := APIDpuReprovisionRequest{Mode: DpuReprovisionModeRestart, UpdateFirmware: true}
+	req := APIDpuReprovisionRequest{MachineID: "machine-1", Mode: DpuReprovisionModeRestart, UpdateFirmware: true}
 	require.NoError(t, req.Validate())
 
-	protoReq := req.ToProto("machine-1")
+	protoReq := req.ToProto()
 	assert.Equal(t, "machine-1", protoReq.GetMachineId().GetId())
 	assert.Equal(t, cwssaws.DpuReprovisioningRequest_Restart, protoReq.GetMode())
 	assert.Equal(t, cwssaws.UpdateInitiator_AdminCli, protoReq.GetInitiator())

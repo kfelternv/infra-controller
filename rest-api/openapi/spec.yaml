@@ -9123,6 +9123,117 @@ paths:
           description: Describes an error response for 500 Internal Server Error
           $ref: '#/components/responses/GenericHttpError'
       description: Org must have an Infrastructure Provider entity. Machine must belong to the Provider. User must have authorization role with `PROVIDER_ADMIN` suffix. Machine must meet certain criteria to be eligible for deletion.
+  '/v2/org/{org}/nico/machine/{machineId}/health-report':
+    parameters:
+      - schema:
+          type: string
+        name: org
+        in: path
+        required: true
+        description: Name of the Org
+      - schema:
+          type: string
+        name: machineId
+        in: path
+        required: true
+        description: ID of the Machine
+    get:
+      summary: List Machine health reports
+      tags:
+        - Health Report
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/MachineHealthReportListResponse'
+        '403':
+          $ref: '#/components/responses/ForbiddenError'
+        '404':
+          $ref: '#/components/responses/NotFoundError'
+        '500':
+          $ref: '#/components/responses/GenericHttpError'
+      operationId: list-machine-health-reports
+      description: |-
+        List Machine health report overrides through NICo Core. The request is
+        authorized, machine-scoped, and proxied to the Machine's owning Site.
+        User must have authorization role with `PROVIDER_ADMIN` suffix.
+    put:
+      summary: Insert Machine health report
+      tags:
+        - Health Report
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/MachineHealthReportEntry'
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/MachineHealthReportResponse'
+        '400':
+          $ref: '#/components/responses/ValidationError'
+        '403':
+          $ref: '#/components/responses/ForbiddenError'
+        '404':
+          $ref: '#/components/responses/NotFoundError'
+        '500':
+          $ref: '#/components/responses/GenericHttpError'
+      operationId: insert-machine-health-report
+      description: |-
+        Add or update a Machine health report override through NICo Core. The
+        request is authorized, machine-scoped, and proxied to the Machine's
+        owning Site. User must have authorization role with `PROVIDER_ADMIN`
+        suffix.
+  '/v2/org/{org}/nico/machine/{machineId}/health-report/{source}':
+    parameters:
+      - schema:
+          type: string
+        name: org
+        in: path
+        required: true
+        description: Name of the Org
+      - schema:
+          type: string
+        name: machineId
+        in: path
+        required: true
+        description: ID of the Machine
+      - schema:
+          type: string
+        name: source
+        in: path
+        required: true
+        description: Health report source
+    delete:
+      summary: Remove Machine health report
+      tags:
+        - Health Report
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/MachineHealthReportRemoveResponse'
+        '400':
+          $ref: '#/components/responses/ValidationError'
+        '403':
+          $ref: '#/components/responses/ForbiddenError'
+        '404':
+          $ref: '#/components/responses/NotFoundError'
+        '500':
+          $ref: '#/components/responses/GenericHttpError'
+      operationId: remove-machine-health-report
+      description: |-
+        Remove a Machine health report override through NICo Core. The request
+        is authorized, machine-scoped, and proxied to the Machine's owning Site.
+        User must have authorization role with `PROVIDER_ADMIN` suffix.
   '/v2/org/{org}/nico/machine/{machineId}/status-history':
     parameters:
       - schema:
@@ -13150,6 +13261,124 @@ components:
         macAddress:
           type: string
           description: BMC MAC address. Required for kind BMCRoot, ignored for SiteWideRoot.
+    MachineHealthReportEntry:
+      type: object
+      title: MachineHealthReportEntry
+      description: Machine health report entry submitted to NICo Core.
+      required:
+        - source
+        - mode
+      properties:
+        source:
+          type: string
+          description: Health report source.
+        triggeredBy:
+          type: string
+          description: Person or system that triggered this health report.
+        observedAt:
+          type: string
+          format: date-time
+          description: Date/time when the health report was observed.
+        successes:
+          type: array
+          items:
+            $ref: '#/components/schemas/MachineHealthReportProbeSuccess'
+          description: Results from successful health probes for the Machine.
+        alerts:
+          type: array
+          items:
+            $ref: '#/components/schemas/MachineHealthReportProbeAlert'
+          description: Results from failed health probes for the Machine.
+        mode:
+          type: string
+          description: How NICo Core applies this health report.
+          enum:
+            - Merge
+            - Replace
+    MachineHealthReportProbeSuccess:
+      type: object
+      title: MachineHealthReportProbeSuccess
+      description: Successful Machine health probe submitted to NICo Core.
+      required:
+        - id
+      properties:
+        id:
+          type: string
+          description: Health probe identifier.
+        target:
+          type: string
+          description: Specific component targeted by health probe.
+    MachineHealthReportProbeAlert:
+      type: object
+      title: MachineHealthReportProbeAlert
+      description: Failed Machine health probe submitted to NICo Core.
+      required:
+        - id
+        - message
+      properties:
+        id:
+          type: string
+          description: Health probe identifier.
+        target:
+          type: string
+          description: Specific component targeted by health probe.
+        inAlertSince:
+          type: string
+          format: date-time
+          description: Date/time since the alert has been in effect.
+        message:
+          type: string
+          description: Details of the failed health probe result.
+        tenantMessage:
+          type: string
+          description: Information provided by Tenant, if any.
+        classifications:
+          type: array
+          items:
+            type: string
+          description: Classifications for this alert.
+    MachineHealthReportListResponse:
+      type: object
+      title: MachineHealthReportListResponse
+      description: Machine health report entries returned by NICo Core.
+      required:
+        - machineId
+        - healthReportEntries
+      properties:
+        machineId:
+          type: string
+          description: ID of the Machine.
+        healthReportEntries:
+          type: array
+          items:
+            $ref: '#/components/schemas/MachineHealthReportEntry'
+    MachineHealthReportResponse:
+      type: object
+      title: MachineHealthReportResponse
+      description: Response for an inserted Machine health report.
+      required:
+        - machineId
+        - healthReportEntry
+      properties:
+        machineId:
+          type: string
+          description: ID of the Machine.
+        healthReportEntry:
+          $ref: '#/components/schemas/MachineHealthReportEntry'
+    MachineHealthReportRemoveResponse:
+      type: object
+      title: MachineHealthReportRemoveResponse
+      description: Response for a removed Machine health report.
+      required:
+        - machineId
+        - source
+      properties:
+        machineId:
+          type: string
+          description: ID of the Machine.
+        source:
+          type: string
+          description: Removed health report source.
     InfrastructureProvider:
       description: Infrastructure providers own and manage datacenters
       type: object

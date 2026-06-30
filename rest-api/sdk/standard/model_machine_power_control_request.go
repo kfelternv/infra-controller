@@ -26,6 +26,8 @@ var _ MappedNullable = &MachinePowerControlRequest{}
 type MachinePowerControlRequest struct {
 	// Power control action to apply.
 	Action string `json:"action"`
+	// Acknowledges that an Instance is currently attached to the Machine.
+	AcknowledgeAttachedInstance *bool `json:"acknowledgeAttachedInstance,omitempty"`
 }
 
 type _MachinePowerControlRequest MachinePowerControlRequest
@@ -72,6 +74,38 @@ func (o *MachinePowerControlRequest) SetAction(v string) {
 	o.Action = v
 }
 
+// GetAcknowledgeAttachedInstance returns the AcknowledgeAttachedInstance field value if set, zero value otherwise.
+func (o *MachinePowerControlRequest) GetAcknowledgeAttachedInstance() bool {
+	if o == nil || IsNil(o.AcknowledgeAttachedInstance) {
+		var ret bool
+		return ret
+	}
+	return *o.AcknowledgeAttachedInstance
+}
+
+// GetAcknowledgeAttachedInstanceOk returns a tuple with the AcknowledgeAttachedInstance field value if set, nil otherwise
+// and a boolean to check if the value has been set.
+func (o *MachinePowerControlRequest) GetAcknowledgeAttachedInstanceOk() (*bool, bool) {
+	if o == nil || IsNil(o.AcknowledgeAttachedInstance) {
+		return nil, false
+	}
+	return o.AcknowledgeAttachedInstance, true
+}
+
+// HasAcknowledgeAttachedInstance returns a boolean if a field has been set.
+func (o *MachinePowerControlRequest) HasAcknowledgeAttachedInstance() bool {
+	if o != nil && !IsNil(o.AcknowledgeAttachedInstance) {
+		return true
+	}
+
+	return false
+}
+
+// SetAcknowledgeAttachedInstance gets a reference to the given bool and assigns it to the AcknowledgeAttachedInstance field.
+func (o *MachinePowerControlRequest) SetAcknowledgeAttachedInstance(v bool) {
+	o.AcknowledgeAttachedInstance = &v
+}
+
 func (o MachinePowerControlRequest) MarshalJSON() ([]byte, error) {
 	toSerialize, err := o.ToMap()
 	if err != nil {
@@ -83,6 +117,9 @@ func (o MachinePowerControlRequest) MarshalJSON() ([]byte, error) {
 func (o MachinePowerControlRequest) ToMap() (map[string]interface{}, error) {
 	toSerialize := map[string]interface{}{}
 	toSerialize["action"] = o.Action
+	if !IsNil(o.AcknowledgeAttachedInstance) {
+		toSerialize["acknowledgeAttachedInstance"] = o.AcknowledgeAttachedInstance
+	}
 	return toSerialize, nil
 }
 

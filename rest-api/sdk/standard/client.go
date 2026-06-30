@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+// SPDX-License-Identifier: Apache-2.0
+
 /*
 NVIDIA Infra Controller REST API
 
@@ -63,6 +66,8 @@ type APIClient struct {
 	ExpectedRackAPI *ExpectedRackAPIService
 
 	ExpectedSwitchAPI *ExpectedSwitchAPIService
+
+	HostFirmwareConfigAPI *HostFirmwareConfigAPIService
 
 	IPBlockAPI *IPBlockAPIService
 
@@ -143,6 +148,7 @@ func NewAPIClient(cfg *Configuration) *APIClient {
 	c.ExpectedPowerShelfAPI = (*ExpectedPowerShelfAPIService)(&c.common)
 	c.ExpectedRackAPI = (*ExpectedRackAPIService)(&c.common)
 	c.ExpectedSwitchAPI = (*ExpectedSwitchAPIService)(&c.common)
+	c.HostFirmwareConfigAPI = (*HostFirmwareConfigAPIService)(&c.common)
 	c.IPBlockAPI = (*IPBlockAPIService)(&c.common)
 	c.InfiniBandPartitionAPI = (*InfiniBandPartitionAPIService)(&c.common)
 	c.InfrastructureProviderAPI = (*InfrastructureProviderAPIService)(&c.common)
@@ -538,6 +544,15 @@ func (c *APIClient) decode(v interface{}, b []byte, contentType string) (err err
 	}
 	if s, ok := v.(*string); ok {
 		*s = string(b)
+		return nil
+	}
+	if r, ok := v.(*io.Reader); ok {
+		*r = bytes.NewReader(b)
+		return nil
+	}
+	// Must stay before the JSON branch: json.Unmarshal would base64-decode into *[]byte.
+	if p, ok := v.(*[]byte); ok {
+		*p = b
 		return nil
 	}
 	if f, ok := v.(*os.File); ok {

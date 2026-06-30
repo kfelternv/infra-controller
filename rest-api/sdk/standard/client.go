@@ -1,6 +1,3 @@
-// SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
-// SPDX-License-Identifier: Apache-2.0
-
 /*
 NVIDIA Infra Controller REST API
 
@@ -596,10 +593,7 @@ func addFile(w *multipart.Writer, fieldName, path string) error {
 	if err != nil {
 		return err
 	}
-	err = file.Close()
-	if err != nil {
-		return err
-	}
+	defer file.Close()
 
 	part, err := w.CreateFormFile(fieldName, filepath.Base(path))
 	if err != nil {

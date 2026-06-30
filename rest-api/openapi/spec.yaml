@@ -9123,6 +9123,51 @@ paths:
           description: Describes an error response for 500 Internal Server Error
           $ref: '#/components/responses/GenericHttpError'
       description: Org must have an Infrastructure Provider entity. Machine must belong to the Provider. User must have authorization role with `PROVIDER_ADMIN` suffix. Machine must meet certain criteria to be eligible for deletion.
+  '/v2/org/{org}/nico/machine/{machineId}/dpu-reprovision':
+    parameters:
+      - schema:
+          type: string
+        name: org
+        in: path
+        required: true
+        description: Name of the Org
+      - schema:
+          type: string
+        name: machineId
+        in: path
+        required: true
+        description: ID of the Machine
+    patch:
+      summary: Trigger DPU reprovisioning
+      tags:
+        - DPU Reprovision
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/DpuReprovisionRequest'
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/DpuReprovisionResponse'
+        '400':
+          $ref: '#/components/responses/ValidationError'
+        '403':
+          $ref: '#/components/responses/ForbiddenError'
+        '404':
+          $ref: '#/components/responses/NotFoundError'
+        '500':
+          $ref: '#/components/responses/GenericHttpError'
+      operationId: trigger-dpu-reprovisioning
+      description: |-
+        Trigger DPU reprovisioning for a Machine through NICo Core. The request
+        is authorized, machine-scoped, and proxied to the Machine's owning Site.
+        This endpoint calls Core's `TriggerDpuReprovisioning` RPC directly.
+        User must have authorization role with `PROVIDER_ADMIN` suffix.
   '/v2/org/{org}/nico/machine/{machineId}/status-history':
     parameters:
       - schema:
@@ -13150,6 +13195,41 @@ components:
         macAddress:
           type: string
           description: BMC MAC address. Required for kind BMCRoot, ignored for SiteWideRoot.
+    DpuReprovisionRequest:
+      type: object
+      title: DpuReprovisionRequest
+      description: Request to trigger DPU reprovisioning through NICo Core.
+      required:
+        - mode
+      properties:
+        mode:
+          type: string
+          description: DPU reprovisioning mode.
+          enum:
+            - Set
+            - Clear
+            - Restart
+        updateFirmware:
+          type: boolean
+          default: false
+          description: Whether to update firmware during reprovisioning.
+    DpuReprovisionResponse:
+      type: object
+      title: DpuReprovisionResponse
+      description: Response for a DPU reprovisioning request.
+      required:
+        - machineId
+        - mode
+      properties:
+        machineId:
+          type: string
+          description: ID of the Machine.
+        mode:
+          type: string
+          description: DPU reprovisioning mode accepted.
+        updateFirmware:
+          type: boolean
+          description: Whether firmware update was requested.
     InfrastructureProvider:
       description: Infrastructure providers own and manage datacenters
       type: object

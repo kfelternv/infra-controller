@@ -547,6 +547,11 @@ func NewAPIRoutes(dbSession *cdb.Session, tc tClient.Client, tnc tClient.Namespa
 			Handler: apiHandler.NewGetMachineHandler(dbSession, tc, cfg),
 		},
 		{
+			Path:    apiPathPrefix + "/machine/:machineId/dpu-reprovision",
+			Method:  http.MethodPatch,
+			Handler: apiHandler.NewDpuReprovisionHandler(dbSession, scp, cfg),
+		},
+		{
 			Path:    apiPathPrefix + "/machine/:id",
 			Method:  http.MethodPatch,
 			Handler: apiHandler.NewUpdateMachineHandler(dbSession, tc, scp, cfg),

@@ -13612,6 +13612,9 @@ components:
             - GracefulRestart
             - ForceRestart
             - ACPowercycle
+        acknowledgeAttachedInstance:
+          type: boolean
+          description: Acknowledges that an Instance is currently attached to the Machine.
     MachinePowerControlResponse:
       type: object
       title: MachinePowerControlResponse

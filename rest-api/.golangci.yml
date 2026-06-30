@@ -52,12 +52,6 @@ linters:
         linters:
           - ineffassign
           - unused
-          - errcheck
-      - path: testing\.go
-        linters:
-          - ineffassign
-          - unused
-          - errcheck
         # Exclude some `staticcheck` messages.
       - linters:
           - staticcheck

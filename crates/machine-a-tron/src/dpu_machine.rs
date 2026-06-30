@@ -18,6 +18,7 @@ use std::collections::HashMap;
 use std::sync::{Arc, Mutex, RwLock};
 use std::time::{Duration, Instant};
 
+use bmc_mock::mac_address_pool::MacAddressPool;
 use bmc_mock::{
     BmcCommand, DpuMachineInfo, DpuSettings, HostHardwareType, MachineInfo, SetSystemPowerResult,
     SystemPowerControl,
@@ -80,6 +81,7 @@ impl DpuMachine {
         };
         let state_machine = MachineStateMachine::from_persisted(
             PersistedMachine::Dpu(persisted_dpu_machine),
+            MachineInfo::Dpu(dpu_info.clone()),
             config,
             app_context.clone(),
             bmc_control_tx,
@@ -112,6 +114,7 @@ impl DpuMachine {
         dpu_index: u8,
         app_context: Arc<MachineATronContext>,
         config: Arc<MachineConfig>,
+        mac_addr_pool: &mut MacAddressPool,
         host_dhcp_request_rx: Option<
             mpsc::UnboundedReceiver<oneshot::Sender<DhcpRelayResult<DhcpResponseInfo>>>,
         >,
@@ -129,6 +132,7 @@ impl DpuMachine {
 
         let dpu_info = DpuMachineInfo::new(
             hw_type,
+            mac_addr_pool,
             DpuSettings {
                 nic_mode: config.dpus_in_nic_mode,
                 firmware_versions: firmware_versions.into(),
@@ -171,8 +175,6 @@ impl DpuMachine {
         let mat_id = self.mat_id;
         let dpu_info = self.dpu_info.clone();
         let dpu_index = self.dpu_index;
-        let bmc_dhcp_id = self.state_machine.bmc_dhcp_id;
-        let machine_dhcp_id = self.state_machine.machine_dhcp_id;
         let live_state = self.state_machine.live_state.clone();
         let join_handle = tokio::task::Builder::new()
             .name(&format!("DPU {}", self.mat_id))
@@ -196,8 +198,6 @@ impl DpuMachine {
             mat_id,
             dpu_info,
             dpu_index,
-            bmc_dhcp_id,
-            machine_dhcp_id,
             join_handle: Mutex::new(Some(join_handle)),
         }))
     }
@@ -340,8 +340,6 @@ struct DpuMachineActor {
     mat_id: Uuid,
     dpu_info: DpuMachineInfo,
     dpu_index: u8,
-    bmc_dhcp_id: Uuid,
-    machine_dhcp_id: Uuid,
     join_handle: Mutex<Option<JoinHandle<()>>>,
 }
 
@@ -363,6 +361,13 @@ impl DpuMachineHandle {
         live_state.is_up
             && (self.0.dpu_info.settings.nic_mode
                 || matches!(live_state.booted_os.0, Some(OsImage::DpuAgent)))
+    }
+
+    /// Whether this DPU's BlueField has flipped to NIC mode (a `Mode.Set` applied
+    /// on a power cycle). The owning host polls this to converge -- detaching its
+    /// DPU DHCP relay -- once a managed DPU becomes a plain NIC.
+    pub fn flipped_to_nic_mode(&self) -> bool {
+        self.0.live_state.read().unwrap().dpu_flipped_to_nic_mode
     }
 
     pub async fn wait_until_machine_up_with_api_state(
@@ -425,8 +430,6 @@ impl DpuMachineHandle {
             settings: self.0.dpu_info.settings.clone(),
             installed_os: self.0.live_state.read().unwrap().installed_os,
             dpu_index: self.0.dpu_index,
-            bmc_dhcp_id: self.0.bmc_dhcp_id,
-            machine_dhcp_id: self.0.machine_dhcp_id,
         }
     }
 

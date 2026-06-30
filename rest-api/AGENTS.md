@@ -191,6 +191,8 @@ verification expectations.
   passwords and other credentials are never returned. Keep OpenAPI
   descriptions focused on the REST contract rather than internal gRPC
   implementation details.
+- API-layer enum-like request constants exposed through JSON use CapitalCase
+  values, for example `SiteWideRoot` and `BMCRoot`.
 
 ### REST endpoints through the Core gRPC proxy
 
@@ -200,7 +202,7 @@ the generic gRPC proxy, follow
 
 ### Prefer range-based iteration over C-style `for` loops
 
-The module is on Go 1.25.11, so reach for range-based iteration before the
+The module is on Go 1.26.4, so reach for range-based iteration before the
 three-clause `for i := 0; i < n; i++` / `i--` form. Range-over-integer and
 range-over-function iterators (`slices.Backward`, `slices.All`,
 `slices.Values`, `maps.Keys`, `maps.Values`, …) drop the manual index

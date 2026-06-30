@@ -88,6 +88,7 @@ pub struct Api {
     pub(crate) metric_emitter: ApiMetricsEmitter,
     pub(crate) component_manager: Option<component_manager::component_manager::ComponentManager>,
     pub(crate) bms_client: OnceLock<Arc<BmsDsxExchangeHandle>>,
+    pub(crate) secrets_context: Option<crate::secrets::SecretsContext>,
 }
 
 pub(crate) type ScoutStreamType =
@@ -1063,6 +1064,13 @@ impl Forge for Api {
         crate::handlers::site_explorer::get_site_exploration_report(self, request).await
     }
 
+    async fn get_site_explorer_last_run(
+        &self,
+        request: Request<()>,
+    ) -> Result<Response<::rpc::site_explorer::SiteExplorerLastRunResponse>, Status> {
+        crate::handlers::site_explorer::get_site_explorer_last_run(self, request).await
+    }
+
     async fn find_explored_endpoint_ids(
         &self,
         request: Request<::rpc::site_explorer::ExploredEndpointSearchFilter>,
@@ -1089,6 +1097,20 @@ impl Forge for Api {
         request: Request<::rpc::site_explorer::ExploredManagedHostsByIdsRequest>,
     ) -> Result<Response<::rpc::site_explorer::ExploredManagedHostList>, Status> {
         crate::handlers::site_explorer::find_explored_managed_hosts_by_ids(self, request).await
+    }
+
+    async fn find_explored_mlx_device_host_ids(
+        &self,
+        request: Request<::rpc::site_explorer::ExploredMlxDeviceHostSearchFilter>,
+    ) -> Result<Response<::rpc::site_explorer::ExploredMlxDeviceHostIdList>, Status> {
+        crate::handlers::site_explorer::find_explored_mlx_device_host_ids(self, request).await
+    }
+
+    async fn find_explored_mlx_devices_by_ids(
+        &self,
+        request: Request<::rpc::site_explorer::ExploredMlxDevicesByIdsRequest>,
+    ) -> Result<Response<::rpc::site_explorer::ExploredMlxDeviceList>, Status> {
+        crate::handlers::site_explorer::find_explored_mlx_devices_by_ids(self, request).await
     }
 
     async fn update_machine_hardware_info(
@@ -1349,6 +1371,13 @@ impl Forge for Api {
         crate::handlers::boot_override::clear(self, request).await
     }
 
+    async fn get_machine_boot_interfaces(
+        &self,
+        request: Request<rpc::GetMachineBootInterfacesRequest>,
+    ) -> Result<Response<rpc::GetMachineBootInterfacesResponse>, Status> {
+        crate::handlers::machine_boot_interfaces::get_machine_boot_interfaces(self, request).await
+    }
+
     async fn get_network_topology(
         &self,
         request: Request<rpc::NetworkTopologyRequest>,
@@ -1442,6 +1471,13 @@ impl Forge for Api {
         request: Request<rpc::CredentialDeletionRequest>,
     ) -> Result<Response<rpc::CredentialDeletionResult>, Status> {
         crate::handlers::credential::delete_credential(self, request).await
+    }
+
+    async fn re_wrap_secrets(
+        &self,
+        request: Request<rpc::ReWrapSecretsRequest>,
+    ) -> Result<Response<rpc::ReWrapSecretsResponse>, Status> {
+        crate::handlers::secrets::re_wrap_secrets(self, request).await
     }
 
     /// get_route_servers returns a list of all configured route server
@@ -2277,6 +2313,13 @@ impl Forge for Api {
         crate::handlers::machine_validation::get_machine_validation_attempt(self, request).await
     }
 
+    async fn heartbeat_machine_validation_run(
+        &self,
+        request: Request<rpc::MachineValidationHeartbeatRequest>,
+    ) -> Result<Response<rpc::MachineValidationHeartbeatResponse>, Status> {
+        crate::handlers::machine_validation::heartbeat_machine_validation_run(self, request).await
+    }
+
     async fn admin_power_control(
         &self,
         request: Request<rpc::AdminPowerControlRequest>,
@@ -2569,6 +2612,13 @@ impl Forge for Api {
         crate::handlers::firmware::get_desired_firmware_versions(self, request)
     }
 
+    async fn upsert_host_firmware_config(
+        &self,
+        request: Request<rpc::UpsertHostFirmwareConfigRequest>,
+    ) -> Result<Response<rpc::HostFirmwareConfigResponse>, Status> {
+        crate::handlers::firmware::upsert_host_firmware_config(self, request).await
+    }
+
     async fn create_sku(
         &self,
         request: Request<rpc::SkuList>,
@@ -2814,7 +2864,7 @@ impl Forge for Api {
         &self,
         request: Request<mlx_device_pb::PublishMlxDeviceReportRequest>,
     ) -> Result<Response<mlx_device_pb::PublishMlxDeviceReportResponse>, Status> {
-        crate::handlers::dpa::publish_mlx_device_report(self, request).await
+        crate::handlers::svpc::publish_mlx_device_report(self, request).await
     }
 
     // Scout is telling carbide the observed status (locking status, card mode) of the
@@ -2823,7 +2873,7 @@ impl Forge for Api {
         &self,
         request: Request<mlx_device_pb::PublishMlxObservationReportRequest>,
     ) -> Result<Response<mlx_device_pb::PublishMlxObservationReportResponse>, Status> {
-        crate::handlers::dpa::publish_mlx_observation_report(self, request).await
+        crate::handlers::svpc::publish_mlx_observation_report(self, request).await
     }
 
     async fn trim_table(

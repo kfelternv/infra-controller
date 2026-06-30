@@ -96,7 +96,12 @@ func testVPCSetupSchema(t *testing.T, dbSession *cdb.Session) {
 func testVPCSiteBuildInfrastructureProvider(t *testing.T, dbSession *cdb.Session, name string, org string, user *cdbm.User) *cdbm.InfrastructureProvider {
 	ipDAO := cdbm.NewInfrastructureProviderDAO(dbSession)
 
-	ip, err := ipDAO.CreateFromParams(context.Background(), nil, name, cutil.GetPtr("Test Infrastructure Provider"), org, nil, user)
+	ip, err := ipDAO.Create(context.Background(), nil, cdbm.InfrastructureProviderCreateInput{
+		Name:        name,
+		DisplayName: cutil.GetPtr("Test Infrastructure Provider"),
+		Org:         org,
+		CreatedBy:   user.ID,
+	})
 	assert.Nil(t, err)
 
 	return ip
@@ -3465,7 +3470,7 @@ func TestDeleteVPCHandler_Handle(t *testing.T) {
 			if tt.args.respCode != http.StatusAccepted {
 				return
 			}
-			assert.Contains(t, rec.Body.String(), "Deletion request was accepted")
+			assertDeletionAcceptedResponse(t, rec.Body.Bytes())
 
 			// Verify VPC in deleting state
 			vpcDAO := cdbm.NewVpcDAO(dbSession)

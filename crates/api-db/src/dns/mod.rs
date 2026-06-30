@@ -21,6 +21,12 @@ pub mod resource_record;
 
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
 
+use ipnetwork::IpNetwork;
+use model::dns::NewDomain;
+use sqlx::PgConnection;
+
+use crate::DatabaseResult;
+
 pub fn normalize_domain(name: &str) -> String {
     let normalized_domain = name.trim_end_matches('.').to_ascii_lowercase();
     tracing::debug!(input = %name, normalized = %normalized_domain, "normalized domain name");
@@ -69,8 +75,189 @@ pub fn arpa_qname_to_ip(qname: &str) -> Option<IpAddr> {
     }
 }
 
+/// Build the reverse-DNS zone name for a network prefix: the network octets
+/// (IPv4) or nibbles (IPv6) the prefix covers, in reverse, under `in-addr.arpa`
+/// / `ip6.arpa`. The forward inverse of [`arpa_qname_to_ip`].
+///
+/// Returns `None` for a prefix that is not octet-aligned (IPv4: /8, /16, /24,
+/// /32) or nibble-aligned (IPv6: a multiple of 4) -- RFC 2317 classless
+/// delegation is out of scope.
+pub fn cidr_to_reverse_zone(prefix: IpNetwork) -> Option<String> {
+    match prefix {
+        IpNetwork::V4(net) => {
+            let bits = net.prefix();
+            if bits == 0 || bits % 8 != 0 {
+                return None;
+            }
+            let octets = net.network().octets();
+            let labels = (bits / 8) as usize;
+            let mut parts: Vec<String> = octets[..labels].iter().rev().map(u8::to_string).collect();
+            parts.push("in-addr.arpa".to_string());
+            Some(parts.join("."))
+        }
+        IpNetwork::V6(net) => {
+            let bits = net.prefix();
+            if bits == 0 || bits % 4 != 0 {
+                return None;
+            }
+            let octets = net.network().octets();
+            let nibbles = (bits / 4) as usize;
+            let mut parts: Vec<String> = (0..nibbles)
+                .map(|i| {
+                    let byte = octets[i / 2];
+                    let nibble = if i % 2 == 0 { byte >> 4 } else { byte & 0x0f };
+                    format!("{nibble:x}")
+                })
+                .collect();
+            parts.reverse();
+            parts.push("ip6.arpa".to_string());
+            Some(parts.join("."))
+        }
+    }
+}
+
+/// Ensure the reverse-DNS zone for a network prefix exists, deriving its name
+/// from the prefix and creating the domain only if it is not already present.
+/// A network's reverse zone is a consequence of the network existing, so this is
+/// called wherever a network segment is created; non-aligned prefixes are skipped
+/// (see [`cidr_to_reverse_zone`]).
+///
+/// The find-then-create avoids duplicating a zone an earlier same-prefix segment
+/// already created (domain names are not unique). It does not need to guard
+/// concurrent creation: network prefixes are globally non-overlapping
+/// (`network_prefixes_prefix_excl`), so two segments never map to the same zone,
+/// and a duplicate prefix fails in `network_segment::save` before this runs.
+pub async fn ensure_reverse_zone(prefix: IpNetwork, txn: &mut PgConnection) -> DatabaseResult<()> {
+    let Some(zone) = cidr_to_reverse_zone(prefix) else {
+        tracing::debug!(%prefix, "no reverse zone: prefix is not octet/nibble aligned");
+        return Ok(());
+    };
+    if domain::find_by_name(&mut *txn, &zone).await?.is_empty() {
+        tracing::info!(zone = %zone, %prefix, "creating reverse-DNS zone for network prefix");
+        domain::persist(NewDomain::new(zone), txn).await?;
+    }
+    Ok(())
+}
+
+/// Remove the reverse-DNS zone derived from a network prefix -- the inverse of
+/// [`ensure_reverse_zone`]. A network's reverse zone exists only because the
+/// network does, so it is dropped wherever a network segment is deleted;
+/// non-aligned prefixes never had a zone and are skipped (see
+/// [`cidr_to_reverse_zone`]).
+///
+/// The zone is soft-deleted, matching the segment's own deletion. No refcount is
+/// needed: network prefixes are globally non-overlapping
+/// (`network_prefixes_prefix_excl`), so the zone has no other owner.
+/// `find_by_name` returns only live domains, so deleting an already-deleted
+/// segment removes nothing a second time.
+pub async fn remove_reverse_zone(prefix: IpNetwork, txn: &mut PgConnection) -> DatabaseResult<()> {
+    let Some(zone) = cidr_to_reverse_zone(prefix) else {
+        tracing::debug!(%prefix, "no reverse zone: prefix is not octet/nibble aligned");
+        return Ok(());
+    };
+    for domain in domain::find_by_name(&mut *txn, &zone).await? {
+        tracing::info!(zone = %zone, %prefix, "removing reverse-DNS zone for deleted network prefix");
+        domain::delete(domain, &mut *txn).await?;
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
+
+    #[test]
+    fn cidr_to_reverse_zone_derives_aligned_prefixes() {
+        use carbide_test_support::value_scenarios;
+
+        value_scenarios!(
+            run = |cidr: &str| super::cidr_to_reverse_zone(cidr.parse().unwrap());
+            "ipv4 octet-aligned" {
+                "10.0.0.0/8" => Some("10.in-addr.arpa".to_string()),
+                "192.168.0.0/16" => Some("168.192.in-addr.arpa".to_string()),
+                "192.0.2.0/24" => Some("2.0.192.in-addr.arpa".to_string()),
+                "192.0.2.1/32" => Some("1.2.0.192.in-addr.arpa".to_string()),
+            }
+            "ipv6 nibble-aligned" {
+                "fd00::/16" => Some("0.0.d.f.ip6.arpa".to_string()),
+                "2001:db8::/32" => Some("8.b.d.0.1.0.0.2.ip6.arpa".to_string()),
+            }
+            "rejects prefixes that are not octet- or nibble-aligned" {
+                "192.168.0.0/25" => None,
+                "fd00::/17" => None,
+                "0.0.0.0/0" => None,
+            }
+        );
+    }
+
+    #[crate::sqlx_test]
+    async fn ensure_reverse_zone_creates_idempotently(pool: sqlx::PgPool) {
+        let mut txn = pool.begin().await.unwrap();
+        let prefix: ipnetwork::IpNetwork = "10.0.0.0/16".parse().unwrap();
+
+        // First call creates the zone; the second is a no-op.
+        super::ensure_reverse_zone(prefix, txn.as_mut())
+            .await
+            .unwrap();
+        super::ensure_reverse_zone(prefix, txn.as_mut())
+            .await
+            .unwrap();
+        let zones = super::domain::find_by_name(txn.as_mut(), "0.10.in-addr.arpa")
+            .await
+            .unwrap();
+        assert_eq!(zones.len(), 1, "reverse zone created exactly once");
+
+        // A non-aligned prefix derives no zone, so nothing is created.
+        let unaligned: ipnetwork::IpNetwork = "10.1.0.0/25".parse().unwrap();
+        super::ensure_reverse_zone(unaligned, txn.as_mut())
+            .await
+            .unwrap();
+        assert!(super::cidr_to_reverse_zone(unaligned).is_none());
+    }
+
+    #[crate::sqlx_test]
+    async fn remove_reverse_zone_deletes_the_zone(pool: sqlx::PgPool) {
+        let mut txn = pool.begin().await.unwrap();
+        let prefix: ipnetwork::IpNetwork = "10.0.0.0/16".parse().unwrap();
+
+        // A network's zone is dropped when the network is deleted.
+        super::ensure_reverse_zone(prefix, txn.as_mut())
+            .await
+            .unwrap();
+        super::remove_reverse_zone(prefix, txn.as_mut())
+            .await
+            .unwrap();
+        let zones = super::domain::find_by_name(txn.as_mut(), "0.10.in-addr.arpa")
+            .await
+            .unwrap();
+        assert!(zones.is_empty(), "reverse zone removed with its network");
+
+        // Removing again finds no live zone, so deleting a segment twice is a no-op.
+        super::remove_reverse_zone(prefix, txn.as_mut())
+            .await
+            .unwrap();
+        let after_second = super::domain::find_by_name(txn.as_mut(), "0.10.in-addr.arpa")
+            .await
+            .unwrap();
+        assert!(after_second.is_empty(), "repeated removal stays a no-op");
+
+        // Removing a non-aligned prefix (which never had a zone) leaves other zones intact.
+        let control: ipnetwork::IpNetwork = "10.2.0.0/16".parse().unwrap();
+        super::ensure_reverse_zone(control, txn.as_mut())
+            .await
+            .unwrap();
+        let unaligned: ipnetwork::IpNetwork = "10.1.0.0/25".parse().unwrap();
+        super::remove_reverse_zone(unaligned, txn.as_mut())
+            .await
+            .unwrap();
+        let control_zones = super::domain::find_by_name(txn.as_mut(), "2.10.in-addr.arpa")
+            .await
+            .unwrap();
+        assert_eq!(
+            control_zones.len(),
+            1,
+            "removing an unaligned prefix touches no other zone"
+        );
+    }
 
     #[test]
     fn test_normalize_domain_name() {

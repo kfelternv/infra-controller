@@ -16,6 +16,7 @@
  */
 
 pub mod api;
+pub mod astra;
 pub mod attestation;
 pub mod bmc_endpoint_explorer;
 pub mod bmc_metadata;
@@ -46,6 +47,7 @@ pub mod instance;
 pub mod instance_type;
 pub mod logical_partition;
 pub mod machine;
+pub mod machine_boot_interfaces;
 pub mod machine_discovery;
 pub mod machine_hardware_info;
 pub mod machine_identity;
@@ -73,9 +75,11 @@ pub mod redfish;
 pub mod resource_pool;
 pub mod route_server;
 pub mod scout_stream;
+pub mod secrets;
 pub mod site_explorer;
 pub mod sku;
 pub mod spx_partition;
+pub mod svpc;
 pub mod switch;
 pub mod tenant;
 pub mod tenant_identity_config;

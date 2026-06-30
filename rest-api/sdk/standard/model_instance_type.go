@@ -34,8 +34,7 @@ type InstanceType struct {
 	// ID of the Infrastructure Provider that owns the Instance Type
 	InfrastructureProviderId *string `json:"infrastructureProviderId,omitempty"`
 	// ID of the Site that owns the Instance Type
-	SiteId *string `json:"siteId,omitempty"`
-	// User-defined key-value labels for the Instance Type
+	SiteId *string           `json:"siteId,omitempty"`
 	Labels map[string]string `json:"labels,omitempty"`
 	// List of capabilities that are supported by the Machine's of this Instance Type
 	MachineCapabilities []MachineCapability `json:"machineCapabilities,omitempty"`
@@ -47,7 +46,7 @@ type InstanceType struct {
 	Status *InstanceTypeStatus `json:"status,omitempty"`
 	// Chronological status history for the Instance Type
 	StatusHistory []StatusDetail `json:"statusHistory,omitempty"`
-	// Deprecation notices for fields returned by this resource
+	// Deprecations active for this resource. Returned only if there are active deprecations.
 	Deprecations []Deprecation `json:"deprecations,omitempty"`
 	// Date/time when the InstanceType was created
 	Created *time.Time `json:"created,omitempty"`

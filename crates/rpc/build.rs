@@ -316,6 +316,26 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             "#[derive(serde::Serialize)]",
         )
         .type_attribute(
+            "forge.GetMachineBootInterfacesResponse",
+            "#[derive(serde::Serialize)]",
+        )
+        .type_attribute(
+            "forge.MachineInterfaceBootInterface",
+            "#[derive(serde::Serialize)]",
+        )
+        .type_attribute(
+            "forge.PredictedBootInterface",
+            "#[derive(serde::Serialize)]",
+        )
+        .type_attribute(
+            "forge.ExploredBootInterface",
+            "#[derive(serde::Serialize)]",
+        )
+        .type_attribute(
+            "forge.RetainedBootInterface",
+            "#[derive(serde::Serialize)]",
+        )
+        .type_attribute(
             "forge.RoutingProfile",
             "#[derive(serde::Serialize)]",
         )
@@ -323,6 +343,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             "forge.PrefixFilterPolicyEntry",
             "#[derive(serde::Serialize)]",
         )
+        .type_attribute("forge.AstraConfig", "#[derive(serde::Serialize)]")
+        .type_attribute("forge.AstraAttachment", "#[derive(serde::Serialize)]")
+        .type_attribute("forge.AstraConfigStatus", "#[derive(serde::Serialize)]")
+        .type_attribute("forge.AstraAttachmentStatus", "#[derive(serde::Serialize)]")
+        .type_attribute("forge.AstraStatus", "#[derive(serde::Serialize)]")
+        .type_attribute("forge.AstraPhase", "#[derive(serde::Serialize)]")
         .type_attribute("forge.TrafficInterceptConfig", "#[derive(serde::Serialize)]")
         .type_attribute("forge.TrafficInterceptBridging", "#[derive(serde::Serialize)]")
         .type_attribute("forge.HostRepresentorInterceptBridging", "#[derive(serde::Serialize)]")
@@ -942,6 +968,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         .type_attribute("forge.CreateComputeAllocationRequest", derive_prost_builder)
         .type_attribute("forge.UpdateComputeAllocationRequest", derive_prost_builder)
         .type_attribute("forge.DeleteComputeAllocationRequest", derive_prost_builder)
+        .type_attribute(
+            "forge.InstanceNetworkAutoConfig",
+            "#[derive(serde::Serialize)]",
+        )
         .build_server(true)
         .build_client(true)
         .protoc_arg("--experimental_allow_proto3_optional")

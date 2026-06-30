@@ -23,10 +23,10 @@ use std::net::{IpAddr, SocketAddr};
 use std::panic::Location;
 use std::sync::Arc;
 use std::sync::atomic::Ordering;
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 use carbide_firmware::{FirmwareConfig, FirmwareConfigSnapshot};
-use carbide_network::sanitized_mac;
+use carbide_network::{is_locally_administered_mac, sanitized_mac};
 use carbide_redfish::libredfish::conv::IntoModel;
 use carbide_secrets::credentials::CredentialManager;
 use carbide_utils::periodic_timer::PeriodicTimer;
@@ -34,12 +34,13 @@ use carbide_uuid::machine::MachineType;
 use carbide_uuid::power_shelf::{PowerShelfIdSource, PowerShelfType};
 use chrono::Utc;
 use config::SiteExplorerConfig;
-use db::{self, DatabaseError, ObjectFilter, Transaction, machine, power_shelf as db_power_shelf};
+use db::{self, DatabaseError, Transaction, machine, power_shelf as db_power_shelf};
 use futures_util::stream::FuturesUnordered;
 use futures_util::{StreamExt, TryFutureExt};
 use itertools::Itertools;
 use librms::RmsApi;
 use mac_address::MacAddress;
+use model::errors::OperatorError;
 use model::expected_entity::ExpectedEntity;
 use model::expected_power_shelf::ExpectedPowerShelf;
 use model::machine::MachineInterfaceSnapshot;
@@ -52,7 +53,8 @@ use model::resource_pool::common::CommonPools;
 use model::site_explorer::{
     EndpointExplorationError, EndpointExplorationReport, EndpointType, ExploredDpu,
     ExploredEndpoint, ExploredManagedHost, ExploredManagedSwitch, MachineExpectation, NicMode,
-    PowerState, PreingestionState, Service, is_bf3_dpu, is_bf3_supernic, is_bluefield_model,
+    PowerState, PreingestionState, Service, SiteExplorerLastRun, is_bf3_dpu_part_number,
+    is_bf3_supernic_part_number, is_bluefield_part_number,
 };
 use sqlx::PgPool;
 use tokio::task::JoinSet;
@@ -65,7 +67,7 @@ mod credentials;
 mod metrics;
 #[cfg(any(test, feature = "test-support"))]
 pub mod test_support;
-pub use metrics::SiteExplorationMetrics;
+pub use metrics::{SiteExplorationMetrics, site_explorer_latency_histogram_view};
 mod bmc_endpoint_explorer;
 mod redfish;
 pub use bmc_endpoint_explorer::BmcEndpointExplorer;
@@ -76,8 +78,9 @@ pub use machine_creator::MachineCreator;
 pub mod explored_endpoint_index;
 mod managed_host;
 use db::ObjectColumnFilter;
-use db::work_lock_manager::{AcquireLockError, WorkLockManagerHandle};
+use db::work_lock_manager::WorkLockManagerHandle;
 pub use managed_host::is_endpoint_in_managed_host;
+use model::DpuModel;
 use model::expected_machine::DpuMode;
 use model::firmware::FirmwareComponentType;
 use model::machine_interface_address::MachineInterfaceAssociation;
@@ -106,6 +109,7 @@ pub fn new_bmc_explorer(
     credential_manager: Arc<dyn CredentialManager>,
     rotate_switch_nvos_credentials: Arc<AtomicBool>,
     mode: SiteExplorerExploreMode,
+    database_connection: PgPool,
 ) -> Arc<BmcEndpointExplorer> {
     BmcEndpointExplorer::new(
         redfish_client_pool,
@@ -114,6 +118,7 @@ pub fn new_bmc_explorer(
         credential_manager,
         rotate_switch_nvos_credentials,
         mode,
+        Some(database_connection),
     )
     .into()
 }
@@ -235,6 +240,20 @@ pub struct Endpoint<'a> {
     pause_ingestion_and_poweron: bool,
 }
 
+#[derive(Clone, Copy, Debug, Default)]
+struct EndpointExplorationStepDurations {
+    redfish_explore: Duration,
+    failure_context_load: Option<Duration>,
+    report_enrich: Option<Duration>,
+}
+
+struct EndpointExplorationTaskResult<'a> {
+    endpoint: Endpoint<'a>,
+    result: Result<EndpointExplorationReport, EndpointExplorationError>,
+    exploration_duration: Duration,
+    steps: EndpointExplorationStepDurations,
+}
+
 impl Display for Endpoint<'_> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(f, "{}", self.address)
@@ -251,14 +270,6 @@ impl<'a> Endpoint<'a> {
 }
 
 pub type SiteIdentifiedHosts = Vec<(ExploredManagedHost, EndpointExplorationReport)>;
-
-/// Work-lock key for a single endpoint exploration.
-///
-/// Both the site-explorer loop (`update_explored_endpoints`) and the adhoc
-/// `RefreshEndpointReport` handler acquire this key before probing Redfish.
-pub fn endpoint_exploration_work_key(bmc_ip: IpAddr) -> String {
-    format!("SiteExplorer::endpoint_exploration::{bmc_ip}")
-}
 
 /// The SiteExplorer periodically runs [modules](machine_update_module::MachineUpdateModule) to initiate upgrades of machine components.
 /// On each iteration the SiteExplorer will:
@@ -284,6 +295,7 @@ pub struct SiteExplorer {
 
 impl SiteExplorer {
     const ITERATION_WORK_KEY: &'static str = "SiteExplorer::run_single_iteration";
+    const SITE_EXPLORER_HEALTH_REPORT_WRITE_BATCH_SIZE: usize = 500;
 
     #[allow(clippy::too_many_arguments)]
     pub fn new(
@@ -387,7 +399,89 @@ impl SiteExplorer {
         db::Transaction::begin_with_location(&self.database_connection, loc).map_err(Into::into)
     }
 
+    fn last_run_status(
+        started_at: chrono::DateTime<Utc>,
+        finished_at: chrono::DateTime<Utc>,
+        metrics: &SiteExplorationMetrics,
+        result: &SiteExplorerResult<SiteIdentifiedHosts>,
+    ) -> SiteExplorerLastRun {
+        let failure_category = result.as_ref().err().map(Self::run_failure_category);
+        SiteExplorerLastRun {
+            started_at,
+            finished_at,
+            success: result.is_ok(),
+            error: result.as_ref().err().map(Self::operator_error_message),
+            failure_category,
+            endpoint_explorations: metrics.endpoint_explorations as i64,
+            endpoint_explorations_success: metrics.endpoint_explorations_success as i64,
+            endpoint_explorations_failed: metrics
+                .endpoint_explorations_failures_by_type
+                .values()
+                .sum::<usize>() as i64,
+            last_successful_finished_at: result.is_ok().then_some(finished_at),
+            last_failed_finished_at: result.is_err().then_some(finished_at),
+        }
+    }
+
+    fn run_failure_category(error: &SiteExplorerError) -> String {
+        match error {
+            SiteExplorerError::DatabaseError(_) => "database_error",
+            SiteExplorerError::ModelError(_) => "model_error",
+            SiteExplorerError::AlreadyFoundError { .. } => "already_found",
+            SiteExplorerError::NotFoundError { .. } => "not_found",
+            SiteExplorerError::InvalidArgument(_) => "invalid_argument",
+            SiteExplorerError::EndpointExplorationError { err, .. } => {
+                return exploration_error_to_metric_label(err);
+            }
+            SiteExplorerError::Internal { .. } => "internal",
+        }
+        .to_string()
+    }
+
+    fn operator_error_message(error: &SiteExplorerError) -> String {
+        match error {
+            SiteExplorerError::EndpointExplorationError {
+                err:
+                    EndpointExplorationError::MissingCredentials { .. }
+                    | EndpointExplorationError::SetCredentials { .. },
+                ..
+            } => "Site Explorer credentials are missing or invalid".to_string(),
+            SiteExplorerError::EndpointExplorationError {
+                err: EndpointExplorationError::SecretsEngineError { .. },
+                ..
+            } => "Site Explorer could not access credentials".to_string(),
+            _ => error.to_string(),
+        }
+    }
+
+    fn record_run_status_metric(
+        metrics: &mut SiteExplorationMetrics,
+        result: &SiteExplorerResult<SiteIdentifiedHosts>,
+    ) {
+        metrics.run_failure_category = result.as_ref().err().map(Self::run_failure_category);
+    }
+
+    async fn record_last_run(&self, last_run: &SiteExplorerLastRun) -> SiteExplorerResult<()> {
+        let mut txn = self.txn_begin().await?;
+        db::site_explorer_run_status::upsert(&mut txn, last_run).await?;
+        txn.commit().await?;
+        Ok(())
+    }
+
+    async fn record_last_run_result(
+        &self,
+        started_at: chrono::DateTime<Utc>,
+        metrics: &SiteExplorationMetrics,
+        result: &SiteExplorerResult<SiteIdentifiedHosts>,
+    ) {
+        let last_run = Self::last_run_status(started_at, Utc::now(), metrics, result);
+        if let Err(error) = self.record_last_run(&last_run).await {
+            tracing::error!(%error, "Failed to record SiteExplorer last run status");
+        }
+    }
+
     pub async fn run_single_iteration(&self) -> SiteExplorerResult<SiteIdentifiedHosts> {
+        let started_at = Utc::now();
         let mut metrics = SiteExplorationMetrics::new();
 
         let _work_lock = match self
@@ -397,9 +491,14 @@ impl SiteExplorer {
         {
             Ok(lock) => lock,
             Err(e) => {
-                return Err(SiteExplorerError::internal(format!(
+                let result = Err(SiteExplorerError::internal(format!(
                     "Failed to acquire connection: {e}"
                 )));
+                Self::record_run_status_metric(&mut metrics, &result);
+                self.record_last_run_result(started_at, &metrics, &result)
+                    .await;
+                self.metric_holder.update_metrics(metrics);
+                return result;
             }
         };
 
@@ -467,6 +566,10 @@ impl SiteExplorer {
             }
         }
 
+        Self::record_run_status_metric(&mut metrics, &res);
+        self.record_last_run_result(started_at, &metrics, &res)
+            .await;
+
         // Cache all other metrics that have been captured in this iteration.
         // Those will be queried by OTEL on demand
         self.metric_holder.update_metrics(metrics);
@@ -484,6 +587,7 @@ impl SiteExplorer {
         metrics: &mut SiteExplorationMetrics,
         expected_endpoint_index: &ExploredEndpointIndex,
     ) -> SiteExplorerResult<()> {
+        let audit_load_start = Instant::now();
         let mut txn = self.txn_begin().await?;
 
         // Grab them all because we care about everything,
@@ -492,6 +596,29 @@ impl SiteExplorer {
         let explored_managed_hosts = db::explored_managed_host::find_all(txn.as_pgconn()).await?;
 
         txn.rollback().await?;
+        metrics.record_phase_latency("audit_load", audit_load_start.elapsed());
+
+        let bmc_endpoint_addresses = explored_endpoints
+            .iter()
+            .filter(|ep| ep.report.endpoint_type == EndpointType::Bmc)
+            .map(|ep| ep.address)
+            .collect_vec();
+        let audit_state_load_start = Instant::now();
+        let mut txn = self.txn_begin().await?;
+        let machine_audit_states = db::machine::find_site_explorer_machine_audit_states_by_bmc_ips(
+            &mut txn,
+            &bmc_endpoint_addresses,
+        )
+        .await?;
+        txn.rollback().await?;
+        metrics.record_phase_latency("audit_state_load", audit_state_load_start.elapsed());
+        let machine_audit_states: HashMap<IpAddr, db::machine::SiteExplorerMachineAuditState> =
+            machine_audit_states
+                .into_iter()
+                .map(|state| (state.bmc_ip, state))
+                .collect();
+        let mut pending_health_report_updates = Vec::new();
+        let audit_compute_start = Instant::now();
 
         // Go through all the explored endpoints and collect metrics and submit
         // health reports
@@ -502,27 +629,10 @@ impl SiteExplorer {
             }
 
             // We need to find the last health report for the endpoint in order to update it with latest health data
-            let mut txn = self.txn_begin().await?;
-            let machine_id = db::machine::find_id_by_bmc_ip(&mut txn, &ep.address).await?;
-            let machine = match machine_id.as_ref() {
-                Some(id) => db::machine::find(
-                    &mut txn,
-                    ObjectFilter::One(*id),
-                    MachineSearchConfig {
-                        include_dpus: true,
-                        include_predicted_host: true,
-                        ..Default::default()
-                    },
-                )
-                .await?
-                .into_iter()
-                .next(),
-                None => None,
-            };
-
-            let previous_health_report = machine
-                .as_ref()
-                .and_then(|machine| machine.site_explorer_health_report());
+            let machine_audit_state = machine_audit_states.get(&ep.address);
+            let machine_id = machine_audit_state.map(|state| state.machine_id);
+            let previous_health_report =
+                machine_audit_state.and_then(|state| state.site_explorer_health_report.as_ref());
             let mut new_health_report: health_report::HealthReport =
                 health_report::HealthReport::empty(
                     health_report::HealthReport::SITE_EXPLORER_SOURCE.to_string(),
@@ -650,13 +760,29 @@ impl SiteExplorer {
             }
 
             new_health_report.update_in_alert_since(previous_health_report);
-            if let Some(id) = machine_id.as_ref() {
-                db::machine::update_site_explorer_health_report(&mut txn, id, &new_health_report)
+            if let Some(id) = machine_id
+                && site_explorer_health_report_needs_update(
+                    previous_health_report,
+                    &new_health_report,
+                )
+            {
+                pending_health_report_updates.push((id, new_health_report));
+            }
+        }
+        metrics.record_phase_latency("audit_compute", audit_compute_start.elapsed());
+
+        let audit_write_start = Instant::now();
+        for health_report_updates in
+            pending_health_report_updates.chunks(Self::SITE_EXPLORER_HEALTH_REPORT_WRITE_BATCH_SIZE)
+        {
+            let mut txn = self.txn_begin().await?;
+            for (id, health_report) in health_report_updates {
+                db::machine::update_site_explorer_health_report(txn.as_pgconn(), id, health_report)
                     .await?;
             }
-
             txn.commit().await?;
         }
+        metrics.record_phase_latency("audit_write", audit_write_start.elapsed());
 
         // Count the total number of explored managed hosts
         for explored_managed_host in explored_managed_hosts {
@@ -676,7 +802,13 @@ impl SiteExplorer {
         metrics: &mut SiteExplorationMetrics,
     ) -> SiteExplorerResult<SiteIdentifiedHosts> {
         self.check_preconditions(metrics).await?;
+
+        let update_explored_endpoints_start = Instant::now();
         let expected_endpoint_index = self.update_explored_endpoints(metrics).await?;
+        metrics.record_phase_latency(
+            "update_explored_endpoints",
+            update_explored_endpoints_start.elapsed(),
+        );
 
         // Create a list of DPUs and hosts that site explorer should try to ingest. Site explorer uses the following criteria to determine whether
         // to ingest a given endpoint (creating a managed host containing the endpoint and adding it to the state machine):
@@ -685,7 +817,12 @@ impl SiteExplorer {
         // If site explorer is unable to retrieve this mac address, there is no point in creating a managed host: we will not be able to configure the host appropriately.
         // 2b) If the endpoint is for a host: make sure that the host is on and that infinite boot is enabled. Otherwise, we will not be able to provision the DPU appropriately
         // once we create a managed host and add it to the state machine.
+        let identify_machines_to_ingest_start = Instant::now();
         let (explored_dpus, explored_hosts) = self.identify_machines_to_ingest(metrics).await?;
+        metrics.record_phase_latency(
+            "identify_machines_to_ingest",
+            identify_machines_to_ingest_start.elapsed(),
+        );
 
         // Note/TODO:
         // Since we generate the managed-host pair in a different transaction than endpoint discovery,
@@ -693,6 +830,7 @@ impl SiteExplorer {
         // This is improvable
         // However since host information rarely changes (we never reassign MachineInterfaces),
         // this should be ok. The most noticeable effect is that ManagedHost population might be delayed a bit.
+        let identify_managed_hosts_start = Instant::now();
         let mut identified_hosts = self
             .identify_managed_hosts(
                 metrics,
@@ -701,45 +839,70 @@ impl SiteExplorer {
                 explored_hosts,
             )
             .await?;
+        metrics.record_phase_latency(
+            "identify_managed_hosts",
+            identify_managed_hosts_start.elapsed(),
+        );
 
         if self.config.create_machines.load(Ordering::Relaxed) {
-            let start_create_machines = std::time::Instant::now();
+            let start_create_machines = Instant::now();
             let create_machines_res = self
                 .machine_creator
                 .create_machines(metrics, &mut identified_hosts, &expected_endpoint_index)
                 .await;
-            metrics.create_machines_latency = Some(start_create_machines.elapsed());
+            let create_machines_latency = start_create_machines.elapsed();
+            metrics.create_machines_latency = Some(create_machines_latency);
+            metrics.record_phase_latency("create_machines", create_machines_latency);
             create_machines_res?;
         }
 
         // Identify and create power shelves
+        let identify_power_shelves_to_ingest_start = Instant::now();
         let explored_power_shelves = self.identify_power_shelves_to_ingest().await?;
+        metrics.record_phase_latency(
+            "identify_power_shelves_to_ingest",
+            identify_power_shelves_to_ingest_start.elapsed(),
+        );
 
         if self.config.create_power_shelves.load(Ordering::Relaxed) {
-            let start_create_power_shelves = std::time::Instant::now();
+            let start_create_power_shelves = Instant::now();
             let create_power_shelves_res = self
                 .create_power_shelves(metrics, explored_power_shelves, &expected_endpoint_index)
                 .await;
-            metrics.create_power_shelves_latency = Some(start_create_power_shelves.elapsed());
+            let create_power_shelves_latency = start_create_power_shelves.elapsed();
+            metrics.create_power_shelves_latency = Some(create_power_shelves_latency);
+            metrics.record_phase_latency("create_power_shelves", create_power_shelves_latency);
             create_power_shelves_res?;
         }
 
         // Identify and create switches
+        let identify_switches_to_ingest_start = Instant::now();
         let explored_switches = self.identify_switches_to_ingest().await?;
+        metrics.record_phase_latency(
+            "identify_switches_to_ingest",
+            identify_switches_to_ingest_start.elapsed(),
+        );
 
         if self.config.create_switches.load(Ordering::Relaxed) {
-            let start_create_switches = std::time::Instant::now();
+            let start_create_switches = Instant::now();
             let create_switches_res = self
                 .switch_creator
                 .create_switches(metrics, &explored_switches, &expected_endpoint_index)
                 .await;
-            metrics.create_switches_latency = Some(start_create_switches.elapsed());
+            let create_switches_latency = start_create_switches.elapsed();
+            metrics.create_switches_latency = Some(create_switches_latency);
+            metrics.record_phase_latency("create_switches", create_switches_latency);
             create_switches_res?;
         }
 
         // Audit after everything has been explored, identified, and created.
+        let audit_exploration_results_start = Instant::now();
         self.audit_exploration_results(metrics, &expected_endpoint_index)
             .await?;
+        metrics.record_phase_latency(
+            "audit_exploration_results",
+            audit_exploration_results_start.elapsed(),
+        );
 
         // Retained boot interface records that aged out of the configured
         // window are already ignored at read time; sweep them once per pass
@@ -1024,17 +1187,14 @@ impl SiteExplorer {
                 .map(|em| em.data.dpu_mode);
             DpuMode::resolve(declared, site_dpu_mode)
         };
-        // Match HOST and DPU using SerialNumber.
-        // Compare DPU system.serial_number with HOST chassis.network_adapters[].serial_number
+        // Match HOST and DPU using the serial Redfish reports for the same
+        // physical card. BF4 does not expose that serial on the DPU system
+        // object, so this uses `EndpointExplorationReport::dpu_pairing_serial_number`
+        // rather than reading `systems[0].serial_number` directly.
         let mut dpu_sn_to_endpoint = HashMap::new();
         for (_, ep) in explored_dpus {
-            if let Some(sn) = ep
-                .report
-                .systems
-                .first()
-                .and_then(|system| system.serial_number.as_ref())
-            {
-                dpu_sn_to_endpoint.insert(sn.trim().to_string(), ep);
+            if let Some(sn) = ep.report.dpu_pairing_serial_number() {
+                dpu_sn_to_endpoint.insert(sn.to_string(), ep);
             }
         }
 
@@ -1080,7 +1240,7 @@ impl SiteExplorer {
 
             // Resolve the operator-declared DPU mode for this host once;
             // it drives both auto-correction (`check_and_configure_dpu_mode`
-            // below -- operator override wins over BF3 model heuristics)
+            // below -- operator override wins over BF3 part-number heuristics)
             // and the post-match attach decision (NicMode/NoDpu hosts emit
             // a bare managed host regardless of what matched).
             let host_dpu_mode = effective_mode(&ep.address);
@@ -1127,14 +1287,33 @@ impl SiteExplorer {
                 }
             }
 
-            // A DPU can show up as a chassis network adapter instead of a PCIe
-            // device on some BMCs; fall back to those only if the PCIe scan found none.
+            // A DPU can show up as a chassis instead of a PCIe device on some
+            // BMCs; fall back to the chassis inventory only if the PCIe scan
+            // found none.
             if dpu_exploration.expected_managed_total() == 0 {
                 for chassis in ep.report.chassis.iter() {
-                    for network_adapter in chassis.network_adapters.iter() {
+                    // Some BMCs (e.g. the AMI/Lenovo GB300 host BMC) report the
+                    // BlueField as the chassis object itself -- model, part_number
+                    // and serial_number live on the chassis, while its nested
+                    // network adapter carries an empty serial. Match on the
+                    // chassis identity in that case; otherwise fall back to the
+                    // chassis's network adapters (other vendors put the DPU
+                    // serial there). Matching only one of the two per chassis
+                    // keeps a single DPU from being counted twice.
+                    let chassis_is_bluefield = chassis
+                        .part_number
+                        .as_deref()
+                        .map(str::trim)
+                        .is_some_and(is_bluefield_part_number);
+                    let chassis_has_serial = chassis
+                        .serial_number
+                        .as_deref()
+                        .map(str::trim)
+                        .is_some_and(|serial| !serial.is_empty());
+                    if chassis_is_bluefield && chassis_has_serial {
                         self.record_host_dpu_device(
-                            network_adapter.part_number.as_deref(),
-                            network_adapter.serial_number.as_deref(),
+                            chassis.part_number.as_deref(),
+                            chassis.serial_number.as_deref(),
                             &dpu_sn_to_endpoint,
                             host_dpu_mode,
                             &ep,
@@ -1142,6 +1321,19 @@ impl SiteExplorer {
                             metrics,
                         )
                         .await;
+                    } else {
+                        for network_adapter in chassis.network_adapters.iter() {
+                            self.record_host_dpu_device(
+                                network_adapter.part_number.as_deref(),
+                                network_adapter.serial_number.as_deref(),
+                                &dpu_sn_to_endpoint,
+                                host_dpu_mode,
+                                &ep,
+                                &mut dpu_exploration,
+                                metrics,
+                            )
+                            .await;
+                        }
                     }
                 }
             }
@@ -1168,18 +1360,13 @@ impl SiteExplorer {
                 {
                     for dpu_sn in &expected_machine.data.fallback_dpu_serial_numbers {
                         if let Some(dpu_ep) = dpu_sn_to_endpoint.remove(dpu_sn.as_str()) {
-                            // Enforce the host's declared DPU mode on a fallback-serial
-                            // match the same way the host-reported path does, rather than
-                            // trusting it as already-configured. A DPU still in the wrong
-                            // mode gets a `set_nic_mode` here and has to wait for the host
-                            // reset to apply it; without this, a DPU-mode BlueField on a
-                            // `NicMode` host would be attached and then dropped to zero-DPU
-                            // (the `NicMode` arm further down), leaving the database reading
-                            // "NIC-mode host" while the hardware stayed in DPU mode.
+                            // Fallback matching has only the expected serial and the
+                            // discovered DPU BMC report; pass the DPU's own part number
+                            // for the legacy BF3 heuristic.
                             let mode_check = Some(
                                 self.check_and_configure_dpu_mode(
                                     &dpu_ep,
-                                    dpu_ep.report.model().unwrap_or_default(),
+                                    dpu_ep.report.dpu_part_number(),
                                     host_dpu_mode,
                                     metrics,
                                 )
@@ -1501,7 +1688,10 @@ impl SiteExplorer {
     ) {
         // Count every DPU the host reports, independent of whether we've
         // discovered its BMC yet.
-        if part_number.map(str::trim).is_some_and(is_bluefield_model) {
+        if part_number
+            .map(str::trim)
+            .is_some_and(is_bluefield_part_number)
+        {
             exploration.reported_total += 1;
         }
 
@@ -1517,18 +1707,10 @@ impl SiteExplorer {
 
         // Resolve the DPU's mode against what the host declared. This is the only
         // I/O, and may issue a `set_nic_mode` (in which case it returns `Ok(false)`).
-        let mode_check = match part_number {
-            Some(model) => Some(
-                self.check_and_configure_dpu_mode(
-                    dpu_ep,
-                    model.to_string(),
-                    host_dpu_mode,
-                    metrics,
-                )
+        let mode_check = Some(
+            self.check_and_configure_dpu_mode(dpu_ep, part_number, host_dpu_mode, metrics)
                 .await,
-            ),
-            None => None,
-        };
+        );
 
         match classify_matched_dpu(dpu_ep, host_ep, mode_check) {
             DiscoveredDpu::RunningAsDpu(dpu) => exploration.running_as_dpu.push(dpu),
@@ -1611,13 +1793,17 @@ impl SiteExplorer {
         self.endpoint_explorer
             .check_preconditions(metrics)
             .await
-            .map_err(|e| SiteExplorerError::internal(e.to_string()))
+            .map_err(|err| SiteExplorerError::EndpointExplorationError {
+                action: "check_preconditions",
+                err,
+            })
     }
 
     async fn update_explored_endpoints(
         &self,
         metrics: &mut SiteExplorationMetrics,
     ) -> SiteExplorerResult<ExploredEndpointIndex> {
+        let load_start = Instant::now();
         let mut txn = self.txn_begin().await?;
 
         let underlay_segments =
@@ -1641,6 +1827,22 @@ impl SiteExplorer {
         let skus = db::sku::find(&mut txn, &sku_ids).await?;
 
         txn.commit().await?;
+        metrics.record_phase_latency("update_explored_endpoints_load", load_start.elapsed());
+
+        let explored_endpoint_count = explored_endpoints.len();
+        let expected_switch_count = expected_switches.len();
+        let expected_machine_count = expected_machines.len();
+        let expected_power_shelf_count = expected_power_shelves.len();
+        metrics.record_update_explored_endpoints_count(
+            "explored_endpoints_loaded",
+            explored_endpoint_count,
+        );
+        metrics.record_update_explored_endpoints_count("expected_switches", expected_switch_count);
+        metrics.record_update_explored_endpoints_count("expected_machines", expected_machine_count);
+        metrics.record_update_explored_endpoints_count(
+            "expected_power_shelves",
+            expected_power_shelf_count,
+        );
 
         // Create a map of sku_id -> device_type for quick lookup
         let sku_device_types: HashMap<String, Option<String>> = skus
@@ -1654,6 +1856,7 @@ impl SiteExplorer {
         // path that materializes static reservations for IPs that don't reach
         // `discover_dhcp` (devices on the static-assignments segment, devices not yet powered
         // on, etc.), and a belt-and-suspenders for the in-network case too.
+        let preallocate_start = Instant::now();
         for expected_machine in &expected_machines {
             let device_type = expected_machine
                 .data
@@ -1747,6 +1950,10 @@ impl SiteExplorer {
                 .await;
             }
         }
+        metrics.record_phase_latency(
+            "update_explored_endpoints_preallocate",
+            preallocate_start.elapsed(),
+        );
 
         let expected_count = expected_machines.len();
 
@@ -1761,9 +1968,16 @@ impl SiteExplorer {
         // Get all underlay interfaces from the database, which includes interfaces
         // which have come from both DHCP and/or static assignments. Fetched here, after the
         // preallocate loops above, so we see any freshly preallocated rows from this iteration.
+        let interface_load_start = Instant::now();
         let mut txn = self.txn_begin().await?;
         let interfaces = db::machine_interface::find_all(&mut txn).await?;
         txn.commit().await?;
+        metrics.record_phase_latency(
+            "update_explored_endpoints_interface_load",
+            interface_load_start.elapsed(),
+        );
+
+        let build_index_start = Instant::now();
         let underlay_interfaces: Vec<MachineInterfaceSnapshot> = interfaces
             .into_iter()
             .filter(|iface| {
@@ -1771,6 +1985,11 @@ impl SiteExplorer {
                     && (iface.machine_id.is_none() || iface.interface_type == InterfaceType::Bmc)
             })
             .collect();
+        let underlay_interface_count = underlay_interfaces.len();
+        metrics.record_update_explored_endpoints_count(
+            "underlay_interfaces",
+            underlay_interface_count,
+        );
 
         // Start an index of all underlay interfaces, expected machines, expected power shelves, and expected switches.
         let index = ExploredEndpointIndex::builder(explored_endpoints, underlay_interfaces)
@@ -1778,10 +1997,15 @@ impl SiteExplorer {
             .with_expected_switches(expected_switches)
             .with_expected_power_shelves(expected_power_shelves)
             .build();
+        metrics.record_phase_latency(
+            "update_explored_endpoints_build_index",
+            build_index_start.elapsed(),
+        );
 
         // If a previously explored endpoint is not part of `MachineInterfaces` anymore,
         // we can delete knowledge about it. Otherwise we might try to refresh the
         // information about the endpoint
+        let plan_start = Instant::now();
         let mut delete_endpoints = Vec::new();
         let mut priority_update_endpoints = Vec::new();
         let mut update_endpoints = Vec::with_capacity(index.explored_endpoints().len());
@@ -1803,18 +2027,39 @@ impl SiteExplorer {
                 }
             }
         }
+        metrics.record_update_explored_endpoints_count(
+            "priority_update_candidates",
+            priority_update_endpoints.len(),
+        );
+        metrics.record_update_explored_endpoints_count(
+            "routine_update_candidates",
+            update_endpoints.len(),
+        );
+        metrics.record_update_explored_endpoints_count(
+            "stale_delete_candidates",
+            delete_endpoints.len(),
+        );
 
         // The unknown endpoints can quickly be cleaned up
+        let delete_stale_start = Instant::now();
         if !delete_endpoints.is_empty() {
             let mut txn = self.txn_begin().await?;
             db::explored_endpoints::delete_many(&mut txn, &delete_endpoints).await?;
             txn.commit().await?;
         }
+        metrics.record_phase_latency(
+            "update_explored_endpoints_delete_stale",
+            delete_stale_start.elapsed(),
+        );
 
         // If there is a MachineInterface and no previously discovered information,
         // we need to detect it. This includes both regular machines, PowerShelves
         // and Switches.
         let unexplored_endpoints = index.get_unexplored_endpoints();
+        metrics.record_update_explored_endpoints_count(
+            "unexplored_candidates",
+            unexplored_endpoints.len(),
+        );
 
         // Now that we gathered the candidates for exploration, let's decide what
         // we are actually going to explore. The config limits the amount of explorations
@@ -1840,7 +2085,11 @@ impl SiteExplorer {
             });
         }
 
-        let routine_start = explore_endpoint_data.len();
+        let priority_selected_count = explore_endpoint_data.len();
+        metrics.record_update_explored_endpoints_count(
+            "selected_priority_updates",
+            priority_selected_count,
+        );
 
         // Next priority are all endpoints that we've never looked at
         let remaining_explore_endpoints = num_explore_endpoints;
@@ -1858,10 +2107,12 @@ impl SiteExplorer {
                 expected: index.matched_expected(address),
             });
         }
+        let selected_unexplored = explore_endpoint_data.len() - priority_selected_count;
+        metrics.record_update_explored_endpoints_count("selected_unexplored", selected_unexplored);
 
         // If we have any capacity available, we update knowledge about endpoints we looked at earlier on
         let remaining_explore_endpoints =
-            num_explore_endpoints - (explore_endpoint_data.len() - routine_start);
+            num_explore_endpoints - (explore_endpoint_data.len() - priority_selected_count);
         if remaining_explore_endpoints != 0 {
             // Sort endpoints so that we will replace the oldest report first
             update_endpoints.sort_by_key(|(_address, _machine_interface, endpoint)| {
@@ -1880,6 +2131,13 @@ impl SiteExplorer {
                 });
             }
         }
+        metrics.record_update_explored_endpoints_count(
+            "selected_routine_updates",
+            explore_endpoint_data.len() - priority_selected_count - selected_unexplored,
+        );
+        metrics
+            .record_update_explored_endpoints_count("selected_total", explore_endpoint_data.len());
+        metrics.record_phase_latency("update_explored_endpoints_plan", plan_start.elapsed());
 
         let task_set = FuturesUnordered::new();
         let concurrency_limiter = Arc::new(tokio::sync::Semaphore::new(
@@ -1892,6 +2150,7 @@ impl SiteExplorer {
             expected_count - index.all_matched_expected_machines().len();
         let fw_config_snapshot = Arc::new(self.firmware_config.create_snapshot());
 
+        let probe_start = Instant::now();
         for endpoint in explore_endpoint_data.into_iter() {
             let endpoint_explorer = self.endpoint_explorer.clone();
             let concurrency_limiter = concurrency_limiter.clone();
@@ -1900,11 +2159,11 @@ impl SiteExplorer {
             let bmc_target_addr = SocketAddr::new(endpoint.address, bmc_target_port);
             let fw_config_snapshot = fw_config_snapshot.clone();
             let database_connection = self.database_connection.clone();
-            let work_lock_manager_handle = self.work_lock_manager_handle.clone();
 
             task_set.push(
                 async move {
-                    let start = std::time::Instant::now();
+                    let start = Instant::now();
+                    let mut steps = EndpointExplorationStepDurations::default();
 
                     // Acquire a permit which will block more than `concurrent_explorations`
                     // tasks from running.
@@ -1916,57 +2175,70 @@ impl SiteExplorer {
                         .await
                         .expect("Semaphore can't be closed");
 
-                    // If the endpoint is locked, we skip exploration.
-                    let work_key = endpoint_exploration_work_key(endpoint.address);
-                    let _work_lock = match work_lock_manager_handle.try_acquire_lock(work_key).await
-                    {
-                        Ok(work_lock) => work_lock,
-                        Err(AcquireLockError::WorkAlreadyLocked(_)) => {
-                            tracing::info!(
-                                address = %endpoint.address,
-                                "Skipping periodic endpoint exploration; adhoc refresh already in progress"
-                            );
-                            return Ok(None);
-                        }
-                        Err(e) => {
-                            return Err(SiteExplorerError::internal(format!(
-                                "Failed to acquire per-endpoint work lock for {}: {e}",
-                                endpoint.address
-                            )));
-                        }
-                    };
-
+                    let redfish_explore_start = Instant::now();
                     let mut result = endpoint_explorer
                         .explore_endpoint(
                             bmc_target_addr,
                             endpoint.iface,
                             endpoint.expected,
-                            endpoint.last_explored.and_then(|e| e.report.last_exploration_error.as_ref()),
+                            endpoint
+                                .last_explored
+                                .and_then(|e| e.report.last_exploration_error.as_ref()),
                             endpoint.last_explored.and_then(|e| e.boot_interface_mac),
                         )
                         .await;
+                    steps.redfish_explore = redfish_explore_start.elapsed();
 
                     if let Err(error) = &result {
                         // For logging purposes
+                        let failure_context_load_start = Instant::now();
                         let machine_state = match get_machine_state_by_bmc_ip(
                             &database_connection,
                             &endpoint.address.to_string(),
                         )
-                            .await
+                        .await
                         {
-                            Ok(state) if !state.is_empty() => format!(" (state: {state})"),
-                            _ => String::new(),
+                            Ok(state) if !state.is_empty() => Some(state),
+                            _ => None,
                         };
-                        tracing::info!(%error, "Failed to explore {}: {}{}", bmc_target_addr, error, machine_state);
+                        steps.failure_context_load = Some(failure_context_load_start.elapsed());
+                        let schema = error.operator_error_schema();
+                        if let Some(machine_state) = machine_state.as_deref() {
+                            tracing::info!(
+                                endpoint = %bmc_target_addr,
+                                error = %error,
+                                error_code = %schema.error_code,
+                                mitigation = %schema.mitigation_for_log(),
+                                text = %schema.text,
+                                machine_state,
+                                "Failed to explore endpoint"
+                            );
+                        } else {
+                            tracing::info!(
+                                endpoint = %bmc_target_addr,
+                                error = %error,
+                                error_code = %schema.error_code,
+                                mitigation = %schema.mitigation_for_log(),
+                                text = %schema.text,
+                                "Failed to explore endpoint"
+                            );
+                        }
                     }
 
                     if let Ok(report) = &mut result {
+                        let report_enrich_start = Instant::now();
                         enrich_endpoint_exploration_report(report, &fw_config_snapshot);
+                        steps.report_enrich = Some(report_enrich_start.elapsed());
                     }
 
-                    Ok(Some((endpoint, result, start.elapsed())))
+                    Ok(Some(EndpointExplorationTaskResult {
+                        endpoint,
+                        result,
+                        exploration_duration: start.elapsed(),
+                        steps,
+                    }))
                 }
-                    .in_current_span(),
+                .in_current_span(),
             );
         }
 
@@ -1981,13 +2253,40 @@ impl SiteExplorer {
             .await
             .into_iter()
             .collect::<SiteExplorerResult<Vec<_>>>()?;
+        metrics.record_phase_latency("update_explored_endpoints_probe", probe_start.elapsed());
+        for EndpointExplorationTaskResult { steps, .. } in exploration_results.iter().flatten() {
+            metrics
+                .record_endpoint_exploration_step_latency("redfish_explore", steps.redfish_explore);
+            if let Some(duration) = steps.failure_context_load {
+                metrics.record_endpoint_exploration_step_latency("failure_context_load", duration);
+            }
+            if let Some(duration) = steps.report_enrich {
+                metrics.record_endpoint_exploration_step_latency("report_enrich", duration);
+            }
+        }
 
         // All subtasks finished. We now update the database
+        let persist_start = Instant::now();
+        metrics.record_update_explored_endpoints_count("insert_endpoint_attempts", 0);
+        metrics.record_update_explored_endpoints_count("endpoint_report_update_attempts", 0);
+        metrics.record_update_explored_endpoints_count("endpoint_error_update_attempts", 0);
+        metrics.record_update_explored_endpoints_count("firmware_version_update_attempts", 0);
+        metrics.record_update_explored_endpoints_count("redfish_remediation_candidates", 0);
         let mut txn = self.txn_begin().await?;
 
         let mut redfish_errors = Vec::new();
+        let mut insert_endpoint_attempts = 0;
+        let mut endpoint_report_update_attempts = 0;
+        let mut endpoint_error_update_attempts = 0;
+        let mut firmware_version_update_attempts = 0;
 
-        for (endpoint, result, exploration_duration) in exploration_results.into_iter().flatten() {
+        for EndpointExplorationTaskResult {
+            endpoint,
+            result,
+            exploration_duration,
+            ..
+        } in exploration_results.into_iter().flatten()
+        {
             let address = endpoint.address;
             let mut redfish_error = None;
 
@@ -2032,6 +2331,7 @@ impl SiteExplorer {
                         uefi_version,
                     )
                     .await?;
+                    firmware_version_update_attempts += 1;
                 }
             }
 
@@ -2057,6 +2357,7 @@ impl SiteExplorer {
                                 &mut txn,
                             )
                             .await?;
+                            endpoint_report_update_attempts += 1;
                         }
                         Err(e) => {
                             // If an endpoint can not be explored we don't delete the known information, since it's
@@ -2069,6 +2370,7 @@ impl SiteExplorer {
                                 &mut txn,
                             )
                             .await?;
+                            endpoint_error_update_attempts += 1;
                         }
                     }
                 }
@@ -2090,6 +2392,7 @@ impl SiteExplorer {
                                 &mut txn,
                             )
                             .await?;
+                            insert_endpoint_attempts += 1;
                         }
                         Err(e) => {
                             // If an endpoint exploration failed we still track the result in the database
@@ -2103,6 +2406,7 @@ impl SiteExplorer {
                                 &mut txn,
                             )
                             .await?;
+                            insert_endpoint_attempts += 1;
                         }
                     }
 
@@ -2127,12 +2431,38 @@ impl SiteExplorer {
         }
 
         txn.commit().await?;
+        metrics.record_phase_latency("update_explored_endpoints_persist", persist_start.elapsed());
+        metrics.record_update_explored_endpoints_count(
+            "insert_endpoint_attempts",
+            insert_endpoint_attempts,
+        );
+        metrics.record_update_explored_endpoints_count(
+            "endpoint_report_update_attempts",
+            endpoint_report_update_attempts,
+        );
+        metrics.record_update_explored_endpoints_count(
+            "endpoint_error_update_attempts",
+            endpoint_error_update_attempts,
+        );
+        metrics.record_update_explored_endpoints_count(
+            "firmware_version_update_attempts",
+            firmware_version_update_attempts,
+        );
+        metrics.record_update_explored_endpoints_count(
+            "redfish_remediation_candidates",
+            redfish_errors.len(),
+        );
 
         // We handle redfish errors after committing the transaction, to avoid holding the
         // transaction while issuing expensive redfish calls.
+        let remediate_start = Instant::now();
         for (e, endpoint) in redfish_errors {
             self.handle_redfish_error(&endpoint, metrics, &e).await;
         }
+        metrics.record_phase_latency(
+            "update_explored_endpoints_remediate",
+            remediate_start.elapsed(),
+        );
 
         Ok(index)
     }
@@ -2500,28 +2830,38 @@ impl SiteExplorer {
             return Ok(true);
         }
 
-        if let Some(nic_mode) = dpu_endpoint.report.nic_mode() {
-            // DPU's in NIC mode do not have full redfish functionality,
-            // for example, we will not be able to retrieve the base GUID
-            // from the redfish response. Skip the next check because the DPUs
-            // in NIC mode will not expose a pf0 interface to the host.
-            if nic_mode == NicMode::Nic {
+        match dpu_endpoint.report.nic_mode() {
+            Some(NicMode::Nic) => {
+                // DPU's in NIC mode do not have full redfish functionality,
+                // for example, we will not be able to retrieve the base GUID
+                // from the redfish response. Skip the next check because the DPUs
+                // in NIC mode will not expose a pf0 interface to the host.
                 tracing::info!(
                     "Site explorer found an uningested DPU (bmc ip: {}) in NIC mode",
                     dpu_endpoint.address
                 );
                 return Ok(true);
             }
-        } else {
-            tracing::error!(
-                "Site explorer found an uningested DPU (bmc ip: {}) without being able to determine if it is in NIC mode",
-                dpu_endpoint.address
-            );
-            metrics.increment_host_dpu_pairing_blocker(PairingBlockerReason::DpuNicModeUnknown);
-            return Ok(false);
+            Some(NicMode::Dpu) => {}
+            None if dpu_endpoint.report.dpu_pairing_serial_number().is_some() => {
+                tracing::warn!(
+                    "Site explorer found an uningested DPU (bmc ip: {}) without a Redfish DPU/NIC mode; continuing because it has a host-pairing serial",
+                    dpu_endpoint.address
+                );
+            }
+            None => {
+                tracing::error!(
+                    "Site explorer found an uningested DPU (bmc ip: {}) without being able to determine if it is in NIC mode",
+                    dpu_endpoint.address
+                );
+                metrics.increment_host_dpu_pairing_blocker(PairingBlockerReason::DpuNicModeUnknown);
+                return Ok(false);
+            }
         }
 
-        // This is a bluefield in DPU mode
+        // This is a BlueField that should be pairable as a managed DPU. BF4 may
+        // not report mode, so host pairing and the PF MAC check decide whether
+        // it can continue.
         match find_host_pf_mac_address(dpu_endpoint) {
             Ok(_) => Ok(true),
             Err(error) => {
@@ -2875,13 +3215,13 @@ impl SiteExplorer {
     ///    DPU but operator said no DPU" gets surfaced as a health alert;
     ///    we don't try to reconfigure in that case.
     /// 3. Otherwise (operator default `DpuMode::DpuMode`), fall back to
-    ///    the existing BF3 SuperNIC / BF3 DPU model-based heuristic for
+    ///    the existing BF3 SuperNIC / BF3 DPU part-number heuristic for
     ///    backward compat: BF3 SuperNIC → NIC mode, BF3 DPU → DPU mode,
     ///    BF2 / unknown → no-op.
     async fn check_and_configure_dpu_mode(
         &self,
         dpu_ep: &ExploredEndpoint,
-        dpu_model: String,
+        dpu_part_number: Option<&str>,
         host_dpu_mode: DpuMode,
         metrics: &mut SiteExplorationMetrics,
     ) -> SiteExplorerResult<bool> {
@@ -2892,15 +3232,21 @@ impl SiteExplorer {
             DpuMode::NicMode => Some(NicMode::Nic),
             DpuMode::NoDpu => None,
             DpuMode::DpuMode => {
-                // Preserve existing BF3-model heuristics when the operator
-                // hasn't explicitly chosen a mode.
-                if is_bf3_supernic(&dpu_model) {
-                    Some(NicMode::Nic)
-                } else if is_bf3_dpu(&dpu_model) {
-                    Some(NicMode::Dpu)
-                } else {
-                    None
-                }
+                // Preserve existing BF3 part-number heuristics when the operator
+                // hasn't explicitly chosen a mode. Missing part numbers only
+                // disable this heuristic fallback; explicit modes above do not
+                // require a part number. BF4 does not currently
+                // expose a reliable DPU/NIC mode signal over Redfish, so the
+                // default path does not infer or reconfigure BF4 mode,
+                dpu_part_number.and_then(|dpu_part_number| {
+                    if is_bf3_supernic_part_number(dpu_part_number) {
+                        Some(NicMode::Nic)
+                    } else if is_bf3_dpu_part_number(dpu_part_number) {
+                        Some(NicMode::Dpu)
+                    } else {
+                        None
+                    }
+                })
             }
         };
 
@@ -2913,7 +3259,7 @@ impl SiteExplorer {
             Some(observed) => {
                 tracing::warn!(
                     address = %dpu_ep.address,
-                    model = %dpu_model,
+                    part_number = ?dpu_part_number,
                     %observed,
                     ?target_nic_mode,
                     ?host_dpu_mode,
@@ -3100,26 +3446,118 @@ fn get_base_mac_from_sys_image_version(sys_image_version: &String) -> Result<Str
 /// The method should be migrated to the DPU directly providing the
 /// MAC address: https://redmine.mellanox.com/issues/3749837
 fn find_host_pf_mac_address(dpu_ep: &ExploredEndpoint) -> Result<MacAddress, String> {
-    // First, try to grab a MAC from explored Redfish data,
-    // which lives under ComputerSystem. Otherwise, just fall
-    // back to the legacy method via get_sys_image_version.
+    // Base-MAC derivation has three paths, tried in order of trust:
+    //   1. Primary  : the explored ComputerSystem base_mac (OEM Redfish BaseMAC).
+    //   2. Legacy    : derived from UpdateService/FirmwareInventory/DPU_SYS_IMAGE.Version.
+    //   3. BMC offset: derived from the BMC manager eth0 MAC minus a per-platform
+    //                  offset (fallback-only; see derive_base_mac_from_bmc_eth0).
+    // We only hard-fail if all three paths fail.
 
-    // Try the explored computer-system base_mac first
+    // Path 1: explored computer-system base_mac.
     if let Some(system_mac) = dpu_ep.report.systems.first().and_then(|s| s.base_mac) {
         return Ok(system_mac.to_mac());
     }
 
-    tracing::warn!("ComputerSystem doesn't have base_mac, falling back to legacy method");
-    let legacy_mac = get_base_mac_from_sys_image_version(get_sys_image_version(
-        dpu_ep.report.service.as_ref(),
-    )?)?;
+    // Path 2: legacy DPU_SYS_IMAGE derivation. Soft-fail so we can try path 3.
+    tracing::warn!("ComputerSystem doesn't have base_mac, falling back to DPU_SYS_IMAGE method");
+    let legacy_err = match get_sys_image_version(dpu_ep.report.service.as_ref())
+        .and_then(get_base_mac_from_sys_image_version)
+        .and_then(|legacy_mac| {
+            sanitized_mac(&legacy_mac).map_err(|e| {
+                format!("Failed to build sanitized MAC from legacy/service MAC: {e} (source_mac: {legacy_mac})")
+            })
+        }) {
+        Ok(mac) => return Ok(mac),
+        Err(e) => {
+            tracing::warn!("DPU_SYS_IMAGE derivation failed, falling back to BMC eth0 offset: {e}");
+            e
+        }
+    };
 
-    // Sanitize the legacy MAC and return it
-    sanitized_mac(&legacy_mac).map_err(|e| {
-        format!(
-            "Failed to build sanitized MAC from legacy/service MAC: {e} (source_mac: {legacy_mac})"
-        )
-    })
+    // Path 3: BMC manager eth0 MAC minus a per-platform offset. If this path is
+    // also unavailable, surface the legacy error so we still fail the old way.
+    derive_base_mac_from_bmc_eth0(&dpu_ep.report).ok_or(legacy_err)
+}
+
+// The PF0 base MAC sits a fixed offset below the DPU BMC's eth0 MAC, within the
+// contiguous MAC block allocated to the card. Per the BlueField-3 DPU Controller
+// User Manual (§10.1, "DPU Controller Board Label"):
+//   * host high-speed ports are `base + port_index`
+//   * `DPU_BMC_MAC = OOB_MAC + 1`
+// so the offset decomposes as `(OOB - base) + 1`.
+//
+// Measured on a real BF3 DPU (offset = 0x25 = 37):
+//   DPU BMC eth0                              : 5c:25:73:9e:ac:eb
+//   base (DPU_SYS_IMAGE 5c25:7303:009e:acc6)  : 5c:25:73:9e:ac:c6
+// which implies OOB = bmc - 1 = ...ea and a host-reservation gap of
+// (OOB - base) = 0x24 = 36, consistent with the manual's `BMC = OOB + 1`.
+//
+// The host-reservation gap is not published and could differ on other SKUs
+// (e.g. 1- vs 2-port); revisit if a card of a different SKU mis-derives.
+const BF3_ETH0_TO_BASE_MAC_OFFSET: u64 = 0x25; // measured: BlueField-3, see above
+
+/// The per-platform offset to subtract from the BMC manager eth0 MAC to obtain
+/// the DPU PF0 base MAC, or `None` for platforms we can't classify (we never guess).
+fn bmc_eth0_to_base_mac_offset(report: &EndpointExplorationReport) -> Option<u64> {
+    match report.identify_dpu()? {
+        DpuModel::BlueField3 => Some(BF3_ETH0_TO_BASE_MAC_OFFSET),
+        // BlueField-2 is not supported by the BMC eth0 offset fallback.
+        DpuModel::BlueField2 | DpuModel::Unknown => None,
+    }
+}
+
+/// Fallback-only (item #2 of issue #1076): derive the DPU PF0 base MAC from the
+/// BMC manager eth0 MAC minus a platform-specific offset. Returns `None` if the
+/// eth0 interface MAC is missing, locally-administered (pre-sync), the platform
+/// is unknown, or the subtraction would underflow.
+fn derive_base_mac_from_bmc_eth0(report: &EndpointExplorationReport) -> Option<MacAddress> {
+    let offset = bmc_eth0_to_base_mac_offset(report)?;
+
+    // Pick the eth0 interface specifically -- the OOB interface also lives in
+    // the manager's ethernet_interfaces list.
+    let bmc_eth0 = report
+        .managers
+        .iter()
+        .flat_map(|m| m.ethernet_interfaces.iter())
+        .find(|e| {
+            e.id.as_deref()
+                .is_some_and(|id| id.eq_ignore_ascii_case("eth0"))
+        })
+        .and_then(|e| e.mac_address)?;
+
+    // A real NVIDIA BMC MAC is globally unique. A locally-administered MAC means
+    // the BMC hasn't synced its burned-in address yet (transient post-boot
+    // state) -- refuse to derive a base MAC from it rather than hand back a
+    // plausible-but-wrong value.
+    if is_locally_administered_mac(bmc_eth0) {
+        tracing::warn!(
+            bmc_eth0 = %bmc_eth0,
+            "BMC eth0 MAC is locally-administered (pre-sync?); skipping offset derivation",
+        );
+        return None;
+    }
+
+    let derived = mac_to_u64(bmc_eth0).checked_sub(offset)?;
+    let mac = u64_to_mac(derived);
+    tracing::warn!(
+        bmc_eth0 = %bmc_eth0,
+        derived = %mac,
+        "derived DPU base MAC from BMC eth0 via offset fallback",
+    );
+    Some(mac)
+}
+
+/// MAC address as a 48-bit big-endian integer (top two bytes of the u64 are zero).
+fn mac_to_u64(mac: MacAddress) -> u64 {
+    mac.bytes()
+        .iter()
+        .fold(0u64, |acc, &byte| (acc << 8) | u64::from(byte))
+}
+
+/// Inverse of [`mac_to_u64`]; the high 16 bits are discarded.
+fn u64_to_mac(value: u64) -> MacAddress {
+    let b = value.to_be_bytes();
+    MacAddress::new([b[2], b[3], b[4], b[5], b[6], b[7]])
 }
 
 /// Whether a discovered DPU BMC is reporting that it's running as a plain NIC.
@@ -3200,8 +3638,8 @@ enum DiscoveredDpu {
 ///
 /// The only IO (`check_and_configure_dpu_mode`, which may issue a
 /// `set_nic_mode`) happens in the caller, which passes its result in as
-/// `mode_check` (`None` when the device reported no model to check). Keeping the
-/// decision here makes it unit-testable without a Redfish mock.
+/// `mode_check` (`None` when the caller deliberately skipped the mode check).
+/// Keeping the decision here makes it unit-testable without a Redfish mock.
 fn classify_matched_dpu(
     dpu_ep: &ExploredEndpoint,
     host_ep: &ExploredEndpoint,
@@ -3210,7 +3648,7 @@ fn classify_matched_dpu(
     match mode_check {
         Some(Ok(false)) => return DiscoveredDpu::NeedsReconfig,
         Some(Err(err)) => return DiscoveredDpu::ModeCheckFailed(err),
-        // Mode already correct, or there was no model to check.
+        // Mode already correct, or the caller skipped the mode check.
         Some(Ok(true)) | None => {}
     }
 
@@ -3277,6 +3715,30 @@ fn should_alert_power_state(power_state: PowerState) -> bool {
     )
 }
 
+fn site_explorer_health_report_needs_update(
+    previous_health_report: Option<&health_report::HealthReport>,
+    new_health_report: &health_report::HealthReport,
+) -> bool {
+    match previous_health_report {
+        None => !new_health_report.alerts.is_empty(),
+        Some(_) if new_health_report.alerts.is_empty() => true,
+        Some(previous_health_report) => {
+            !health_reports_equal_ignoring_observed_at(previous_health_report, new_health_report)
+        }
+    }
+}
+
+fn health_reports_equal_ignoring_observed_at(
+    left: &health_report::HealthReport,
+    right: &health_report::HealthReport,
+) -> bool {
+    let mut left = left.clone();
+    let mut right = right.clone();
+    left.observed_at = None;
+    right.observed_at = None;
+    left == right
+}
+
 #[cfg(test)]
 mod tests {
     use carbide_test_support::Outcome::*;
@@ -3285,6 +3747,89 @@ mod tests {
     use model::site_explorer::PreingestionState;
 
     use super::*;
+
+    #[test]
+    fn mac_u64_roundtrip() {
+        let mac: MacAddress = "a0:88:c2:46:0c:68".parse().unwrap();
+        assert_eq!(mac_to_u64(mac), 0x0000_a088_c246_0c68);
+        assert_eq!(u64_to_mac(mac_to_u64(mac)), mac);
+    }
+
+    #[test]
+    fn u64_to_mac_discards_high_bits() {
+        // High 16 bits set must not leak into the MAC bytes.
+        assert_eq!(
+            u64_to_mac(0xffff_a088_c246_0c68),
+            "a0:88:c2:46:0c:68".parse().unwrap()
+        );
+    }
+
+    #[test]
+    fn bf3_offset_derives_measured_base_mac() {
+        // Real BF3 DPU measurement (see BF3_ETH0_TO_BASE_MAC_OFFSET):
+        // BMC eth0 - offset must yield the DPU_SYS_IMAGE-derived base MAC.
+        let bmc_eth0: MacAddress = "5c:25:73:9e:ac:eb".parse().unwrap();
+        let base: MacAddress = "5c:25:73:9e:ac:c6".parse().unwrap();
+        let derived = u64_to_mac(mac_to_u64(bmc_eth0) - BF3_ETH0_TO_BASE_MAC_OFFSET);
+        assert_eq!(derived, base);
+        // Cross-check the documented BMC = OOB + 1 relationship.
+        let oob = u64_to_mac(mac_to_u64(bmc_eth0) - 1);
+        assert_eq!(oob, "5c:25:73:9e:ac:ea".parse().unwrap());
+    }
+
+    // Minimal BlueField-3 report with a single manager eth0 interface carrying
+    // `eth0_mac`. Classifies as BF3 (system id "Bluefield" + Card1 BF3 chassis).
+    fn bf3_report_with_eth0(eth0_mac: &str) -> EndpointExplorationReport {
+        use model::site_explorer::{Chassis, ComputerSystem, EthernetInterface, Manager};
+        EndpointExplorationReport {
+            systems: vec![ComputerSystem {
+                id: "Bluefield".to_string(),
+                ..Default::default()
+            }],
+            chassis: vec![Chassis {
+                id: "Card1".to_string(),
+                model: Some("NVIDIA BlueField 3 DPU".to_string()),
+                ..Default::default()
+            }],
+            managers: vec![Manager {
+                id: "Bluefield_BMC".to_string(),
+                ethernet_interfaces: vec![EthernetInterface {
+                    id: Some("eth0".to_string()),
+                    mac_address: Some(eth0_mac.parse().unwrap()),
+                    ..Default::default()
+                }],
+            }],
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn bmc_eth0_offset_skips_locally_administered_mac() {
+        // Transient pre-sync MAC (locally-administered bit set) must not derive
+        // a base MAC, even though the platform classifies and an eth0 exists.
+        let transient = bf3_report_with_eth0("9a:72:d5:07:ae:7e");
+        assert_eq!(bmc_eth0_to_base_mac_offset(&transient), Some(0x25));
+        assert!(derive_base_mac_from_bmc_eth0(&transient).is_none());
+
+        // Sanity: the same report with the real (globally-unique) eth0 derives.
+        let synced = bf3_report_with_eth0("5c:25:73:9e:ac:eb");
+        assert_eq!(
+            derive_base_mac_from_bmc_eth0(&synced),
+            Some("5c:25:73:9e:ac:c6".parse().unwrap())
+        );
+    }
+
+    #[test]
+    fn bmc_eth0_offset_fallback_unsupported_for_bf2() {
+        // BlueField-2 is intentionally not supported by the BMC eth0 offset
+        // fallback, so derivation must return None even when an eth0 MAC exists.
+        let mut report = load_bf2_ep_report();
+        for s in report.systems.iter_mut() {
+            s.base_mac = None;
+        }
+        assert!(bmc_eth0_to_base_mac_offset(&report).is_none());
+        assert!(derive_base_mac_from_bmc_eth0(&report).is_none());
+    }
 
     fn load_bf2_ep_report() -> EndpointExplorationReport {
         let path = concat!(env!("CARGO_MANIFEST_DIR"), "/src/test_data/bf2_report.json");
@@ -3356,7 +3901,7 @@ mod tests {
             classify_matched_dpu(&dpu, &host, Some(Ok(true))),
             DiscoveredDpu::RunningAsDpu(_)
         ));
-        // No model to check (`None`) behaves the same.
+        // A skipped mode check (`None`) behaves the same.
         assert!(matches!(
             classify_matched_dpu(&dpu, &host, None),
             DiscoveredDpu::RunningAsDpu(_)
@@ -3511,5 +4056,68 @@ mod tests {
         assert!(should_alert_power_state(PowerState::Off));
         assert!(should_alert_power_state(PowerState::Paused));
         assert!(should_alert_power_state(PowerState::Unknown));
+    }
+
+    #[test]
+    fn test_site_explorer_health_report_needs_update() {
+        fn empty_report() -> health_report::HealthReport {
+            health_report::HealthReport::empty(
+                health_report::HealthReport::SITE_EXPLORER_SOURCE.to_string(),
+            )
+        }
+
+        fn report_with_alert(
+            message: &str,
+            in_alert_since: Option<chrono::DateTime<chrono::Utc>>,
+        ) -> health_report::HealthReport {
+            let mut report = empty_report();
+            report.alerts.push(health_report::HealthProbeAlert {
+                id: "BmcExplorationFailure".parse().unwrap(),
+                target: Some("192.0.2.10".to_string()),
+                in_alert_since,
+                message: message.to_string(),
+                tenant_message: None,
+                classifications: vec![
+                    health_report::HealthAlertClassification::prevent_allocations(),
+                ],
+            });
+            report
+        }
+
+        let empty = empty_report();
+        assert!(!site_explorer_health_report_needs_update(None, &empty));
+
+        let alert_started_at = chrono::Utc::now();
+        let new_alert = report_with_alert("Endpoint exploration failed", Some(alert_started_at));
+        assert!(site_explorer_health_report_needs_update(None, &new_alert));
+
+        let mut previous_alert = new_alert.clone();
+        previous_alert.observed_at = Some(alert_started_at);
+        let mut same_alert = new_alert;
+        same_alert.observed_at = None;
+        assert!(!site_explorer_health_report_needs_update(
+            Some(&previous_alert),
+            &same_alert,
+        ));
+
+        let mut timestamp_changed = same_alert;
+        timestamp_changed.alerts[0].in_alert_since =
+            Some(alert_started_at + chrono::Duration::seconds(1));
+        assert!(site_explorer_health_report_needs_update(
+            Some(&previous_alert),
+            &timestamp_changed,
+        ));
+
+        let changed_alert =
+            report_with_alert("Endpoint exploration still failed", Some(alert_started_at));
+        assert!(site_explorer_health_report_needs_update(
+            Some(&previous_alert),
+            &changed_alert,
+        ));
+
+        assert!(site_explorer_health_report_needs_update(
+            Some(&previous_alert),
+            &empty,
+        ));
     }
 }

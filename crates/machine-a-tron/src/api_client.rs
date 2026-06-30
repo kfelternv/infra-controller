@@ -217,6 +217,7 @@ impl ApiClient {
                 last_dhcp_requests: vec![],
                 dpu_extension_service_version: None,
                 dpu_extension_services: vec![],
+                astra_config_status: None,
             })
             .await
             .map_err(ClientApiError::InvocationError)
@@ -288,7 +289,9 @@ impl ApiClient {
             }),
             network: Some(rpc::InstanceNetworkConfig {
                 interfaces: vec![interface_config],
+                #[allow(deprecated)]
                 auto: false,
+                auto_config: None,
             }),
             network_security_group_id: None,
             infiniband: None,

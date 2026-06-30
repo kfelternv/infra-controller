@@ -60,9 +60,8 @@ type Instance struct {
 	// Indicates whether the Phone Home service should be enabled or disabled for the Instance
 	PhoneHomeEnabled *bool `json:"phoneHomeEnabled,omitempty"`
 	// UserData is inherited from Operating System or specified by user if allowed
-	UserData NullableString `json:"userData,omitempty"`
-	// User-specified Instance labels
-	Labels map[string]string `json:"labels,omitempty"`
+	UserData NullableString    `json:"userData,omitempty"`
+	Labels   map[string]string `json:"labels,omitempty"`
 	// Indicates whether an update is available for the Instance. Updates can be applied on reboot
 	IsUpdatePending *bool `json:"isUpdatePending,omitempty"`
 	// Serial Console URL for the Instance. Format: ssh://<id>@siteSerialConsoleHostname
@@ -87,7 +86,7 @@ type Instance struct {
 	Status *InstanceStatus `json:"status,omitempty"`
 	// Chronological status history for the Instance
 	StatusHistory []StatusDetail `json:"statusHistory,omitempty"`
-	// Deprecation notices for fields returned by this resource
+	// Deprecations active for this resource. Returned only if there are active deprecations.
 	Deprecations []Deprecation `json:"deprecations,omitempty"`
 	// Date/time when the Instance was created
 	Created *time.Time `json:"created,omitempty"`

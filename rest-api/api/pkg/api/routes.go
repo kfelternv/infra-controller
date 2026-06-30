@@ -557,6 +557,11 @@ func NewAPIRoutes(dbSession *cdb.Session, tc tClient.Client, tnc tClient.Namespa
 			Handler: apiHandler.NewDeleteMachineHandler(dbSession, tc, cfg),
 		},
 		{
+			Path:    apiPathPrefix + "/machine/:machineId/bmc-reset",
+			Method:  http.MethodPost,
+			Handler: apiHandler.NewBmcResetHandler(dbSession, scp, cfg),
+		},
+		{
 
 			Path:    apiPathPrefix + "/machine/:id/status-history",
 			Method:  http.MethodGet,

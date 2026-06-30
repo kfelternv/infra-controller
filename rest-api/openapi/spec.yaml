@@ -9123,6 +9123,50 @@ paths:
           description: Describes an error response for 500 Internal Server Error
           $ref: '#/components/responses/GenericHttpError'
       description: Org must have an Infrastructure Provider entity. Machine must belong to the Provider. User must have authorization role with `PROVIDER_ADMIN` suffix. Machine must meet certain criteria to be eligible for deletion.
+  '/v2/org/{org}/nico/machine/{machineId}/bmc-reset':
+    parameters:
+      - schema:
+          type: string
+        name: org
+        in: path
+        required: true
+        description: Name of the Org
+      - schema:
+          type: string
+        name: machineId
+        in: path
+        required: true
+        description: ID of the Machine
+    post:
+      summary: Reset Machine BMC
+      tags:
+        - BMC Reset
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/BmcResetRequest'
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/BmcResetResponse'
+        '400':
+          $ref: '#/components/responses/ValidationError'
+        '403':
+          $ref: '#/components/responses/ForbiddenError'
+        '404':
+          $ref: '#/components/responses/NotFoundError'
+        '500':
+          $ref: '#/components/responses/GenericHttpError'
+      operationId: reset-machine-bmc
+      description: |-
+        Reset a Machine BMC through NICo Core. The request is authorized,
+        machine-scoped, and proxied to the Machine's owning Site. User must have
+        authorization role with `PROVIDER_ADMIN` suffix.
   '/v2/org/{org}/nico/machine/{machineId}/status-history':
     parameters:
       - schema:
@@ -13150,6 +13194,28 @@ components:
         macAddress:
           type: string
           description: BMC MAC address. Required for kind BMCRoot, ignored for SiteWideRoot.
+    BmcResetRequest:
+      type: object
+      title: BmcResetRequest
+      description: Request to reset a Machine BMC through NICo Core.
+      properties:
+        useIpmitool:
+          type: boolean
+          default: false
+          description: Reset the BMC via ipmitool instead of Redfish.
+    BmcResetResponse:
+      type: object
+      title: BmcResetResponse
+      description: Response for a Machine BMC reset request.
+      required:
+        - machineId
+      properties:
+        machineId:
+          type: string
+          description: ID of the Machine.
+        useIpmitool:
+          type: boolean
+          description: Whether ipmitool reset was requested.
     InfrastructureProvider:
       description: Infrastructure providers own and manage datacenters
       type: object

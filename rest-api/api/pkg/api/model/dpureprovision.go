@@ -31,9 +31,8 @@ var validDpuReprovisionModesAny = func() []interface{} {
 }()
 
 type APIDpuReprovisionRequest struct {
-	MachineID      string `json:"-"`
 	Mode           string `json:"mode"`
-	UpdateFirmware bool   `json:"updateFirmware,omitempty"`
+	UpdateFirmware bool   `json:"updateFirmware"`
 }
 
 func (r *APIDpuReprovisionRequest) Validate() error {
@@ -44,26 +43,13 @@ func (r *APIDpuReprovisionRequest) Validate() error {
 	)
 }
 
-func (r *APIDpuReprovisionRequest) ToProto() *cwssaws.DpuReprovisioningRequest {
+func (r *APIDpuReprovisionRequest) ToProto(machineID string) *cwssaws.DpuReprovisioningRequest {
 	return &cwssaws.DpuReprovisioningRequest{
-		MachineId:      &cwssaws.MachineId{Id: r.MachineID},
-		Mode:           dpuReprovisionModeToProto(r.Mode),
+		MachineId: &cwssaws.MachineId{Id: machineID},
+		Mode:      dpuReprovisionModeToProto(r.Mode),
+		// TODO: Add end user initiator
 		Initiator:      cwssaws.UpdateInitiator_AdminCli,
 		UpdateFirmware: r.UpdateFirmware,
-	}
-}
-
-type APIDpuReprovisionResponse struct {
-	MachineID      string `json:"machineId"`
-	Mode           string `json:"mode"`
-	UpdateFirmware bool   `json:"updateFirmware,omitempty"`
-}
-
-func NewAPIDpuReprovisionResponse(req *APIDpuReprovisionRequest) *APIDpuReprovisionResponse {
-	return &APIDpuReprovisionResponse{
-		MachineID:      req.MachineID,
-		Mode:           req.Mode,
-		UpdateFirmware: req.UpdateFirmware,
 	}
 }
 

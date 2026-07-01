@@ -63,6 +63,8 @@ use tracing::Instrument;
 use version_compare::Cmp;
 mod endpoint_explorer;
 pub use endpoint_explorer::EndpointExplorer;
+mod endpoint_lock;
+pub use endpoint_lock::{EndpointExplorationGuard, EndpointExplorationLocks};
 mod credentials;
 mod metrics;
 #[cfg(any(test, feature = "test-support"))]
@@ -83,7 +85,6 @@ pub use managed_host::is_endpoint_in_managed_host;
 use model::DpuModel;
 use model::expected_machine::DpuMode;
 use model::firmware::FirmwareComponentType;
-use model::machine_interface_address::MachineInterfaceAssociation;
 use model::network_segment::NetworkSegmentType;
 mod switch_creator;
 use carbide_uuid::rack::RackId;
@@ -287,6 +288,8 @@ pub struct SiteExplorer {
     endpoint_explorer: Arc<dyn EndpointExplorer>,
     firmware_config: Arc<FirmwareConfig>,
     work_lock_manager_handle: WorkLockManagerHandle,
+    /// Per-endpoint, in-process exploration locks shared with the API's ad-hoc refresh handler.
+    endpoint_exploration_locks: EndpointExplorationLocks,
     machine_creator: MachineCreator,
     switch_creator: SwitchCreator,
     boot_order_tracker: BootOrderTracker,
@@ -306,6 +309,7 @@ impl SiteExplorer {
         firmware_config: Arc<FirmwareConfig>,
         common_pools: Arc<CommonPools>,
         work_lock_manager_handle: WorkLockManagerHandle,
+        endpoint_exploration_locks: EndpointExplorationLocks,
         rack_profiles: RackProfileConfig,
         rms_client: Option<Arc<dyn RmsApi>>,
         credential_manager: Arc<dyn CredentialManager>,
@@ -343,6 +347,7 @@ impl SiteExplorer {
             endpoint_explorer,
             firmware_config,
             work_lock_manager_handle,
+            endpoint_exploration_locks,
             boot_order_tracker: BootOrderTracker::default(),
         }
     }
@@ -1096,9 +1101,16 @@ impl SiteExplorer {
             db::machine_interface::find_by_mac_address(&mut *txn, expected_shelf.bmc_mac_address)
                 .await?;
         if let Some(interface) = mi.first() {
-            db::machine_interface::associate_interface_with_machine(
+            // A power shelf's BMC/PMC interface is its management endpoint, so
+            // associate it with the shelf and annotate it as `Bmc` (like
+            // host/switch BMC interfaces), demoting it from primary in one
+            // statement. This `Bmc` link is what lets the power-shelf load query
+            // resolve the shelf's MAC/IP into the `PowerShelf.bmc_info` field.
+            db::machine_interface::associate_bmc_interface(
                 &interface.id,
-                MachineInterfaceAssociation::PowerShelf(power_shelf_id),
+                model::machine_interface_address::MachineInterfaceAssociation::PowerShelf(
+                    power_shelf_id,
+                ),
                 &mut txn,
             )
             .await?;
@@ -2153,6 +2165,7 @@ impl SiteExplorer {
         let probe_start = Instant::now();
         for endpoint in explore_endpoint_data.into_iter() {
             let endpoint_explorer = self.endpoint_explorer.clone();
+            let endpoint_exploration_locks = self.endpoint_exploration_locks.clone();
             let concurrency_limiter = concurrency_limiter.clone();
 
             let bmc_target_port = self.config.override_target_port.unwrap_or(443);
@@ -2174,6 +2187,20 @@ impl SiteExplorer {
                         .acquire()
                         .await
                         .expect("Semaphore can't be closed");
+
+                    // If an ad-hoc refresh or another periodic task is already exploring this
+                    // endpoint, skip it for this iteration.
+                    let _endpoint_guard =
+                        match endpoint_exploration_locks.try_claim(endpoint.address) {
+                            Some(guard) => guard,
+                            None => {
+                                tracing::info!(
+                                    address = %endpoint.address,
+                                    "Skipping periodic endpoint exploration; endpoint already in progress"
+                                );
+                                return Ok(None);
+                            }
+                        };
 
                     let redfish_explore_start = Instant::now();
                     let mut result = endpoint_explorer

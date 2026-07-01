@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+// SPDX-License-Identifier: Apache-2.0
+
 /*
 NVIDIA Infra Controller REST API
 
@@ -19,7 +22,7 @@ import (
 // checks if the DpuReprovisionRequest type satisfies the MappedNullable interface at compile time
 var _ MappedNullable = &DpuReprovisionRequest{}
 
-// DpuReprovisionRequest Request to trigger DPU reprovisioning through NICo Core.
+// DpuReprovisionRequest Request to trigger DPU reprovisioning for a Machine
 type DpuReprovisionRequest struct {
 	// DPU reprovisioning mode.
 	Mode string `json:"mode"`
@@ -141,7 +144,7 @@ func (o *DpuReprovisionRequest) UnmarshalJSON(data []byte) (err error) {
 	}
 
 	for _, requiredProperty := range requiredProperties {
-		if _, exists := allProperties[requiredProperty]; !exists {
+		if value, exists := allProperties[requiredProperty]; !exists || value == nil {
 			return fmt.Errorf("no value given for required property %v", requiredProperty)
 		}
 	}

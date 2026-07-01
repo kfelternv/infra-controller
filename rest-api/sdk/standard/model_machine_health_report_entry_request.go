@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+// SPDX-License-Identifier: Apache-2.0
+
 /*
 NVIDIA Infra Controller REST API
 
@@ -24,9 +27,9 @@ type MachineHealthReportEntryRequest struct {
 	// Health report source.
 	Source string `json:"source"`
 	// Results from successful health probes for the Machine.
-	Successes []MachineHealthReportProbeSuccess `json:"successes,omitempty"`
+	Successes []MachineHealthProbeSuccess `json:"successes,omitempty"`
 	// Results from failed health probes for the Machine.
-	Alerts []MachineHealthReportProbeAlert `json:"alerts,omitempty"`
+	Alerts []MachineHealthProbeAlert `json:"alerts,omitempty"`
 	// How updates to this health report should be handled
 	Mode string `json:"mode"`
 }
@@ -77,9 +80,9 @@ func (o *MachineHealthReportEntryRequest) SetSource(v string) {
 }
 
 // GetSuccesses returns the Successes field value if set, zero value otherwise.
-func (o *MachineHealthReportEntryRequest) GetSuccesses() []MachineHealthReportProbeSuccess {
+func (o *MachineHealthReportEntryRequest) GetSuccesses() []MachineHealthProbeSuccess {
 	if o == nil || IsNil(o.Successes) {
-		var ret []MachineHealthReportProbeSuccess
+		var ret []MachineHealthProbeSuccess
 		return ret
 	}
 	return o.Successes
@@ -87,7 +90,7 @@ func (o *MachineHealthReportEntryRequest) GetSuccesses() []MachineHealthReportPr
 
 // GetSuccessesOk returns a tuple with the Successes field value if set, nil otherwise
 // and a boolean to check if the value has been set.
-func (o *MachineHealthReportEntryRequest) GetSuccessesOk() ([]MachineHealthReportProbeSuccess, bool) {
+func (o *MachineHealthReportEntryRequest) GetSuccessesOk() ([]MachineHealthProbeSuccess, bool) {
 	if o == nil || IsNil(o.Successes) {
 		return nil, false
 	}
@@ -103,15 +106,15 @@ func (o *MachineHealthReportEntryRequest) HasSuccesses() bool {
 	return false
 }
 
-// SetSuccesses gets a reference to the given []MachineHealthReportProbeSuccess and assigns it to the Successes field.
-func (o *MachineHealthReportEntryRequest) SetSuccesses(v []MachineHealthReportProbeSuccess) {
+// SetSuccesses gets a reference to the given []MachineHealthProbeSuccess and assigns it to the Successes field.
+func (o *MachineHealthReportEntryRequest) SetSuccesses(v []MachineHealthProbeSuccess) {
 	o.Successes = v
 }
 
 // GetAlerts returns the Alerts field value if set, zero value otherwise.
-func (o *MachineHealthReportEntryRequest) GetAlerts() []MachineHealthReportProbeAlert {
+func (o *MachineHealthReportEntryRequest) GetAlerts() []MachineHealthProbeAlert {
 	if o == nil || IsNil(o.Alerts) {
-		var ret []MachineHealthReportProbeAlert
+		var ret []MachineHealthProbeAlert
 		return ret
 	}
 	return o.Alerts
@@ -119,7 +122,7 @@ func (o *MachineHealthReportEntryRequest) GetAlerts() []MachineHealthReportProbe
 
 // GetAlertsOk returns a tuple with the Alerts field value if set, nil otherwise
 // and a boolean to check if the value has been set.
-func (o *MachineHealthReportEntryRequest) GetAlertsOk() ([]MachineHealthReportProbeAlert, bool) {
+func (o *MachineHealthReportEntryRequest) GetAlertsOk() ([]MachineHealthProbeAlert, bool) {
 	if o == nil || IsNil(o.Alerts) {
 		return nil, false
 	}
@@ -135,8 +138,8 @@ func (o *MachineHealthReportEntryRequest) HasAlerts() bool {
 	return false
 }
 
-// SetAlerts gets a reference to the given []MachineHealthReportProbeAlert and assigns it to the Alerts field.
-func (o *MachineHealthReportEntryRequest) SetAlerts(v []MachineHealthReportProbeAlert) {
+// SetAlerts gets a reference to the given []MachineHealthProbeAlert and assigns it to the Alerts field.
+func (o *MachineHealthReportEntryRequest) SetAlerts(v []MachineHealthProbeAlert) {
 	o.Alerts = v
 }
 

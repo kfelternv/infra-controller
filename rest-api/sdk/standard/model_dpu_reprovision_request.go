@@ -22,7 +22,7 @@ import (
 // checks if the DpuReprovisionRequest type satisfies the MappedNullable interface at compile time
 var _ MappedNullable = &DpuReprovisionRequest{}
 
-// DpuReprovisionRequest Request to trigger DPU reprovisioning through NICo Core.
+// DpuReprovisionRequest Request to trigger DPU reprovisioning for a Machine
 type DpuReprovisionRequest struct {
 	// DPU reprovisioning mode.
 	Mode string `json:"mode"`

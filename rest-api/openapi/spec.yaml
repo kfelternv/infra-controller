@@ -13527,7 +13527,7 @@ components:
     BmcResetRequest:
       type: object
       title: BmcResetRequest
-      description: Request to reset a Machine BMC through NICo Core.
+      description: Request to reset a Machine BMC
       properties:
         useIpmiTool:
           type: boolean
@@ -13538,7 +13538,7 @@ components:
     DpuReprovisionRequest:
       type: object
       title: DpuReprovisionRequest
-      description: Request to trigger DPU reprovisioning through NICo Core.
+      description: Request to trigger DPU reprovisioning for a Machine
       required:
         - mode
       properties:
@@ -13559,7 +13559,7 @@ components:
     MachineHealthReportEntry:
       type: object
       title: MachineHealthReportEntry
-      description: Machine health report entry submitted to NICo Core.
+      description: Machine health report entry
       required:
         - source
         - mode
@@ -13577,16 +13577,16 @@ components:
         successes:
           type: array
           items:
-            $ref: '#/components/schemas/MachineHealthReportProbeSuccess'
+            $ref: '#/components/schemas/MachineHealthProbeSuccess'
           description: Results from successful health probes for the Machine.
         alerts:
           type: array
           items:
-            $ref: '#/components/schemas/MachineHealthReportProbeAlert'
+            $ref: '#/components/schemas/MachineHealthProbeAlert'
           description: Results from failed health probes for the Machine.
         mode:
           type: string
-          description: How NICo Core applies this health report.
+          description: How this health report was updated
           enum:
             - Merge
             - Replace
@@ -13614,12 +13614,12 @@ components:
         successes:
           type: array
           items:
-            $ref: '#/components/schemas/MachineHealthReportProbeSuccess'
+            $ref: '#/components/schemas/MachineHealthProbeSuccess'
           description: Results from successful health probes for the Machine.
         alerts:
           type: array
           items:
-            $ref: '#/components/schemas/MachineHealthReportProbeAlert'
+            $ref: '#/components/schemas/MachineHealthProbeAlert'
           description: Results from failed health probes for the Machine.
         mode:
           type: string
@@ -13635,59 +13635,6 @@ components:
               message: DPU reprovisioning in progress
               classifications:
                 - maintenance
-    MachineHealthReportProbeSuccess:
-      type: object
-      title: MachineHealthReportProbeSuccess
-      description: Successful Machine health probe submitted to NICo Core.
-      required:
-        - id
-      properties:
-        id:
-          type: string
-          description: Health probe identifier.
-        target:
-          type: string
-          description: Specific component targeted by health probe.
-      examples:
-        - id: host.reachable
-          target: host
-    MachineHealthReportProbeAlert:
-      type: object
-      title: MachineHealthReportProbeAlert
-      description: Failed Machine health probe submitted to NICo Core.
-      required:
-        - id
-        - message
-      properties:
-        id:
-          type: string
-          description: Health probe identifier.
-        target:
-          type: string
-          description: Specific component targeted by health probe.
-        inAlertSince:
-          type: string
-          format: date-time
-          description: Date/time since the alert has been in effect.
-        message:
-          type: string
-          description: Details of the failed health probe result.
-        tenantMessage:
-          type: string
-          description: Information provided by Tenant, if any.
-        classifications:
-          type: array
-          items:
-            type: string
-          description: Classifications for this alert.
-      examples:
-        - id: dpu.reprovision.in.progress
-          target: dpu0
-          inAlertSince: '2026-06-24T12:00:00Z'
-          message: DPU reprovisioning in progress
-          tenantMessage: Maintenance in progress
-          classifications:
-            - maintenance
     HostFirmwareArtifact:
       type: object
       title: HostFirmwareArtifact
@@ -13983,7 +13930,7 @@ components:
     MachinePowerControlRequest:
       type: object
       title: MachinePowerControlRequest
-      description: Request to power control a Machine through NICo Core.
+      description: Request to power control a Machine
       required:
         - action
       properties:
@@ -20841,6 +20788,8 @@ components:
       title: MachineHealthProbeSuccess
       type: object
       description: Describes results of successful Machine health probe
+      required:
+        - id
       examples:
         - id: FanSpeed
           target: System Board Fan1A
@@ -20857,6 +20806,9 @@ components:
       title: MachineHealthProbeAlert
       type: object
       description: Describes results of a failed Machine health probe
+      required:
+        - id
+        - message
       examples:
         - id: FailedValidationTest
           target: DcgmFullShort
@@ -20882,6 +20834,7 @@ components:
           type:
             - string
             - 'null'
+          format: date-time
           description: Date/time since the alert has been in effect
         message:
           type: string
@@ -24724,7 +24677,7 @@ components:
       properties:
         id:
           type: string
-          description: ID of the DPU Machine (matches the host Machine ID for the DPU as reported by NICo Core)
+          description: ID of the DPU Machine
         infrastructureProviderId:
           type: string
           format: uuid
@@ -24765,7 +24718,7 @@ components:
           description: Labels associated with the DPU
         state:
           type: string
-          description: Lifecycle state of the DPU as reported by NICo Core
+          description: Lifecycle state of the DPU
         dpuNetworkConfig:
           $ref: '#/components/schemas/DpuNetworkConfig'
           description: Complete network configuration sent to the DPU agent
@@ -24774,7 +24727,7 @@ components:
             - string
             - 'null'
           format: date-time
-          description: Last reboot timestamp reported by NICo Core
+          description: Last reboot timestamp
         placementInRack:
           $ref: '#/components/schemas/PlacementInRack'
           description: 'Physical placement of the DPU Machine within its Rack, when known'

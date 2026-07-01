@@ -20,7 +20,7 @@ import (
 // checks if the BmcResetRequest type satisfies the MappedNullable interface at compile time
 var _ MappedNullable = &BmcResetRequest{}
 
-// BmcResetRequest Request to reset a Machine BMC through NICo Core.
+// BmcResetRequest Request to reset a Machine BMC
 type BmcResetRequest struct {
 	// Reset the BMC via ipmitool instead of Redfish.
 	UseIpmiTool *bool `json:"useIpmiTool,omitempty"`

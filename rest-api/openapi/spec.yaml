@@ -188,6 +188,15 @@ tags:
   - name: Machine
     description: |-
       Machine is a physical server that contains CPUs, GPUs, memory, storage, and networking hardware. Machines are the physical building blocks of a Site.
+  - name: BMC Reset
+    description: |-
+      BMC Reset exposes Provider Admin operations that reset a Machine BMC through the Machine's owning Site.
+  - name: DPU Reprovision
+    description: |-
+      DPU Reprovision exposes Provider Admin operations that trigger DPU reprovisioning through the Machine's owning Site.
+  - name: Health Report
+    description: |-
+      Health Report exposes Provider Admin operations that list, create or update, and remove Machine health report overrides through the Machine's owning Site.
   - name: Machine Capability
     description: |-
       Machine Capability defines the hardware capabilities of a Machine. Machine Capabilities can be used to group Machines into Instance Types.
@@ -321,8 +330,8 @@ paths:
             schema:
               $ref: '#/components/schemas/BMCCredentialRequest'
       responses:
-        '200':
-          description: OK
+        '202':
+          description: Machine power control request was accepted
           content:
             application/json:
               schema:
@@ -819,7 +828,7 @@ paths:
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/DeletionAcceptedResponse'
+                $ref: '#/components/schemas/MessageResponse'
               examples:
                 example-1:
                   value:
@@ -1090,7 +1099,7 @@ paths:
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/DeletionAcceptedResponse'
+                $ref: '#/components/schemas/MessageResponse'
               examples:
                 example-1:
                   value:
@@ -1525,7 +1534,7 @@ paths:
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/DeletionAcceptedResponse'
+                $ref: '#/components/schemas/MessageResponse'
               examples:
                 example-1:
                   value:
@@ -1958,7 +1967,7 @@ paths:
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/DeletionAcceptedResponse'
+                $ref: '#/components/schemas/MessageResponse'
               examples:
                 example-1:
                   value:
@@ -2440,7 +2449,7 @@ paths:
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/DeletionAcceptedResponse'
+                $ref: '#/components/schemas/MessageResponse'
               examples:
                 example-1:
                   value:
@@ -4982,7 +4991,7 @@ paths:
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/DeletionAcceptedResponse'
+                $ref: '#/components/schemas/MessageResponse'
               examples:
                 example-1:
                   value:
@@ -5312,7 +5321,7 @@ paths:
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/DeletionAcceptedResponse'
+                $ref: '#/components/schemas/MessageResponse'
               examples:
                 example-1:
                   value:
@@ -5706,7 +5715,7 @@ paths:
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/DeletionAcceptedResponse'
+                $ref: '#/components/schemas/MessageResponse'
               examples:
                 example-1:
                   value:
@@ -5950,7 +5959,7 @@ paths:
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/DeletionAcceptedResponse'
+                $ref: '#/components/schemas/MessageResponse'
               examples:
                 example-1:
                   value:
@@ -6973,7 +6982,7 @@ paths:
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/DeletionAcceptedResponse'
+                $ref: '#/components/schemas/MessageResponse'
               examples:
                 example-1:
                   value:
@@ -8288,7 +8297,7 @@ paths:
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/DeletionAcceptedResponse'
+                $ref: '#/components/schemas/MessageResponse'
               examples:
                 example-1:
                   value:
@@ -9124,7 +9133,7 @@ paths:
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/DeletionAcceptedResponse'
+                $ref: '#/components/schemas/MessageResponse'
               examples:
                 example-1:
                   value:
@@ -9143,6 +9152,214 @@ paths:
           description: Describes an error response for 500 Internal Server Error
           $ref: '#/components/responses/GenericHttpError'
       description: Org must have an Infrastructure Provider entity. Machine must belong to the Provider. User must have authorization role with `PROVIDER_ADMIN` suffix. Machine must meet certain criteria to be eligible for deletion.
+  '/v2/org/{org}/nico/machine/{machineId}/bmc-reset':
+    parameters:
+      - schema:
+          type: string
+        name: org
+        in: path
+        required: true
+        description: Name of the Org
+      - schema:
+          type: string
+        name: machineId
+        in: path
+        required: true
+        description: ID of the Machine
+    post:
+      summary: Reset Machine BMC
+      tags:
+        - BMC Reset
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/BmcResetRequest'
+      responses:
+        '202':
+          description: Machine BMC reset request was accepted
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/MessageResponse'
+              examples:
+                example-1:
+                  value:
+                    message: Machine BMC reset request was accepted
+        '400':
+          $ref: '#/components/responses/ValidationError'
+        '403':
+          $ref: '#/components/responses/ForbiddenError'
+        '404':
+          $ref: '#/components/responses/NotFoundError'
+        '500':
+          $ref: '#/components/responses/GenericHttpError'
+      operationId: reset-machine-bmc
+      description: |-
+        Reset a Machine BMC through NICo Core. The request is authorized,
+        machine-scoped, and proxied to the Machine's owning Site. User must have
+        authorization role with `PROVIDER_ADMIN` suffix.
+  '/v2/org/{org}/nico/machine/{machineId}/dpu-reprovision':
+    parameters:
+      - schema:
+          type: string
+        name: org
+        in: path
+        required: true
+        description: Name of the Org
+      - schema:
+          type: string
+        name: machineId
+        in: path
+        required: true
+        description: ID of the Machine
+    patch:
+      summary: Trigger DPU reprovisioning
+      tags:
+        - DPU Reprovision
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/DpuReprovisionRequest'
+      responses:
+        '202':
+          description: DPU reprovisioning request was accepted
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/MessageResponse'
+              examples:
+                example-1:
+                  value:
+                    message: DPU reprovisioning request was accepted
+        '400':
+          $ref: '#/components/responses/ValidationError'
+        '403':
+          $ref: '#/components/responses/ForbiddenError'
+        '404':
+          $ref: '#/components/responses/NotFoundError'
+        '500':
+          $ref: '#/components/responses/GenericHttpError'
+      operationId: trigger-dpu-reprovisioning
+      description: |-
+        Trigger DPU reprovisioning for a Machine through NICo Core. The request
+        is authorized, machine-scoped, and proxied to the Machine's owning Site.
+        This endpoint calls Core's `TriggerDpuReprovisioning` RPC directly. If
+        Core requires a `HostUpdateInProgress` health report first, insert it
+        with the Machine health-report endpoint before triggering reprovisioning.
+        User must have authorization role with `PROVIDER_ADMIN` suffix.
+  '/v2/org/{org}/nico/machine/{machineId}/health-report':
+    parameters:
+      - schema:
+          type: string
+        name: org
+        in: path
+        required: true
+        description: Name of the Org
+      - schema:
+          type: string
+        name: machineId
+        in: path
+        required: true
+        description: ID of the Machine
+    get:
+      summary: List Machine health reports
+      tags:
+        - Health Report
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/MachineHealthReportEntry'
+        '403':
+          $ref: '#/components/responses/ForbiddenError'
+        '404':
+          $ref: '#/components/responses/NotFoundError'
+        '500':
+          $ref: '#/components/responses/GenericHttpError'
+      operationId: list-machine-health-reports
+      description: |-
+        List Machine health report overrides through NICo Core. The request is
+        authorized, machine-scoped, and proxied to the Machine's owning Site.
+        User must have authorization role with `PROVIDER_ADMIN` suffix.
+    put:
+      summary: Create Or Update Machine health report
+      tags:
+        - Health Report
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/MachineHealthReportEntry'
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/MachineHealthReportEntry'
+        '400':
+          $ref: '#/components/responses/ValidationError'
+        '403':
+          $ref: '#/components/responses/ForbiddenError'
+        '404':
+          $ref: '#/components/responses/NotFoundError'
+        '500':
+          $ref: '#/components/responses/GenericHttpError'
+      operationId: create-or-update-machine-health-report
+      description: |-
+        Add or update a Machine health report override through NICo Core. The
+        request is authorized, machine-scoped, and proxied to the Machine's
+        owning Site. User must have authorization role with `PROVIDER_ADMIN`
+        suffix.
+  '/v2/org/{org}/nico/machine/{machineId}/health-report/{source}':
+    parameters:
+      - schema:
+          type: string
+        name: org
+        in: path
+        required: true
+        description: Name of the Org
+      - schema:
+          type: string
+        name: machineId
+        in: path
+        required: true
+        description: ID of the Machine
+      - schema:
+          type: string
+        name: source
+        in: path
+        required: true
+        description: Health report source
+    delete:
+      summary: Remove Machine health report
+      tags:
+        - Health Report
+      responses:
+        '204':
+          description: Machine health report was successfully removed
+        '400':
+          $ref: '#/components/responses/ValidationError'
+        '403':
+          $ref: '#/components/responses/ForbiddenError'
+        '404':
+          $ref: '#/components/responses/NotFoundError'
+        '500':
+          $ref: '#/components/responses/GenericHttpError'
+      operationId: remove-machine-health-report
+      description: |-
+        Remove a Machine health report override through NICo Core. The request
+        is authorized, machine-scoped, and proxied to the Machine's owning Site.
+        User must have authorization role with `PROVIDER_ADMIN` suffix.
   '/v2/org/{org}/nico/machine/{machineId}/power':
     parameters:
       - schema:
@@ -9180,7 +9397,11 @@ paths:
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/MachinePowerControlResponse'
+                $ref: '#/components/schemas/MessageResponse'
+              examples:
+                example-1:
+                  value:
+                    message: Power control accepted
         '400':
           $ref: '#/components/responses/ValidationError'
         '403':
@@ -11644,7 +11865,7 @@ paths:
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/DeletionAcceptedResponse'
+                $ref: '#/components/schemas/MessageResponse'
               examples:
                 example-1:
                   value:
@@ -12223,7 +12444,7 @@ paths:
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/DeletionAcceptedResponse'
+                $ref: '#/components/schemas/MessageResponse'
               examples:
                 example-1:
                   value:
@@ -12518,7 +12739,7 @@ paths:
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/DeletionAcceptedResponse'
+                $ref: '#/components/schemas/MessageResponse'
               examples:
                 example-1:
                   value:
@@ -13303,6 +13524,135 @@ components:
         macAddress:
           type: string
           description: BMC MAC address. Required for kind BMCRoot, ignored for SiteWideRoot.
+    BmcResetRequest:
+      type: object
+      title: BmcResetRequest
+      description: Request to reset a Machine BMC through NICo Core.
+      properties:
+        useIpmitool:
+          type: boolean
+          default: false
+          description: Reset the BMC via ipmitool instead of Redfish.
+      examples:
+        - useIpmitool: true
+    DpuReprovisionRequest:
+      type: object
+      title: DpuReprovisionRequest
+      description: Request to trigger DPU reprovisioning through NICo Core.
+      required:
+        - mode
+      properties:
+        mode:
+          type: string
+          description: DPU reprovisioning mode.
+          enum:
+            - Set
+            - Clear
+            - Restart
+        updateFirmware:
+          type: boolean
+          default: false
+          description: Whether to update firmware during reprovisioning.
+      examples:
+        - mode: Restart
+          updateFirmware: true
+    MachineHealthReportEntry:
+      type: object
+      title: MachineHealthReportEntry
+      description: Machine health report entry submitted to NICo Core.
+      required:
+        - source
+        - mode
+      properties:
+        source:
+          type: string
+          description: Health report source.
+        triggeredBy:
+          type: string
+          description: Person or system that triggered this health report.
+        observedAt:
+          type: string
+          format: date-time
+          description: Date/time when the health report was observed.
+        successes:
+          type: array
+          items:
+            $ref: '#/components/schemas/MachineHealthReportProbeSuccess'
+          description: Results from successful health probes for the Machine.
+        alerts:
+          type: array
+          items:
+            $ref: '#/components/schemas/MachineHealthReportProbeAlert'
+          description: Results from failed health probes for the Machine.
+        mode:
+          type: string
+          description: How NICo Core applies this health report.
+          enum:
+            - Merge
+            - Replace
+      examples:
+        - source: overrides.sre
+          triggeredBy: operator
+          observedAt: '2026-06-24T12:00:00Z'
+          mode: Merge
+          alerts:
+            - id: dpu.reprovision.in.progress
+              message: DPU reprovisioning in progress
+              classifications:
+                - maintenance
+    MachineHealthReportProbeSuccess:
+      type: object
+      title: MachineHealthReportProbeSuccess
+      description: Successful Machine health probe submitted to NICo Core.
+      required:
+        - id
+      properties:
+        id:
+          type: string
+          description: Health probe identifier.
+        target:
+          type: string
+          description: Specific component targeted by health probe.
+      examples:
+        - id: host.reachable
+          target: host
+    MachineHealthReportProbeAlert:
+      type: object
+      title: MachineHealthReportProbeAlert
+      description: Failed Machine health probe submitted to NICo Core.
+      required:
+        - id
+        - message
+      properties:
+        id:
+          type: string
+          description: Health probe identifier.
+        target:
+          type: string
+          description: Specific component targeted by health probe.
+        inAlertSince:
+          type: string
+          format: date-time
+          description: Date/time since the alert has been in effect.
+        message:
+          type: string
+          description: Details of the failed health probe result.
+        tenantMessage:
+          type: string
+          description: Information provided by Tenant, if any.
+        classifications:
+          type: array
+          items:
+            type: string
+          description: Classifications for this alert.
+      examples:
+        - id: dpu.reprovision.in.progress
+          target: dpu0
+          inAlertSince: '2026-06-24T12:00:00Z'
+          message: DPU reprovisioning in progress
+          tenantMessage: Maintenance in progress
+          classifications:
+            - maintenance
     HostFirmwareArtifact:
       type: object
       title: HostFirmwareArtifact
@@ -13615,26 +13965,6 @@ components:
         acknowledgeAttachedInstance:
           type: boolean
           description: Acknowledges that an Instance is currently attached to the Machine.
-    MachinePowerControlResponse:
-      type: object
-      title: MachinePowerControlResponse
-      description: Response for a Machine power control request.
-      required:
-        - machineId
-        - action
-        - message
-      properties:
-        machineId:
-          type: string
-          description: ID of the Machine.
-        action:
-          type: string
-          description: Power control action accepted.
-        message:
-          type:
-            - string
-            - 'null'
-          description: Optional message returned by NICo Core.
     InfrastructureProvider:
       description: Infrastructure providers own and manage datacenters
       type: object
@@ -23701,16 +24031,16 @@ components:
         notice:
           type: string
           description: Message describing the deprecation
-    DeletionAcceptedResponse:
-      title: DeletionAcceptedResponse
+    MessageResponse:
+      title: MessageResponse
       type: object
-      description: JSON body for accepted asynchronous DELETE requests
+      description: Structured response with a human-readable message
       required:
         - message
       properties:
         message:
           type: string
-          description: Human-readable outcome of the delete request
+          description: Human-readable outcome of the request
       example:
         message: Deletion request was accepted
     NICoAPIError:

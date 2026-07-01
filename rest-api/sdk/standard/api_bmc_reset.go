@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+// SPDX-License-Identifier: Apache-2.0
+
 /*
 NVIDIA Infra Controller REST API
 
@@ -35,16 +38,16 @@ func (r ApiResetMachineBmcRequest) BmcResetRequest(bmcResetRequest BmcResetReque
 	return r
 }
 
-func (r ApiResetMachineBmcRequest) Execute() (*BmcResetResponse, *http.Response, error) {
+func (r ApiResetMachineBmcRequest) Execute() (*MessageResponse, *http.Response, error) {
 	return r.ApiService.ResetMachineBmcExecute(r)
 }
 
 /*
 ResetMachineBmc Reset Machine BMC
 
-Reset a Machine BMC through NICo Core. The request is authorized,
-machine-scoped, and proxied to the Machine's owning Site. User must have
-authorization role with `PROVIDER_ADMIN` suffix.
+Reset BMC of a specific Machine.
+
+User must have authorization role with `PROVIDER_ADMIN` suffix.
 
 	@param ctx context.Context - for authentication, logging, cancellation, deadlines, tracing, etc. Passed from http.Request or context.Background().
 	@param org Name of the Org
@@ -62,13 +65,13 @@ func (a *BMCResetAPIService) ResetMachineBmc(ctx context.Context, org string, ma
 
 // Execute executes the request
 //
-//	@return BmcResetResponse
-func (a *BMCResetAPIService) ResetMachineBmcExecute(r ApiResetMachineBmcRequest) (*BmcResetResponse, *http.Response, error) {
+//	@return MessageResponse
+func (a *BMCResetAPIService) ResetMachineBmcExecute(r ApiResetMachineBmcRequest) (*MessageResponse, *http.Response, error) {
 	var (
 		localVarHTTPMethod  = http.MethodPost
 		localVarPostBody    interface{}
 		formFiles           []formFile
-		localVarReturnValue *BmcResetResponse
+		localVarReturnValue *MessageResponse
 	)
 
 	localBasePath, err := a.client.cfg.ServerURLWithContext(r.ctx, "BMCResetAPIService.ResetMachineBmc")
@@ -83,6 +86,9 @@ func (a *BMCResetAPIService) ResetMachineBmcExecute(r ApiResetMachineBmcRequest)
 	localVarHeaderParams := make(map[string]string)
 	localVarQueryParams := url.Values{}
 	localVarFormParams := url.Values{}
+	if r.bmcResetRequest == nil {
+		return localVarReturnValue, nil, reportError("bmcResetRequest is required and must be specified")
+	}
 
 	// to determine the Content-Type header
 	localVarHTTPContentTypes := []string{"application/json"}

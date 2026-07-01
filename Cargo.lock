@@ -853,6 +853,7 @@ dependencies = [
  "mac_address",
  "nv-redfish",
  "regex",
+ "serde_json",
  "tokio",
  "tracing",
 ]
@@ -2545,6 +2546,7 @@ dependencies = [
  "opentelemetry",
  "prometheus-text-parser",
  "sqlx",
+ "tempfile",
  "thiserror 2.0.18",
  "time",
  "tokio",

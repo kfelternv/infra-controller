@@ -3,6 +3,5 @@ PUT /v2/org/{org}/nico/credential/bmc removed the enum value `site-wide-root` of
 POST /v2/org/{org}/nico/instance the `interfaces/items/virtualFunctionId` request property's max was decreased to `15.00`
 POST /v2/org/{org}/nico/instance/batch the `interfaces/items/virtualFunctionId` request property's max was decreased to `15.00`
 PATCH /v2/org/{org}/nico/instance/{instanceId} the `interfaces/items/virtualFunctionId` request property's max was decreased to `15.00`
-PATCH /v2/org/{org}/nico/machine/{machineId}/power removed the required property `action` from the response with the `200` status
-PATCH /v2/org/{org}/nico/machine/{machineId}/power removed the required property `machineId` from the response with the `200` status
+PATCH /v2/org/{org}/nico/machine/{machineId}/power removed the success response with the status `200`
 PUT /v2/org/{org}/nico/credential/bmc removed the success response with the status `200`

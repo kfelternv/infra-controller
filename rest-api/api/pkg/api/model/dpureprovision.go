@@ -32,7 +32,7 @@ var validDpuReprovisionModesAny = func() []interface{} {
 
 type APIDpuReprovisionRequest struct {
 	Mode           string `json:"mode"`
-	UpdateFirmware bool   `json:"updateFirmware,omitempty"`
+	UpdateFirmware bool   `json:"updateFirmware"`
 }
 
 func (r *APIDpuReprovisionRequest) Validate() error {
@@ -45,8 +45,9 @@ func (r *APIDpuReprovisionRequest) Validate() error {
 
 func (r *APIDpuReprovisionRequest) ToProto(machineID string) *cwssaws.DpuReprovisioningRequest {
 	return &cwssaws.DpuReprovisioningRequest{
-		MachineId:      &cwssaws.MachineId{Id: machineID},
-		Mode:           dpuReprovisionModeToProto(r.Mode),
+		MachineId: &cwssaws.MachineId{Id: machineID},
+		Mode:      dpuReprovisionModeToProto(r.Mode),
+		// TODO: Add end user initiator
 		Initiator:      cwssaws.UpdateInitiator_AdminCli,
 		UpdateFirmware: r.UpdateFirmware,
 	}

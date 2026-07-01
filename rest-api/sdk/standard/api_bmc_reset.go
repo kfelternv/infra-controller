@@ -45,9 +45,9 @@ func (r ApiResetMachineBmcRequest) Execute() (*MessageResponse, *http.Response, 
 /*
 ResetMachineBmc Reset Machine BMC
 
-Reset a Machine BMC through NICo Core. The request is authorized,
-machine-scoped, and proxied to the Machine's owning Site. User must have
-authorization role with `PROVIDER_ADMIN` suffix.
+Reset BMC of a specific Machine.
+
+User must have authorization role with `PROVIDER_ADMIN` suffix.
 
 	@param ctx context.Context - for authentication, logging, cancellation, deadlines, tracing, etc. Passed from http.Request or context.Background().
 	@param org Name of the Org

@@ -25,7 +25,7 @@ import (
 // DPUReprovisionAPIService DPUReprovisionAPI service
 type DPUReprovisionAPIService service
 
-type ApiTriggerDpuReprovisioningRequest struct {
+type ApiReprovisionMachineDpuRequest struct {
 	ctx                   context.Context
 	ApiService            *DPUReprovisionAPIService
 	org                   string
@@ -33,32 +33,28 @@ type ApiTriggerDpuReprovisioningRequest struct {
 	dpuReprovisionRequest *DpuReprovisionRequest
 }
 
-func (r ApiTriggerDpuReprovisioningRequest) DpuReprovisionRequest(dpuReprovisionRequest DpuReprovisionRequest) ApiTriggerDpuReprovisioningRequest {
+func (r ApiReprovisionMachineDpuRequest) DpuReprovisionRequest(dpuReprovisionRequest DpuReprovisionRequest) ApiReprovisionMachineDpuRequest {
 	r.dpuReprovisionRequest = &dpuReprovisionRequest
 	return r
 }
 
-func (r ApiTriggerDpuReprovisioningRequest) Execute() (*MessageResponse, *http.Response, error) {
-	return r.ApiService.TriggerDpuReprovisioningExecute(r)
+func (r ApiReprovisionMachineDpuRequest) Execute() (*MessageResponse, *http.Response, error) {
+	return r.ApiService.ReprovisionMachineDpuExecute(r)
 }
 
 /*
-TriggerDpuReprovisioning Trigger DPU reprovisioning
+ReprovisionMachineDpu Reprovision Machine DPUs
 
-Trigger DPU reprovisioning for a Machine through NICo Core. The request
-is authorized, machine-scoped, and proxied to the Machine's owning Site.
-This endpoint calls Core's `TriggerDpuReprovisioning` RPC directly. If
-Core requires a `HostUpdateInProgress` health report first, insert it
-with the Machine health-report endpoint before triggering reprovisioning.
+Trigger DPU reprovisioning for a Machine. It may be necessary to create a `HostUpdateInProgress` health report for the Machine before DPU reprovisioning can be triggered.
 User must have authorization role with `PROVIDER_ADMIN` suffix.
 
 	@param ctx context.Context - for authentication, logging, cancellation, deadlines, tracing, etc. Passed from http.Request or context.Background().
 	@param org Name of the Org
 	@param machineId ID of the Machine
-	@return ApiTriggerDpuReprovisioningRequest
+	@return ApiReprovisionMachineDpuRequest
 */
-func (a *DPUReprovisionAPIService) TriggerDpuReprovisioning(ctx context.Context, org string, machineId string) ApiTriggerDpuReprovisioningRequest {
-	return ApiTriggerDpuReprovisioningRequest{
+func (a *DPUReprovisionAPIService) ReprovisionMachineDpu(ctx context.Context, org string, machineId string) ApiReprovisionMachineDpuRequest {
+	return ApiReprovisionMachineDpuRequest{
 		ApiService: a,
 		ctx:        ctx,
 		org:        org,
@@ -69,7 +65,7 @@ func (a *DPUReprovisionAPIService) TriggerDpuReprovisioning(ctx context.Context,
 // Execute executes the request
 //
 //	@return MessageResponse
-func (a *DPUReprovisionAPIService) TriggerDpuReprovisioningExecute(r ApiTriggerDpuReprovisioningRequest) (*MessageResponse, *http.Response, error) {
+func (a *DPUReprovisionAPIService) ReprovisionMachineDpuExecute(r ApiReprovisionMachineDpuRequest) (*MessageResponse, *http.Response, error) {
 	var (
 		localVarHTTPMethod  = http.MethodPatch
 		localVarPostBody    interface{}
@@ -77,7 +73,7 @@ func (a *DPUReprovisionAPIService) TriggerDpuReprovisioningExecute(r ApiTriggerD
 		localVarReturnValue *MessageResponse
 	)
 
-	localBasePath, err := a.client.cfg.ServerURLWithContext(r.ctx, "DPUReprovisionAPIService.TriggerDpuReprovisioning")
+	localBasePath, err := a.client.cfg.ServerURLWithContext(r.ctx, "DPUReprovisionAPIService.ReprovisionMachineDpu")
 	if err != nil {
 		return localVarReturnValue, nil, &GenericOpenAPIError{error: err.Error()}
 	}

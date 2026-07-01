@@ -118,6 +118,9 @@ tags:
 
       - `rackLevelAdministration` capability attribute was deprecated in favor of `flow` and was removed on May 13th, 2026 0:00 UTC. Please use `flow` instead.
       - `isRackLevelAdministrationEnabled` query parameter was deprecated in favor of `isFlowEnabled` and was removed on May 13th, 2026 0:00 UTC. Please use `isFlowEnabled` instead.
+  - name: BMC Credential
+    description: |-
+      BMC Credential endpoints allow creating and updating BMC credentials across all Machines of a Site
   - name: Allocation
     description: |-
       Allocations are the mechanism by which Provider can delegate Network and Compute resources to Tenant.
@@ -189,14 +192,16 @@ tags:
     description: |-
       Machine is a physical server that contains CPUs, GPUs, memory, storage, and networking hardware. Machines are the physical building blocks of a Site.
   - name: BMC Reset
+    x-displayName: BMC Reset
     description: |-
-      BMC Reset exposes Provider Admin operations that reset a Machine BMC through the Machine's owning Site.
+      BMC Reset allows resetting a Machine's BMC
   - name: DPU Reprovision
+    x-DisplayName: DPU Reprovision
     description: |-
-      DPU Reprovision exposes Provider Admin operations that trigger DPU reprovisioning through the Machine's owning Site.
+      DPU Reprovision allows re-provisioning Machine's DPUs
   - name: Health Report
     description: |-
-      Health Report exposes Provider Admin operations that list, create or update, and remove Machine health report overrides through the Machine's owning Site.
+      Machine Health Report contains information about the health of a Machine including user enforced overrides
   - name: Machine Capability
     description: |-
       Machine Capability defines the hardware capabilities of a Machine. Machine Capabilities can be used to group Machines into Instance Types.
@@ -311,39 +316,6 @@ tags:
       - `rackLevelAdministration` capability attribute was deprecated in favor of `flow` and was removed on May 13th, 2026 0:00 UTC. Please use `flow` instead.
       - `isRackLevelAdministrationEnabled` query parameter was deprecated in favor of `isFlowEnabled` and was removed on May 13th, 2026 0:00 UTC. Please use `isFlowEnabled` instead.
 paths:
-  '/v2/org/{org}/nico/credential/bmc':
-    parameters:
-      - schema:
-          type: string
-        name: org
-        in: path
-        required: true
-        description: Name of the Org
-    put:
-      summary: Create Or Update BMC Credential
-      tags:
-        - BMC Credential
-      requestBody:
-        required: true
-        content:
-          application/json:
-            schema:
-              $ref: '#/components/schemas/BMCCredentialRequest'
-      responses:
-        '202':
-          description: Machine power control request was accepted
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/BMCCredential'
-        '403':
-          $ref: '#/components/responses/ForbiddenError'
-      operationId: create-or-update-bmc-credential
-      description: |-
-        Create or update a site-wide or per-BMC root credential. Equivalent
-        to `carbide-admin-cli credential add-bmc`.
-
-        User must have authorization role with `PROVIDER_ADMIN` suffix.
   '/v2/org/{org}/nico/service-account/current':
     parameters:
       - schema:
@@ -1188,6 +1160,39 @@ paths:
           in: query
           name: orderBy
           description: Ordering for pagination query
+  '/v2/org/{org}/nico/credential/bmc':
+    parameters:
+      - schema:
+          type: string
+        name: org
+        in: path
+        required: true
+        description: Name of the Org
+    put:
+      summary: Create Or Update BMC Credential
+      tags:
+        - BMC Credential
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/BMCCredentialRequest'
+      responses:
+        '202':
+          description: Machine power control request was accepted
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/BMCCredential'
+        '403':
+          $ref: '#/components/responses/ForbiddenError'
+      operationId: create-or-update-bmc-credential
+      description: |-
+        Create or update a site-wide or per-BMC root credential. Equivalent
+        to `carbide-admin-cli credential add-bmc`.
+
+        User must have authorization role with `PROVIDER_ADMIN` suffix.
   '/v2/org/{org}/nico/allocation':
     parameters:
       - schema:
@@ -9197,9 +9202,9 @@ paths:
           $ref: '#/components/responses/GenericHttpError'
       operationId: reset-machine-bmc
       description: |-
-        Reset a Machine BMC through NICo Core. The request is authorized,
-        machine-scoped, and proxied to the Machine's owning Site. User must have
-        authorization role with `PROVIDER_ADMIN` suffix.
+        Reset BMC of a specific Machine.
+        
+        User must have authorization role with `PROVIDER_ADMIN` suffix.
   '/v2/org/{org}/nico/machine/{machineId}/dpu-reprovision':
     parameters:
       - schema:
@@ -9215,7 +9220,7 @@ paths:
         required: true
         description: ID of the Machine
     patch:
-      summary: Trigger DPU reprovisioning
+      summary: Reprovision Machine DPUs
       tags:
         - DPU Reprovision
       requestBody:
@@ -9243,13 +9248,9 @@ paths:
           $ref: '#/components/responses/NotFoundError'
         '500':
           $ref: '#/components/responses/GenericHttpError'
-      operationId: trigger-dpu-reprovisioning
+      operationId: reprovision-machine-dpu
       description: |-
-        Trigger DPU reprovisioning for a Machine through NICo Core. The request
-        is authorized, machine-scoped, and proxied to the Machine's owning Site.
-        This endpoint calls Core's `TriggerDpuReprovisioning` RPC directly. If
-        Core requires a `HostUpdateInProgress` health report first, insert it
-        with the Machine health-report endpoint before triggering reprovisioning.
+        Trigger DPU reprovisioning for a Machine. It may be necessary to create a `HostUpdateInProgress` health report for the Machine before DPU reprovisioning can be triggered.
         User must have authorization role with `PROVIDER_ADMIN` suffix.
   '/v2/org/{org}/nico/machine/{machineId}/health-report':
     parameters:
@@ -9266,7 +9267,7 @@ paths:
         required: true
         description: ID of the Machine
     get:
-      summary: List Machine health reports
+      summary: Retrieve all Machine health reports
       tags:
         - Health Report
       responses:
@@ -9284,13 +9285,13 @@ paths:
           $ref: '#/components/responses/NotFoundError'
         '500':
           $ref: '#/components/responses/GenericHttpError'
-      operationId: list-machine-health-reports
+      operationId: get-machine-health-report
       description: |-
-        List Machine health report overrides through NICo Core. The request is
-        authorized, machine-scoped, and proxied to the Machine's owning Site.
+        Get all health reports for a specific Machine.
+
         User must have authorization role with `PROVIDER_ADMIN` suffix.
     put:
-      summary: Create Or Update Machine health report
+      summary: Create or update Machine health report
       tags:
         - Health Report
       requestBody:
@@ -9298,7 +9299,7 @@ paths:
         content:
           application/json:
             schema:
-              $ref: '#/components/schemas/MachineHealthReportEntry'
+              $ref: '#/components/schemas/MachineHealthReportEntryRequest'
       responses:
         '200':
           description: OK
@@ -9316,10 +9317,9 @@ paths:
           $ref: '#/components/responses/GenericHttpError'
       operationId: create-or-update-machine-health-report
       description: |-
-        Add or update a Machine health report override through NICo Core. The
-        request is authorized, machine-scoped, and proxied to the Machine's
-        owning Site. User must have authorization role with `PROVIDER_ADMIN`
-        suffix.
+        Add or update health report override for a specific Machine.
+        
+        User must have authorization role with `PROVIDER_ADMIN` suffix.
   '/v2/org/{org}/nico/machine/{machineId}/health-report/{source}':
     parameters:
       - schema:
@@ -9341,7 +9341,7 @@ paths:
         required: true
         description: Health report source
     delete:
-      summary: Remove Machine health report
+      summary: Delete Machine health report
       tags:
         - Health Report
       responses:
@@ -9355,10 +9355,10 @@ paths:
           $ref: '#/components/responses/NotFoundError'
         '500':
           $ref: '#/components/responses/GenericHttpError'
-      operationId: remove-machine-health-report
+      operationId: delete-machine-health-report
       description: |-
-        Remove a Machine health report override through NICo Core. The request
-        is authorized, machine-scoped, and proxied to the Machine's owning Site.
+        Remove a health report override for a specific Machine.
+
         User must have authorization role with `PROVIDER_ADMIN` suffix.
   '/v2/org/{org}/nico/machine/{machineId}/power':
     parameters:
@@ -9392,8 +9392,8 @@ paths:
                 value:
                   action: ForceRestart
       responses:
-        '200':
-          description: OK
+        '202':
+          description: Machine power control request was accepted
           content:
             application/json:
               schema:
@@ -9412,9 +9412,9 @@ paths:
           $ref: '#/components/responses/GenericHttpError'
       operationId: machine-power-control-machine
       description: |-
-        Power control a Machine through NICo Core. The request is authorized,
-        machine-scoped, and proxied to the Machine's owning Site. User must have
-        authorization role with `PROVIDER_ADMIN` suffix.
+        Execute power control actions for a specific Machine.
+        
+        User must have authorization role with `PROVIDER_ADMIN` suffix.
   '/v2/org/{org}/nico/machine/{machineId}/status-history':
     parameters:
       - schema:
@@ -13529,12 +13529,12 @@ components:
       title: BmcResetRequest
       description: Request to reset a Machine BMC through NICo Core.
       properties:
-        useIpmitool:
+        useIpmiTool:
           type: boolean
           default: false
           description: Reset the BMC via ipmitool instead of Redfish.
       examples:
-        - useIpmitool: true
+        - useIpmiTool: true
     DpuReprovisionRequest:
       type: object
       title: DpuReprovisionRequest
@@ -13594,6 +13594,41 @@ components:
         - source: overrides.sre
           triggeredBy: operator
           observedAt: '2026-06-24T12:00:00Z'
+          mode: Merge
+          alerts:
+            - id: dpu.reprovision.in.progress
+              message: DPU reprovisioning in progress
+              classifications:
+                - maintenance
+    MachineHealthReportEntryRequest:
+      type: object
+      title: MachineHealthReportEntryRequest
+      description: Request to add or update a Machine health report override.
+      required:
+        - source
+        - mode
+      properties:
+        source:
+          type: string
+          description: Health report source.
+        successes:
+          type: array
+          items:
+            $ref: '#/components/schemas/MachineHealthReportProbeSuccess'
+          description: Results from successful health probes for the Machine.
+        alerts:
+          type: array
+          items:
+            $ref: '#/components/schemas/MachineHealthReportProbeAlert'
+          description: Results from failed health probes for the Machine.
+        mode:
+          type: string
+          description: How updates to this health report should be handled
+          enum:
+            - Merge
+            - Replace
+      examples:
+        - source: overrides.sre
           mode: Merge
           alerts:
             - id: dpu.reprovision.in.progress

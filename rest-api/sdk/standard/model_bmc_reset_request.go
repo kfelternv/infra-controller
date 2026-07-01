@@ -23,7 +23,7 @@ var _ MappedNullable = &BmcResetRequest{}
 // BmcResetRequest Request to reset a Machine BMC through NICo Core.
 type BmcResetRequest struct {
 	// Reset the BMC via ipmitool instead of Redfish.
-	UseIpmitool *bool `json:"useIpmitool,omitempty"`
+	UseIpmiTool *bool `json:"useIpmiTool,omitempty"`
 }
 
 // NewBmcResetRequest instantiates a new BmcResetRequest object
@@ -32,8 +32,8 @@ type BmcResetRequest struct {
 // will change when the set of required properties is changed
 func NewBmcResetRequest() *BmcResetRequest {
 	this := BmcResetRequest{}
-	var useIpmitool bool = false
-	this.UseIpmitool = &useIpmitool
+	var useIpmiTool bool = false
+	this.UseIpmiTool = &useIpmiTool
 	return &this
 }
 
@@ -42,41 +42,41 @@ func NewBmcResetRequest() *BmcResetRequest {
 // but it doesn't guarantee that properties required by API are set
 func NewBmcResetRequestWithDefaults() *BmcResetRequest {
 	this := BmcResetRequest{}
-	var useIpmitool bool = false
-	this.UseIpmitool = &useIpmitool
+	var useIpmiTool bool = false
+	this.UseIpmiTool = &useIpmiTool
 	return &this
 }
 
-// GetUseIpmitool returns the UseIpmitool field value if set, zero value otherwise.
-func (o *BmcResetRequest) GetUseIpmitool() bool {
-	if o == nil || IsNil(o.UseIpmitool) {
+// GetUseIpmiTool returns the UseIpmiTool field value if set, zero value otherwise.
+func (o *BmcResetRequest) GetUseIpmiTool() bool {
+	if o == nil || IsNil(o.UseIpmiTool) {
 		var ret bool
 		return ret
 	}
-	return *o.UseIpmitool
+	return *o.UseIpmiTool
 }
 
-// GetUseIpmitoolOk returns a tuple with the UseIpmitool field value if set, nil otherwise
+// GetUseIpmiToolOk returns a tuple with the UseIpmiTool field value if set, nil otherwise
 // and a boolean to check if the value has been set.
-func (o *BmcResetRequest) GetUseIpmitoolOk() (*bool, bool) {
-	if o == nil || IsNil(o.UseIpmitool) {
+func (o *BmcResetRequest) GetUseIpmiToolOk() (*bool, bool) {
+	if o == nil || IsNil(o.UseIpmiTool) {
 		return nil, false
 	}
-	return o.UseIpmitool, true
+	return o.UseIpmiTool, true
 }
 
-// HasUseIpmitool returns a boolean if a field has been set.
-func (o *BmcResetRequest) HasUseIpmitool() bool {
-	if o != nil && !IsNil(o.UseIpmitool) {
+// HasUseIpmiTool returns a boolean if a field has been set.
+func (o *BmcResetRequest) HasUseIpmiTool() bool {
+	if o != nil && !IsNil(o.UseIpmiTool) {
 		return true
 	}
 
 	return false
 }
 
-// SetUseIpmitool gets a reference to the given bool and assigns it to the UseIpmitool field.
-func (o *BmcResetRequest) SetUseIpmitool(v bool) {
-	o.UseIpmitool = &v
+// SetUseIpmiTool gets a reference to the given bool and assigns it to the UseIpmiTool field.
+func (o *BmcResetRequest) SetUseIpmiTool(v bool) {
+	o.UseIpmiTool = &v
 }
 
 func (o BmcResetRequest) MarshalJSON() ([]byte, error) {
@@ -89,8 +89,8 @@ func (o BmcResetRequest) MarshalJSON() ([]byte, error) {
 
 func (o BmcResetRequest) ToMap() (map[string]interface{}, error) {
 	toSerialize := map[string]interface{}{}
-	if !IsNil(o.UseIpmitool) {
-		toSerialize["useIpmitool"] = o.UseIpmitool
+	if !IsNil(o.UseIpmiTool) {
+		toSerialize["useIpmiTool"] = o.UseIpmiTool
 	}
 	return toSerialize, nil
 }

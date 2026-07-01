@@ -26,15 +26,15 @@ import (
 type HealthReportAPIService service
 
 type ApiCreateOrUpdateMachineHealthReportRequest struct {
-	ctx                      context.Context
-	ApiService               *HealthReportAPIService
-	org                      string
-	machineId                string
-	machineHealthReportEntry *MachineHealthReportEntry
+	ctx                             context.Context
+	ApiService                      *HealthReportAPIService
+	org                             string
+	machineId                       string
+	machineHealthReportEntryRequest *MachineHealthReportEntryRequest
 }
 
-func (r ApiCreateOrUpdateMachineHealthReportRequest) MachineHealthReportEntry(machineHealthReportEntry MachineHealthReportEntry) ApiCreateOrUpdateMachineHealthReportRequest {
-	r.machineHealthReportEntry = &machineHealthReportEntry
+func (r ApiCreateOrUpdateMachineHealthReportRequest) MachineHealthReportEntryRequest(machineHealthReportEntryRequest MachineHealthReportEntryRequest) ApiCreateOrUpdateMachineHealthReportRequest {
+	r.machineHealthReportEntryRequest = &machineHealthReportEntryRequest
 	return r
 }
 
@@ -43,12 +43,11 @@ func (r ApiCreateOrUpdateMachineHealthReportRequest) Execute() (*MachineHealthRe
 }
 
 /*
-CreateOrUpdateMachineHealthReport Create Or Update Machine health report
+CreateOrUpdateMachineHealthReport Create or update Machine health report
 
-Add or update a Machine health report override through NICo Core. The
-request is authorized, machine-scoped, and proxied to the Machine's
-owning Site. User must have authorization role with `PROVIDER_ADMIN`
-suffix.
+Add or update health report override for a specific Machine.
+
+User must have authorization role with `PROVIDER_ADMIN` suffix.
 
 	@param ctx context.Context - for authentication, logging, cancellation, deadlines, tracing, etc. Passed from http.Request or context.Background().
 	@param org Name of the Org
@@ -87,8 +86,8 @@ func (a *HealthReportAPIService) CreateOrUpdateMachineHealthReportExecute(r ApiC
 	localVarHeaderParams := make(map[string]string)
 	localVarQueryParams := url.Values{}
 	localVarFormParams := url.Values{}
-	if r.machineHealthReportEntry == nil {
-		return localVarReturnValue, nil, reportError("machineHealthReportEntry is required and must be specified")
+	if r.machineHealthReportEntryRequest == nil {
+		return localVarReturnValue, nil, reportError("machineHealthReportEntryRequest is required and must be specified")
 	}
 
 	// to determine the Content-Type header
@@ -109,7 +108,7 @@ func (a *HealthReportAPIService) CreateOrUpdateMachineHealthReportExecute(r ApiC
 		localVarHeaderParams["Accept"] = localVarHTTPHeaderAccept
 	}
 	// body params
-	localVarPostBody = r.machineHealthReportEntry
+	localVarPostBody = r.machineHealthReportEntryRequest
 	req, err := a.client.prepareRequest(r.ctx, localVarPath, localVarHTTPMethod, localVarPostBody, localVarHeaderParams, localVarQueryParams, localVarFormParams, formFiles)
 	if err != nil {
 		return localVarReturnValue, nil, err
@@ -190,149 +189,7 @@ func (a *HealthReportAPIService) CreateOrUpdateMachineHealthReportExecute(r ApiC
 	return localVarReturnValue, localVarHTTPResponse, nil
 }
 
-type ApiListMachineHealthReportsRequest struct {
-	ctx        context.Context
-	ApiService *HealthReportAPIService
-	org        string
-	machineId  string
-}
-
-func (r ApiListMachineHealthReportsRequest) Execute() ([]MachineHealthReportEntry, *http.Response, error) {
-	return r.ApiService.ListMachineHealthReportsExecute(r)
-}
-
-/*
-ListMachineHealthReports List Machine health reports
-
-List Machine health report overrides through NICo Core. The request is
-authorized, machine-scoped, and proxied to the Machine's owning Site.
-User must have authorization role with `PROVIDER_ADMIN` suffix.
-
-	@param ctx context.Context - for authentication, logging, cancellation, deadlines, tracing, etc. Passed from http.Request or context.Background().
-	@param org Name of the Org
-	@param machineId ID of the Machine
-	@return ApiListMachineHealthReportsRequest
-*/
-func (a *HealthReportAPIService) ListMachineHealthReports(ctx context.Context, org string, machineId string) ApiListMachineHealthReportsRequest {
-	return ApiListMachineHealthReportsRequest{
-		ApiService: a,
-		ctx:        ctx,
-		org:        org,
-		machineId:  machineId,
-	}
-}
-
-// Execute executes the request
-//
-//	@return []MachineHealthReportEntry
-func (a *HealthReportAPIService) ListMachineHealthReportsExecute(r ApiListMachineHealthReportsRequest) ([]MachineHealthReportEntry, *http.Response, error) {
-	var (
-		localVarHTTPMethod  = http.MethodGet
-		localVarPostBody    interface{}
-		formFiles           []formFile
-		localVarReturnValue []MachineHealthReportEntry
-	)
-
-	localBasePath, err := a.client.cfg.ServerURLWithContext(r.ctx, "HealthReportAPIService.ListMachineHealthReports")
-	if err != nil {
-		return localVarReturnValue, nil, &GenericOpenAPIError{error: err.Error()}
-	}
-
-	localVarPath := localBasePath + "/v2/org/{org}/nico/machine/{machineId}/health-report"
-	localVarPath = strings.Replace(localVarPath, "{"+"org"+"}", url.PathEscape(parameterValueToString(r.org, "org")), -1)
-	localVarPath = strings.Replace(localVarPath, "{"+"machineId"+"}", url.PathEscape(parameterValueToString(r.machineId, "machineId")), -1)
-
-	localVarHeaderParams := make(map[string]string)
-	localVarQueryParams := url.Values{}
-	localVarFormParams := url.Values{}
-
-	// to determine the Content-Type header
-	localVarHTTPContentTypes := []string{}
-
-	// set Content-Type header
-	localVarHTTPContentType := selectHeaderContentType(localVarHTTPContentTypes)
-	if localVarHTTPContentType != "" {
-		localVarHeaderParams["Content-Type"] = localVarHTTPContentType
-	}
-
-	// to determine the Accept header
-	localVarHTTPHeaderAccepts := []string{"application/json"}
-
-	// set Accept header
-	localVarHTTPHeaderAccept := selectHeaderAccept(localVarHTTPHeaderAccepts)
-	if localVarHTTPHeaderAccept != "" {
-		localVarHeaderParams["Accept"] = localVarHTTPHeaderAccept
-	}
-	req, err := a.client.prepareRequest(r.ctx, localVarPath, localVarHTTPMethod, localVarPostBody, localVarHeaderParams, localVarQueryParams, localVarFormParams, formFiles)
-	if err != nil {
-		return localVarReturnValue, nil, err
-	}
-
-	localVarHTTPResponse, err := a.client.callAPI(req)
-	if err != nil || localVarHTTPResponse == nil {
-		return localVarReturnValue, localVarHTTPResponse, err
-	}
-
-	localVarBody, err := io.ReadAll(localVarHTTPResponse.Body)
-	localVarHTTPResponse.Body.Close()
-	localVarHTTPResponse.Body = io.NopCloser(bytes.NewBuffer(localVarBody))
-	if err != nil {
-		return localVarReturnValue, localVarHTTPResponse, err
-	}
-
-	if localVarHTTPResponse.StatusCode >= 300 {
-		newErr := &GenericOpenAPIError{
-			body:  localVarBody,
-			error: localVarHTTPResponse.Status,
-		}
-		if localVarHTTPResponse.StatusCode == 403 {
-			var v NICoAPIError
-			err = a.client.decode(&v, localVarBody, localVarHTTPResponse.Header.Get("Content-Type"))
-			if err != nil {
-				newErr.error = err.Error()
-				return localVarReturnValue, localVarHTTPResponse, newErr
-			}
-			newErr.error = formatErrorMessage(localVarHTTPResponse.Status, &v)
-			newErr.model = v
-			return localVarReturnValue, localVarHTTPResponse, newErr
-		}
-		if localVarHTTPResponse.StatusCode == 404 {
-			var v NICoAPIError
-			err = a.client.decode(&v, localVarBody, localVarHTTPResponse.Header.Get("Content-Type"))
-			if err != nil {
-				newErr.error = err.Error()
-				return localVarReturnValue, localVarHTTPResponse, newErr
-			}
-			newErr.error = formatErrorMessage(localVarHTTPResponse.Status, &v)
-			newErr.model = v
-			return localVarReturnValue, localVarHTTPResponse, newErr
-		}
-		if localVarHTTPResponse.StatusCode == 500 {
-			var v NICoAPIError
-			err = a.client.decode(&v, localVarBody, localVarHTTPResponse.Header.Get("Content-Type"))
-			if err != nil {
-				newErr.error = err.Error()
-				return localVarReturnValue, localVarHTTPResponse, newErr
-			}
-			newErr.error = formatErrorMessage(localVarHTTPResponse.Status, &v)
-			newErr.model = v
-		}
-		return localVarReturnValue, localVarHTTPResponse, newErr
-	}
-
-	err = a.client.decode(&localVarReturnValue, localVarBody, localVarHTTPResponse.Header.Get("Content-Type"))
-	if err != nil {
-		newErr := &GenericOpenAPIError{
-			body:  localVarBody,
-			error: err.Error(),
-		}
-		return localVarReturnValue, localVarHTTPResponse, newErr
-	}
-
-	return localVarReturnValue, localVarHTTPResponse, nil
-}
-
-type ApiRemoveMachineHealthReportRequest struct {
+type ApiDeleteMachineHealthReportRequest struct {
 	ctx        context.Context
 	ApiService *HealthReportAPIService
 	org        string
@@ -340,25 +197,25 @@ type ApiRemoveMachineHealthReportRequest struct {
 	source     string
 }
 
-func (r ApiRemoveMachineHealthReportRequest) Execute() (*http.Response, error) {
-	return r.ApiService.RemoveMachineHealthReportExecute(r)
+func (r ApiDeleteMachineHealthReportRequest) Execute() (*http.Response, error) {
+	return r.ApiService.DeleteMachineHealthReportExecute(r)
 }
 
 /*
-RemoveMachineHealthReport Remove Machine health report
+DeleteMachineHealthReport Delete Machine health report
 
-Remove a Machine health report override through NICo Core. The request
-is authorized, machine-scoped, and proxied to the Machine's owning Site.
+Remove a health report override for a specific Machine.
+
 User must have authorization role with `PROVIDER_ADMIN` suffix.
 
 	@param ctx context.Context - for authentication, logging, cancellation, deadlines, tracing, etc. Passed from http.Request or context.Background().
 	@param org Name of the Org
 	@param machineId ID of the Machine
 	@param source Health report source
-	@return ApiRemoveMachineHealthReportRequest
+	@return ApiDeleteMachineHealthReportRequest
 */
-func (a *HealthReportAPIService) RemoveMachineHealthReport(ctx context.Context, org string, machineId string, source string) ApiRemoveMachineHealthReportRequest {
-	return ApiRemoveMachineHealthReportRequest{
+func (a *HealthReportAPIService) DeleteMachineHealthReport(ctx context.Context, org string, machineId string, source string) ApiDeleteMachineHealthReportRequest {
+	return ApiDeleteMachineHealthReportRequest{
 		ApiService: a,
 		ctx:        ctx,
 		org:        org,
@@ -368,14 +225,14 @@ func (a *HealthReportAPIService) RemoveMachineHealthReport(ctx context.Context, 
 }
 
 // Execute executes the request
-func (a *HealthReportAPIService) RemoveMachineHealthReportExecute(r ApiRemoveMachineHealthReportRequest) (*http.Response, error) {
+func (a *HealthReportAPIService) DeleteMachineHealthReportExecute(r ApiDeleteMachineHealthReportRequest) (*http.Response, error) {
 	var (
 		localVarHTTPMethod = http.MethodDelete
 		localVarPostBody   interface{}
 		formFiles          []formFile
 	)
 
-	localBasePath, err := a.client.cfg.ServerURLWithContext(r.ctx, "HealthReportAPIService.RemoveMachineHealthReport")
+	localBasePath, err := a.client.cfg.ServerURLWithContext(r.ctx, "HealthReportAPIService.DeleteMachineHealthReport")
 	if err != nil {
 		return nil, &GenericOpenAPIError{error: err.Error()}
 	}
@@ -475,4 +332,146 @@ func (a *HealthReportAPIService) RemoveMachineHealthReportExecute(r ApiRemoveMac
 	}
 
 	return localVarHTTPResponse, nil
+}
+
+type ApiGetMachineHealthReportRequest struct {
+	ctx        context.Context
+	ApiService *HealthReportAPIService
+	org        string
+	machineId  string
+}
+
+func (r ApiGetMachineHealthReportRequest) Execute() ([]MachineHealthReportEntry, *http.Response, error) {
+	return r.ApiService.GetMachineHealthReportExecute(r)
+}
+
+/*
+GetMachineHealthReport Retrieve all Machine health reports
+
+Get all health reports for a specific Machine.
+
+User must have authorization role with `PROVIDER_ADMIN` suffix.
+
+	@param ctx context.Context - for authentication, logging, cancellation, deadlines, tracing, etc. Passed from http.Request or context.Background().
+	@param org Name of the Org
+	@param machineId ID of the Machine
+	@return ApiGetMachineHealthReportRequest
+*/
+func (a *HealthReportAPIService) GetMachineHealthReport(ctx context.Context, org string, machineId string) ApiGetMachineHealthReportRequest {
+	return ApiGetMachineHealthReportRequest{
+		ApiService: a,
+		ctx:        ctx,
+		org:        org,
+		machineId:  machineId,
+	}
+}
+
+// Execute executes the request
+//
+//	@return []MachineHealthReportEntry
+func (a *HealthReportAPIService) GetMachineHealthReportExecute(r ApiGetMachineHealthReportRequest) ([]MachineHealthReportEntry, *http.Response, error) {
+	var (
+		localVarHTTPMethod  = http.MethodGet
+		localVarPostBody    interface{}
+		formFiles           []formFile
+		localVarReturnValue []MachineHealthReportEntry
+	)
+
+	localBasePath, err := a.client.cfg.ServerURLWithContext(r.ctx, "HealthReportAPIService.GetMachineHealthReport")
+	if err != nil {
+		return localVarReturnValue, nil, &GenericOpenAPIError{error: err.Error()}
+	}
+
+	localVarPath := localBasePath + "/v2/org/{org}/nico/machine/{machineId}/health-report"
+	localVarPath = strings.Replace(localVarPath, "{"+"org"+"}", url.PathEscape(parameterValueToString(r.org, "org")), -1)
+	localVarPath = strings.Replace(localVarPath, "{"+"machineId"+"}", url.PathEscape(parameterValueToString(r.machineId, "machineId")), -1)
+
+	localVarHeaderParams := make(map[string]string)
+	localVarQueryParams := url.Values{}
+	localVarFormParams := url.Values{}
+
+	// to determine the Content-Type header
+	localVarHTTPContentTypes := []string{}
+
+	// set Content-Type header
+	localVarHTTPContentType := selectHeaderContentType(localVarHTTPContentTypes)
+	if localVarHTTPContentType != "" {
+		localVarHeaderParams["Content-Type"] = localVarHTTPContentType
+	}
+
+	// to determine the Accept header
+	localVarHTTPHeaderAccepts := []string{"application/json"}
+
+	// set Accept header
+	localVarHTTPHeaderAccept := selectHeaderAccept(localVarHTTPHeaderAccepts)
+	if localVarHTTPHeaderAccept != "" {
+		localVarHeaderParams["Accept"] = localVarHTTPHeaderAccept
+	}
+	req, err := a.client.prepareRequest(r.ctx, localVarPath, localVarHTTPMethod, localVarPostBody, localVarHeaderParams, localVarQueryParams, localVarFormParams, formFiles)
+	if err != nil {
+		return localVarReturnValue, nil, err
+	}
+
+	localVarHTTPResponse, err := a.client.callAPI(req)
+	if err != nil || localVarHTTPResponse == nil {
+		return localVarReturnValue, localVarHTTPResponse, err
+	}
+
+	localVarBody, err := io.ReadAll(localVarHTTPResponse.Body)
+	localVarHTTPResponse.Body.Close()
+	localVarHTTPResponse.Body = io.NopCloser(bytes.NewBuffer(localVarBody))
+	if err != nil {
+		return localVarReturnValue, localVarHTTPResponse, err
+	}
+
+	if localVarHTTPResponse.StatusCode >= 300 {
+		newErr := &GenericOpenAPIError{
+			body:  localVarBody,
+			error: localVarHTTPResponse.Status,
+		}
+		if localVarHTTPResponse.StatusCode == 403 {
+			var v NICoAPIError
+			err = a.client.decode(&v, localVarBody, localVarHTTPResponse.Header.Get("Content-Type"))
+			if err != nil {
+				newErr.error = err.Error()
+				return localVarReturnValue, localVarHTTPResponse, newErr
+			}
+			newErr.error = formatErrorMessage(localVarHTTPResponse.Status, &v)
+			newErr.model = v
+			return localVarReturnValue, localVarHTTPResponse, newErr
+		}
+		if localVarHTTPResponse.StatusCode == 404 {
+			var v NICoAPIError
+			err = a.client.decode(&v, localVarBody, localVarHTTPResponse.Header.Get("Content-Type"))
+			if err != nil {
+				newErr.error = err.Error()
+				return localVarReturnValue, localVarHTTPResponse, newErr
+			}
+			newErr.error = formatErrorMessage(localVarHTTPResponse.Status, &v)
+			newErr.model = v
+			return localVarReturnValue, localVarHTTPResponse, newErr
+		}
+		if localVarHTTPResponse.StatusCode == 500 {
+			var v NICoAPIError
+			err = a.client.decode(&v, localVarBody, localVarHTTPResponse.Header.Get("Content-Type"))
+			if err != nil {
+				newErr.error = err.Error()
+				return localVarReturnValue, localVarHTTPResponse, newErr
+			}
+			newErr.error = formatErrorMessage(localVarHTTPResponse.Status, &v)
+			newErr.model = v
+		}
+		return localVarReturnValue, localVarHTTPResponse, newErr
+	}
+
+	err = a.client.decode(&localVarReturnValue, localVarBody, localVarHTTPResponse.Header.Get("Content-Type"))
+	if err != nil {
+		newErr := &GenericOpenAPIError{
+			body:  localVarBody,
+			error: err.Error(),
+		}
+		return localVarReturnValue, localVarHTTPResponse, newErr
+	}
+
+	return localVarReturnValue, localVarHTTPResponse, nil
 }

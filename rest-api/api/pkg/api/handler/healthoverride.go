@@ -128,7 +128,14 @@ func (h ListMachineHealthReportHandler) Handle(c echo.Context) error {
 		return cutil.NewAPIErrorResponse(c, apiErr.Code, apiErr.Message, nil)
 	}
 
-	return c.JSON(http.StatusOK, model.NewAPIMachineHealthReportEntries(coreResp))
+	apiResp := []model.APIMachineHealthReportEntry{}
+	for _, entry := range coreResp.GetHealthReportEntries() {
+		apiEntry := model.APIMachineHealthReportEntry{}
+		apiEntry.FromProto(entry)
+		apiResp = append(apiResp, apiEntry)
+	}
+
+	return c.JSON(http.StatusOK, apiResp)
 }
 
 type InsertMachineHealthReportHandler struct {
@@ -154,9 +161,9 @@ func NewInsertMachineHealthReportHandler(dbSession *cdb.Session, scp *sc.ClientP
 // @Security ApiKeyAuth
 // @Param org path string true "Name of NGC organization"
 // @Param id path string true "ID of Machine"
-// @Param request body model.APIMachineHealthReportEntry true "Machine health report"
+// @Param request body model.APIMachineHealthReportEntryRequest true "Machine health report"
 // @Success 200 {object} model.APIMachineHealthReportEntry
-// @Router /v2/org/{org}/nico/machine/{id}/health-report [put]
+// @Router /v2/org/{org}/nico/machine/{machineId}/health-report [put]
 func (h InsertMachineHealthReportHandler) Handle(c echo.Context) error {
 	org, dbUser, ctx, logger, handlerSpan := common.SetupHandler("MachineHealthReport", "Insert", c, h.tracerSpan)
 	if handlerSpan != nil {
@@ -183,7 +190,7 @@ func (h InsertMachineHealthReportHandler) Handle(c echo.Context) error {
 		return cutil.NewAPIErrorResponse(c, http.StatusBadRequest, "Machine ID was not specified in URL", nil)
 	}
 
-	var apiReq model.APIMachineHealthReportEntry
+	var apiReq model.APIMachineHealthReportEntryRequest
 	err = c.Bind(&apiReq)
 	if err != nil {
 		return cutil.NewAPIErrorResponse(c, http.StatusBadRequest, "Failed to parse request data, potentially invalid structure", nil)
@@ -244,13 +251,17 @@ func (h InsertMachineHealthReportHandler) Handle(c echo.Context) error {
 
 	logger.Info().Str("machine_id", machineID).Str("source", apiReq.Source).Str("site_id", site.ID.String()).Msg("Inserting Machine health report via Core gRPC proxy")
 
-	apiErr := common.ExecuteCoreGRPC(ctx, stc, cwssaws.Forge_InsertMachineHealthReport_FullMethodName, apiReq.ToProto(machineID), nil, site.ID.String())
+	protoReq := apiReq.ToProto(machineID, dbUser.ID.String())
+	apiErr := common.ExecuteCoreGRPC(ctx, stc, cwssaws.Forge_InsertMachineHealthReport_FullMethodName, protoReq, nil, site.ID.String())
 	if apiErr != nil {
 		logAPIError(logger, apiErr, "Failed to insert Machine health report via Core gRPC proxy")
 		return cutil.NewAPIErrorResponse(c, apiErr.Code, apiErr.Message, nil)
 	}
 
-	return c.JSON(http.StatusOK, apiReq)
+	apiResp := model.APIMachineHealthReportEntry{}
+	apiResp.FromProto(protoReq.GetHealthReportEntry())
+
+	return c.JSON(http.StatusOK, apiResp)
 }
 
 type RemoveMachineHealthReportHandler struct {

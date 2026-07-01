@@ -1573,9 +1573,9 @@ func (r ApiMachinePowerControlMachineRequest) Execute() (*MessageResponse, *http
 /*
 MachinePowerControlMachine Machine power control
 
-Power control a Machine through NICo Core. The request is authorized,
-machine-scoped, and proxied to the Machine's owning Site. User must have
-authorization role with `PROVIDER_ADMIN` suffix.
+Execute power control actions for a specific Machine.
+
+User must have authorization role with `PROVIDER_ADMIN` suffix.
 
 	@param ctx context.Context - for authentication, logging, cancellation, deadlines, tracing, etc. Passed from http.Request or context.Background().
 	@param org Name of the Org

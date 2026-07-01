@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"time"
 
+	cutil "github.com/NVIDIA/infra-controller/rest-api/common/pkg/util"
 	cwssaws "github.com/NVIDIA/infra-controller/rest-api/workflow-schema/schema/site-agent/workflows/v1"
 	validation "github.com/go-ozzo/ozzo-validation/v4"
 	"google.golang.org/protobuf/types/known/timestamppb"
@@ -17,14 +18,14 @@ const (
 	MachineHealthReportModeReplace = "Replace"
 )
 
-var validMachineHealthReportModes = []string{
+var MachineHealthReportModes = []string{
 	MachineHealthReportModeMerge,
 	MachineHealthReportModeReplace,
 }
 
-var validMachineHealthReportModesAny = func() []interface{} {
-	result := make([]interface{}, len(validMachineHealthReportModes))
-	for i, mode := range validMachineHealthReportModes {
+var machineHealthReportModesAny = func() []interface{} {
+	result := make([]interface{}, len(MachineHealthReportModes))
+	for i, mode := range MachineHealthReportModes {
 		result[i] = mode
 	}
 	return result
@@ -32,72 +33,81 @@ var validMachineHealthReportModesAny = func() []interface{} {
 
 type APIMachineHealthReportEntry struct {
 	Source      string                         `json:"source"`
-	TriggeredBy *string                        `json:"triggeredBy,omitempty"`
-	ObservedAt  *string                        `json:"observedAt,omitempty"`
-	Successes   []APIMachineHealthProbeSuccess `json:"successes,omitempty"`
-	Alerts      []APIMachineHealthProbeAlert   `json:"alerts,omitempty"`
+	TriggeredBy *string                        `json:"triggeredBy"`
+	ObservedAt  *string                        `json:"observedAt"`
+	Successes   []APIMachineHealthProbeSuccess `json:"successes"`
+	Alerts      []APIMachineHealthProbeAlert   `json:"alerts"`
 	Mode        string                         `json:"mode"`
 }
 
-func (r *APIMachineHealthReportEntry) Validate() error {
-	if err := validation.ValidateStruct(r,
+func (amhre *APIMachineHealthReportEntry) FromProto(entry *cwssaws.HealthReportEntry) {
+	amhre.Source = entry.GetReport().GetSource()
+	amhre.TriggeredBy = cutil.GetPtr(entry.GetReport().GetTriggeredBy())
+	amhre.ObservedAt = stringFromProtoTime(entry.GetReport().GetObservedAt())
+	amhre.Successes = successesFromProto(entry.GetReport().GetSuccesses())
+	amhre.Alerts = alertsFromProto(entry.GetReport().GetAlerts())
+	amhre.Mode = machineHealthReportModeFromProto(entry.GetMode())
+}
+
+type APIMachineHealthReportEntryRequest struct {
+	Source    string                         `json:"source"`
+	Successes []APIMachineHealthProbeSuccess `json:"successes"`
+	Alerts    []APIMachineHealthProbeAlert   `json:"alerts"`
+	Mode      string                         `json:"mode"`
+}
+
+func (r *APIMachineHealthReportEntryRequest) Validate() error {
+	err := validation.ValidateStruct(r,
 		validation.Field(&r.Source, validation.Required.Error(validationErrorValueRequired)),
 		validation.Field(&r.Mode,
 			validation.Required.Error(validationErrorValueRequired),
-			validation.In(validMachineHealthReportModesAny...).Error(fmt.Sprintf("must be one of %v", validMachineHealthReportModes))),
-	); err != nil {
+			validation.In(machineHealthReportModesAny...).Error(fmt.Sprintf("must be one of %v", MachineHealthReportModes))),
+	)
+
+	if err != nil {
 		return err
 	}
-	if err := validateOptionalRFC3339(r.ObservedAt, "observedAt"); err != nil {
-		return err
-	}
+
 	for i := range r.Successes {
-		if err := validation.ValidateStruct(&r.Successes[i],
+		err = validation.ValidateStruct(&r.Successes[i],
 			validation.Field(&r.Successes[i].ID, validation.Required.Error(validationErrorValueRequired)),
-		); err != nil {
-			return fmt.Errorf("successes[%d]: %w", i, err)
+		)
+		if err != nil {
+			return validation.Errors{
+				"successes": fmt.Errorf("invalid entry at index %d: %w", i, err),
+			}
 		}
 	}
 	for i := range r.Alerts {
-		if err := validateOptionalRFC3339(r.Alerts[i].InAlertSince, fmt.Sprintf("alerts[%d].inAlertSince", i)); err != nil {
-			return err
-		}
-		err := validation.ValidateStruct(&r.Alerts[i],
+		err = validation.ValidateStruct(&r.Alerts[i],
 			validation.Field(&r.Alerts[i].ID, validation.Required.Error(validationErrorValueRequired)),
 			validation.Field(&r.Alerts[i].Message, validation.Required.Error(validationErrorValueRequired)),
 		)
 		if err != nil {
-			return fmt.Errorf("alerts[%d]: %w", i, err)
+			return validation.Errors{
+				"alerts": fmt.Errorf("invalid entry at index %d: %w", i, err),
+			}
 		}
 	}
 	return nil
 }
 
-func (r *APIMachineHealthReportEntry) ToProto(machineID string) *cwssaws.InsertMachineHealthReportRequest {
-	return &cwssaws.InsertMachineHealthReportRequest{
+func (r *APIMachineHealthReportEntryRequest) ToProto(machineID string, userID string) *cwssaws.InsertMachineHealthReportRequest {
+	request := &cwssaws.InsertMachineHealthReportRequest{
 		MachineId: &cwssaws.MachineId{Id: machineID},
 		HealthReportEntry: &cwssaws.HealthReportEntry{
 			Report: &cwssaws.HealthReport{
 				Source:      r.Source,
-				TriggeredBy: r.TriggeredBy,
-				ObservedAt:  stringToProtoTime(r.ObservedAt),
+				TriggeredBy: &userID,
+				ObservedAt:  timestamppb.New(time.Now()),
 				Successes:   successesToProto(r.Successes),
 				Alerts:      alertsToProto(r.Alerts),
 			},
 			Mode: healthReportModeToProto(r.Mode),
 		},
 	}
-}
 
-func NewAPIMachineHealthReportEntries(resp *cwssaws.ListHealthReportResponse) []APIMachineHealthReportEntry {
-	entries := []APIMachineHealthReportEntry{}
-	if resp != nil {
-		entries = make([]APIMachineHealthReportEntry, 0, len(resp.GetHealthReportEntries()))
-		for _, entry := range resp.GetHealthReportEntries() {
-			entries = append(entries, machineHealthReportEntryFromProto(entry))
-		}
-	}
-	return entries
+	return request
 }
 
 func NewMachineIDProto(machineID string) *cwssaws.MachineId {

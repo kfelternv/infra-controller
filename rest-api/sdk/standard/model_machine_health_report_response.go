@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+// SPDX-License-Identifier: Apache-2.0
+
 /*
 NVIDIA Infra Controller REST API
 
@@ -19,7 +22,7 @@ import (
 // checks if the MachineHealthReportResponse type satisfies the MappedNullable interface at compile time
 var _ MappedNullable = &MachineHealthReportResponse{}
 
-// MachineHealthReportResponse Response for an inserted Machine health report.
+// MachineHealthReportResponse Response for a created or updated Machine health report.
 type MachineHealthReportResponse struct {
 	// ID of the Machine.
 	MachineId         string                   `json:"machineId"`

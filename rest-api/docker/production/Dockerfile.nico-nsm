@@ -38,7 +38,7 @@ RUN go build -ldflags "-extldflags '-static'" \
     .
 
 # Runtime stage — NSM requires shell tools for firmware update scripts
-FROM alpine:3.19 AS final
+FROM alpine:3.24 AS final
 
 RUN apk add --no-cache \
     libc6-compat \

@@ -176,10 +176,10 @@ in one place. Reserve raw strings for genuinely open-ended values.
 ## Cursor Cloud specific instructions
 
 Scope note: the Cloud env setup targets the **Rust Core** (the `carbide-api`
-product: build, lint, test, and run). The Go `rest-api/` subtree is **not** set
-up (see caveat at the bottom). System deps + `cargo-make` are installed by the
-startup update script; the Rust toolchain resolves automatically from
-`rust-toolchain.toml` (1.96.0).
+product: build, lint, test, and run). The Go `rest-api/` subtree also
+builds and its unit tests pass without Docker (see the last section). System
+deps, `cargo-make`, and Go 1.26.4 are installed by the startup update script;
+the Rust toolchain resolves automatically from `rust-toolchain.toml` (1.96.0).
 
 ### Postgres is a build-time dependency (sqlx)
 `sqlx::query!` macros connect to a database **at compile time**, so a reachable
@@ -221,7 +221,33 @@ GitHub is reachable). Workaround that works in this VM:
 
 The gRPC API listens on `:1079` (TLS — use `grpcurl -insecure localhost:1079 list`), the admin web UI is at `https://localhost:1079/admin`, metrics on `:1080`. `grpcurl` is available; `vault` is not. Because the stub returns 404 for KV, the background **site-explorer** logs `MissingCredentials machines/bmc/site/root` — this is expected and non-fatal (real BMC creds would be pre-seeded into Vault). For a real end-to-end hardware flow you need a genuine Vault + mock BMC (machine-a-tron), which require Docker/network access this VM lacks.
 
-### Go `rest-api/` subtree (out of scope here)
-Needs Go **1.26.4** (VM has 1.22), plus Docker for the managed test Postgres and
-Kind/Temporal/Keycloak for full E2E. Not provisioned by the update script. See
-`rest-api/README.md` and the `make rest-*` targets.
+### Go `rest-api/` subtree (build + unit tests work; no Docker)
+Uses Go **1.26.4** (the update script installs it to `/usr/local/go`; the base
+image's 1.22 is too old). `go` module downloads work (proxy reachable).
+
+- **Build all binaries**: `cd rest-api && make build` (produces `rest-api/build/binaries/{api,workflow,sitemgr,site-agent,migrations,credsmgr,nicocli,nico-mcp}`).
+- **Tests**: the `make test-*` targets call `ensure-postgres`, which starts a
+  **Docker** container on port `30432` — Docker is not available here. Provide
+  that Postgres yourself and run the module's `go test` directly (skip the
+  `make` wrapper):
+
+  ```bash
+  # one-time: a throwaway Postgres on :30432 (trust auth) matching what tests expect
+  /usr/lib/postgresql/16/bin/initdb -D /tmp/pg-resttest -U postgres --auth-host=trust --auth-local=trust
+  printf "port=30432\nlisten_addresses='localhost'\nunix_socket_directories='/tmp/pg-resttest'\n" >> /tmp/pg-resttest/postgresql.conf
+  /usr/lib/postgresql/16/bin/pg_ctl -D /tmp/pg-resttest -l /tmp/pg-resttest/logfile start
+  psql -h localhost -p 30432 -U postgres -c "CREATE DATABASE nicotest" -c "\c nicotest" -c "CREATE EXTENSION IF NOT EXISTS pg_trgm"
+  # migrations
+  (cd rest-api/db/cmd/migrations && go build -o migrations .)
+  PGHOST=localhost PGPORT=30432 PGDATABASE=nicotest PGUSER=postgres PGPASSWORD=postgres rest-api/db/cmd/migrations/migrations db init_migrate
+  # run a module's tests (verified: common, db, api)
+  (cd rest-api/api && go test -p 1 ./... -count=1)
+  ```
+
+  Tests connect to `localhost:30432` as `postgres/postgres` (see
+  `db/pkg/db/tx_test.go`); `test-flow`/`powershelf-manager`/`nvswitch-manager`
+  need `DB_HOST/DB_PORT/DB_USER/DB_PASSWORD/DB_NAME` exported (see the Makefile).
+- **Still need Docker (not covered here)**: `ipam` tests use `testcontainers-go`;
+  `site-manager`/`site-agent` need `CGO_ENABLED=1 -race` and the mock gRPC
+  servers (`make core-mock-server-start` / `flow-mock-server-start`); full E2E
+  (`make kind-reset`) needs Kind + Temporal + Keycloak.

@@ -253,11 +253,14 @@ async fn meta_data(machine: Machine, state: State<AppState>) -> impl IntoRespons
             OutcomeReason::MetadataNotFound,
         ),
         Some(metadata) => {
-            let template_data = HashMap::from([
+            let mut template_data = HashMap::from([
                 ("instance_id".to_string(), metadata.instance_id),
                 ("cloud_name".to_string(), metadata.cloud_name),
                 ("platform".to_string(), metadata.platform),
             ]);
+            if !metadata.local_hostname.is_empty() {
+                template_data.insert("local-hostname".to_string(), metadata.local_hostname);
+            }
 
             emit(PxeBootOutcome {
                 endpoint: BootEndpoint::CloudInit,

@@ -127,7 +127,7 @@ host state publisher, PXE HTTP service, and NoCloud routes, opt in with the
 `full` profile:
 
 ```bash
-devspace deploy --profile full --build-sequential
+devspace deploy -n nico-system --profile full --build-sequential
 ```
 
 This profile adds a single-node, unauthenticated NATS MQTT service alongside

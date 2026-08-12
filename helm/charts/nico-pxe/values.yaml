@@ -45,6 +45,13 @@ legacyAlias:
 
 replicas: 1
 
+## Optional component-specific image. When repository is empty, the chart uses
+## global.image so existing production values are unchanged.
+image:
+  repository: ""
+  tag: ""
+  pullPolicy: IfNotPresent
+
 ## Optional init containers (general-purpose pass-through)
 initContainers: []
 

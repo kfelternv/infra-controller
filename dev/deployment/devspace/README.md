@@ -123,19 +123,33 @@ devspace deploy --force-build
 ```
 
 To deploy a local DSX Exchange-compatible event bus and enable NICo's managed
-host state publisher, opt in with the `dsx-exchange` profile:
+host state publisher, PXE HTTP service, and NoCloud routes, opt in with the
+`full` profile:
 
 ```bash
-devspace deploy --profile dsx-exchange
+devspace deploy --profile full --build-sequential
 ```
 
 This profile adds a single-node, unauthenticated NATS MQTT service alongside
 NICo in the local development namespace and publishes managed host state to
 `NICO/v1/machine/<machine-id>/state`. It also republishes current state every
 10 seconds so a local subscriber can observe messages after the initial state
-transitions. The event bus and publisher remain disabled when the profile is
-not selected. The profile does not enable the separate inbound
-`nico-dsx-exchange-consumer`.
+transitions. It also builds `carbide-pxe` separately from `nico-api` and
+deploys it with the chart-managed `nico-pxe` SPIFFE identity. These services
+remain disabled when the profile is not selected. The profile does not enable
+the separate inbound `nico-dsx-exchange-consumer`.
+
+To call the PXE service from the development VM:
+
+```bash
+kubectl -n nico-system port-forward service/nico-pxe 18080:8080
+curl -H 'X-Forwarded-For: <instance-interface-ip>' \
+  http://127.0.0.1:18080/api/v0/cloud-init/meta-data
+```
+
+The caller IP must resolve to a machine interface or assigned instance in
+Core. Supplying an assigned instance interface IP exercises the instance
+metadata response, including `local-hostname`.
 
 The post-deploy setup uses temporary port-forwards to register the site and verifies that machines from Core are visible through the REST API. To keep the REST API and Keycloak available on localhost after `devspace deploy` exits, run these in separate terminals:
 

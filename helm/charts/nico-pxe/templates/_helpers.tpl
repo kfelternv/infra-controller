@@ -39,10 +39,16 @@ app.kubernetes.io/component: pxe
 {{- end }}
 
 {{/*
-Global image reference
+Image reference. A component-specific image is useful when DevSpace builds the
+PXE binary separately from nico-api; production values continue to inherit the
+global image by default.
 */}}
 {{- define "nico-pxe.image" -}}
-{{ .Values.global.image.repository }}:{{ .Values.global.image.tag }}
+{{- if not (eq (toString (.Values.image.repository | default "")) "") }}
+{{- .Values.image.repository }}:{{ .Values.image.tag | default "latest" }}
+{{- else }}
+{{- .Values.global.image.repository }}:{{ .Values.global.image.tag }}
+{{- end }}
 {{- end }}
 
 {{/*

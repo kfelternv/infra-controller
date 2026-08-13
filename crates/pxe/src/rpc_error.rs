@@ -24,6 +24,7 @@ pub(super) enum PxeRequestError {
     CarbideApiError(tonic::Status),
     MissingClientConfig,
     MissingIp(Rejection),
+    InvalidProxyHeader(String),
     InvalidBuildArch,
     MalformedBuildArch(String),
 }
@@ -57,6 +58,7 @@ impl Display for PxeRequestError {
                     "Invalid build arch specified in URI parameter buildarch".to_string(),
                 Self::MalformedBuildArch(err) => format!("Malformed build arch: {err}"),
                 Self::MissingIp(err) => format!("Source IP is missing. Error: {err:?}"),
+                Self::InvalidProxyHeader(err) => format!("Invalid proxy client IP: {err}"),
             }
         )
     }

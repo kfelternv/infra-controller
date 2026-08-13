@@ -139,17 +139,20 @@ deploys it with the chart-managed `nico-pxe` SPIFFE identity. These services
 remain disabled when the profile is not selected. The profile does not enable
 the separate inbound `nico-dsx-exchange-consumer`.
 
-To call the PXE service from the development VM:
+After provisioning an instance, verify its NoCloud metadata through the PXE
+HTTP endpoint. Pass an IP allocated to that instance and its expected name:
 
 ```bash
-kubectl -n nico-system port-forward service/nico-pxe 18080:8080
-curl -H 'X-Forwarded-For: <instance-interface-ip>' \
-  http://127.0.0.1:18080/api/v0/cloud-init/meta-data
+dev/deployment/devspace/verify-cloud-init-meta-data.sh \
+  <assigned-instance-ip> <expected-instance-name>
 ```
 
-The caller IP must resolve to a machine interface or assigned instance in
-Core. Supplying an assigned instance interface IP exercises the instance
-metadata response, including `local-hostname`.
+The `full` profile trusts `X-Forwarded-For` only from the loopback connection
+created by `kubectl port-forward`. Other profiles and production deployments
+continue to identify PXE clients from their TCP source address unless an
+operator explicitly configures `PXE_TRUSTED_PROXY_CIDRS`. The verification
+script fails unless Core resolves the supplied IP to an assigned instance and
+the response contains its exact `local-hostname`.
 
 The post-deploy setup uses temporary port-forwards to register the site and verifies that machines from Core are visible through the REST API. To keep the REST API and Keycloak available on localhost after `devspace deploy` exits, run these in separate terminals:
 

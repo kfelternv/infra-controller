@@ -57,7 +57,7 @@ metadata="$(curl --fail --silent --show-error --max-time 10 \
   -H "X-Forwarded-For: ${instance_ip}" \
   "http://127.0.0.1:${forward_port}/api/v0/cloud-init/meta-data")"
 
-if ! grep -Fxq "local-hostname: ${expected_hostname}" <<<"${metadata}"; then
+if ! grep -Fxq "local-hostname: \"${expected_hostname}\"" <<<"${metadata}"; then
   printf 'expected local-hostname %q was not present in meta-data:\n%s\n' \
     "${expected_hostname}" "${metadata}" >&2
   exit 1

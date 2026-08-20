@@ -143,18 +143,12 @@ fi
 site_ready=false
 machines_ready=false
 machine_count=0
-core_hosts_ready=false
-core_host_count=0
-core_ready_count=0
 fresh_cycle=false
 # A clean cluster may need a second three-minute inventory cycle after Core discovers machines.
 for attempt in {1..90}; do
   site_ready=false
   machines_ready=false
   machine_count=0
-  core_hosts_ready=false
-  core_host_count=0
-  core_ready_count=0
   token="$(curl --fail --silent --max-time 5 -X POST \
     "http://localhost:${KEYCLOAK_FORWARD_PORT}/realms/nico-dev/protocol/openid-connect/token" \
     -H "Content-Type: application/x-www-form-urlencoded" \
@@ -175,25 +169,11 @@ for attempt in {1..90}; do
       <<<"${site}" 2>/dev/null || printf 'false')"
     machines_ready="$(jq -r --arg site_id "${site_id}" \
       --argjson expected_host_count "${expected_host_count}" \
-      'type == "array" and length == $expected_host_count and all(.[]; .siteId == $site_id)' \
+      'type == "array" and length == $expected_host_count and
+        all(.[]; .siteId == $site_id and .status == "Ready")' \
       <<<"${machines}" 2>/dev/null || printf 'false')"
     machine_count="$(jq -r 'if type == "array" then length else 0 end' \
       <<<"${machines}" 2>/dev/null || printf '0')"
-  fi
-
-  core_hosts="$(kubectl exec deployment/nico-api -n "${CORE_NAMESPACE}" -- \
-    /opt/carbide/nico-admin-cli \
-    --api-url "https://nico-api.${CORE_NAMESPACE}.svc.cluster.local:1079" \
-    -f json machine show --hosts 2>/dev/null || true)"
-  core_host_count="$(jq -r \
-    'if (.machines | type) == "array" then .machines | length else 0 end' \
-    <<<"${core_hosts}" 2>/dev/null || printf '0')"
-  core_ready_count="$(jq -r \
-    'if (.machines | type) == "array" then [.machines[] | select(.state == "Ready")] | length else 0 end' \
-    <<<"${core_hosts}" 2>/dev/null || printf '0')"
-  if [[ "${core_host_count}" == "${expected_host_count}" && \
-    "${core_ready_count}" == "${expected_host_count}" ]]; then
-    core_hosts_ready=true
   fi
 
   site_worker_logs="$(kubectl logs deployment/nico-rest-site-worker \
@@ -217,16 +197,15 @@ for attempt in {1..90}; do
   ' <<<"${site_worker_logs}" 2>/dev/null || printf 'false')"
 
   if [[ "${site_ready}" == "true" && "${machines_ready}" == "true" && \
-    "${core_hosts_ready}" == "true" && \
     "${fresh_cycle}" == "true" ]]; then
     printf 'REST API reports site %s online with all %s Core hosts Ready and synced from a current inventory\n' \
       "${site_id}" "${expected_host_count}"
     break
   fi
   if [[ "${attempt}" == "90" ]]; then
-    printf 'REST integration verification failed: site_ready=%s machines_ready=%s rest_machines=%s core_ready=%s core_hosts=%s expected_hosts=%s fresh_cycle=%s\n' \
-      "${site_ready}" "${machines_ready}" "${machine_count}" "${core_ready_count}" \
-      "${core_host_count}" "${expected_host_count}" "${fresh_cycle}" >&2
+    printf 'REST integration verification failed: site_ready=%s machines_ready=%s rest_machines=%s expected_hosts=%s fresh_cycle=%s\n' \
+      "${site_ready}" "${machines_ready}" "${machine_count}" \
+      "${expected_host_count}" "${fresh_cycle}" >&2
     exit 1
   fi
   sleep 5

@@ -892,7 +892,7 @@ mod tests {
                         instance_id: "test-instance-id".to_string(),
                         cloud_name: "nvidia".to_string(),
                         platform: "forge".to_string(),
-                        local_hostname: "my-nke-node".to_string(),
+                        local_hostname: "my-node".to_string(),
                     }),
                     ..Default::default()
                 },
@@ -907,7 +907,7 @@ mod tests {
             .unwrap();
         let text = std::str::from_utf8(&body).unwrap();
         assert!(
-            text.contains("local-hostname: my-nke-node"),
+            text.contains("local-hostname: \"my-node\""),
             "meta-data should contain local-hostname, got: {text}"
         );
     }
@@ -933,6 +933,7 @@ mod tests {
         .await
         .into_response();
 
+        assert_eq!(response.status(), axum::http::StatusCode::OK);
         let body = axum::body::to_bytes(response.into_body(), usize::MAX)
             .await
             .unwrap();

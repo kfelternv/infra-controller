@@ -2515,6 +2515,10 @@ async fn insert_machine_interface(
     is_primary_interface: bool,
     interface_type: InterfaceType,
 ) -> DatabaseResult<MachineInterfaceId> {
+    if let Some(domain_id) = domain_id {
+        crate::dns::domain::lock_live_for_reference(txn, domain_id).await?;
+    }
+
     let query = "INSERT INTO machine_interfaces
         (segment_id, mac_address, hostname, domain_id, primary_interface, interface_type)
         VALUES
@@ -3313,6 +3317,10 @@ async fn update_hostname_and_domain(
     hostname: &str,
     domain_id: Option<DomainId>,
 ) -> DatabaseResult<bool> {
+    if let Some(domain_id) = domain_id {
+        crate::dns::domain::lock_live_for_reference(txn, domain_id).await?;
+    }
+
     let query = r#"
 UPDATE machine_interfaces
 SET hostname = $1, domain_id = $2
@@ -3411,6 +3419,10 @@ pub async fn update_segment_id(
     segment_id: NetworkSegmentId,
     domain_id: Option<DomainId>,
 ) -> DatabaseResult<()> {
+    if let Some(domain_id) = domain_id {
+        crate::dns::domain::lock_live_for_reference(txn, domain_id).await?;
+    }
+
     let query = "UPDATE machine_interfaces SET segment_id = $1, domain_id = $2 WHERE id = $3";
     sqlx::query(query)
         .bind(segment_id)

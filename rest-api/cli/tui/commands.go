@@ -919,6 +919,20 @@ func cmdSubnetCreate(s *Session, _ []string) error {
 	if err != nil {
 		return err
 	}
+	assignDomain, err := PromptConfirm("Assign a DNS Domain?")
+	if err != nil {
+		return err
+	}
+	var domain *NamedItem
+	if assignDomain {
+		domain, err = s.Resolver.Resolve(context.Background(), "domain", "DNS Domain")
+		if err != nil {
+			return err
+		}
+		if strings.TrimSpace(domain.Extra["siteId"]) != vpcSiteID {
+			return fmt.Errorf("selected Domain is not at the selected VPC site")
+		}
+	}
 
 	body := map[string]interface{}{
 		"name":         name,
@@ -929,7 +943,12 @@ func cmdSubnetCreate(s *Session, _ []string) error {
 	if strings.TrimSpace(desc) != "" {
 		body["description"] = strings.TrimSpace(desc)
 	}
-	LogCmd(s, "subnet", "create", "--name", name, "--vpc-id", vpc.ID, "--ipv4block-id", block.ID, "--prefix-length", prefixLenText)
+	logArgs := []string{"subnet", "create", "--name", name, "--vpc-id", vpc.ID, "--ipv4block-id", block.ID, "--prefix-length", prefixLenText}
+	if domain != nil {
+		body["subdomainId"] = domain.ID
+		logArgs = append(logArgs, "--subdomain-id", domain.ID)
+	}
+	LogCmd(s, logArgs...)
 	bodyJSON, _ := json.Marshal(body)
 	resp, _, err := s.Client.Do("POST", apiPath(s, "subnet"), nil, nil, bodyJSON)
 	if err != nil {

@@ -4082,8 +4082,10 @@ paths:
                   value:
                     - id: 497f6eca-6276-4993-bfeb-53cbbbba6f08
                       name: spark-gpu-net
+                      description: null
                       siteId: ea144def-d68f-44c3-9485-4b103fa2686f
                       vpcId: 5e28ad7c-5fb7-46d6-a28a-fc0ba6fdc4a3
+                      subdomainId: null
                       controllerNetworkSegmentId: abe7b0e8-67db-4e89-903e-fc4f2bd7f034
                       ipv4Prefix: 202.168.16.0
                       ipv4BlockId: 8c1d1a06-90a2-4863-8ee1-6029265b9f0a
@@ -4202,8 +4204,10 @@ paths:
                   value:
                     id: 497f6eca-6276-4993-bfeb-53cbbbba6f08
                     name: spark-gpu-net
+                    description: null
                     siteId: ea144def-d68f-44c3-9485-4b103fa2686f
                     vpcId: 5e28ad7c-5fb7-46d6-a28a-fc0ba6fdc4a3
+                    subdomainId: null
                     controllerNetworkSegmentId: null
                     ipv4Prefix: 202.168.16.0
                     ipv4BlockId: 8c1d1a06-90a2-4863-8ee1-6029265b9f0a
@@ -4276,8 +4280,10 @@ paths:
                   value:
                     id: 497f6eca-6276-4993-bfeb-53cbbbba6f08
                     name: spark-gpu-net
+                    description: null
                     siteId: ea144def-d68f-44c3-9485-4b103fa2686f
                     vpcId: 5e28ad7c-5fb7-46d6-a28a-fc0ba6fdc4a3
+                    subdomainId: 3c5a130c-6545-42cf-ae41-14236b70d05a
                     controllerNetworkSegmentId: abe7b0e8-67db-4e89-903e-fc4f2bd7f034
                     ipv4Prefix: 202.168.16.0
                     ipv4BlockId: 8c1d1a06-90a2-4863-8ee1-6029265b9f0a
@@ -4356,6 +4362,7 @@ paths:
                     description: Subnet for dedicated GPU nodes
                     siteId: ea144def-d68f-44c3-9485-4b103fa2686f
                     vpcId: 5e28ad7c-5fb7-46d6-a28a-fc0ba6fdc4a3
+                    subdomainId: null
                     controllerNetworkSegmentId: null
                     ipv4Prefix: 212.168.0.250
                     ipv4BlockId: 8c1d1a06-90a2-4863-8ee1-6029265b9f0a
@@ -19994,12 +20001,25 @@ components:
       title: Subnet
       type: object
       description: Subnets are network grouping constructs for baremetal machines.
+      x-go-has-nullable-required-properties: true
+      x-go-nullable-required-properties:
+        - description
+        - subdomainId
+        - controllerNetworkSegmentId
+        - ipv4Prefix
+        - ipv4BlockId
+        - ipv4Gateway
+        - ipv6Prefix
+        - ipv6BlockId
+        - ipv6Gateway
+        - routingType
       examples:
         - id: 497f6eca-6276-4993-bfeb-53cbbbba6f08
           name: spark-gpu-net
           description: Subnet for GPU nodes
           siteId: ea144def-d68f-44c3-9485-4b103fa2686f
           vpcId: 5e28ad7c-5fb7-46d6-a28a-fc0ba6fdc4a3
+          subdomainId: 3c5a130c-6545-42cf-ae41-14236b70d05a
           controllerNetworkSegmentId: abe7b0e8-67db-4e89-903e-fc4f2bd7f034
           ipv4Prefix: 204.168.0.250
           ipv4BlockId: 8c1d1a06-90a2-4863-8ee1-6029265b9f0a
@@ -20022,6 +20042,7 @@ components:
           description: Provisioned subnet with IPv4 usage (includeUsageStats=true)
           siteId: ea144def-d68f-44c3-9485-4b103fa2686f
           vpcId: 5e28ad7c-5fb7-46d6-a28a-fc0ba6fdc4a3
+          subdomainId: null
           controllerNetworkSegmentId: abe7b0e8-67db-4e89-903e-fc4f2bd7f034
           ipv4Prefix: 10.217.98.64
           ipv4BlockId: 8c1d1a06-90a2-4863-8ee1-6029265b9f0a
@@ -20073,6 +20094,12 @@ components:
         vpcId:
           type: string
           description: 'ID of the VPC containing the Subnet'
+          format: uuid
+        subdomainId:
+          type:
+            - string
+            - 'null'
+          description: 'ID of the tenant-owned REST Domain assigned when the Subnet was created'
           format: uuid
         controllerNetworkSegmentId:
           type:
@@ -20157,6 +20184,26 @@ components:
           description: 'Date/time when the Subnet was last updated'
           format: date-time
           readOnly: true
+      required:
+        - id
+        - name
+        - description
+        - siteId
+        - vpcId
+        - subdomainId
+        - controllerNetworkSegmentId
+        - ipv4Prefix
+        - ipv4BlockId
+        - ipv4Gateway
+        - ipv6Prefix
+        - ipv6BlockId
+        - ipv6Gateway
+        - prefixLength
+        - routingType
+        - status
+        - statusHistory
+        - created
+        - updated
     SubnetStatus:
       title: SubnetStatus
       type: string
@@ -20190,6 +20237,10 @@ components:
         vpcId:
           type: string
           description: 'ID of the Ethernet virtualizer VPC containing the Subnet'
+          format: uuid
+        subdomainId:
+          type: string
+          description: 'Optional ID of a tenant-owned REST Domain at the same Site. This can only be set when the Subnet is created.'
           format: uuid
         ipv4BlockId:
           type: string

@@ -162,6 +162,34 @@ func (csh CreateSubnetHandler) Handle(c echo.Context) error {
 		return cutil.NewAPIErrorResponse(c, http.StatusBadRequest, "The Site where the Subnet is being created must be in Registered state in order to proceed", nil)
 	}
 
+	// Resolve the public REST Domain ID to the Site-facing Core Domain ID.
+	// The local ID remains the persisted Subnet relation.
+	var domain *cdbm.Domain
+	if apiRequest.SubdomainID != nil {
+		domainID, derr := uuid.Parse(*apiRequest.SubdomainID)
+		if derr != nil {
+			return cutil.NewAPIErrorResponse(c, http.StatusBadRequest, "Invalid subdomainId in request data", nil)
+		}
+		domain, derr = cdbm.NewDomainDAO(csh.dbSession).GetByID(ctx, nil, domainID, nil)
+		if derr != nil {
+			if derr == cdb.ErrDoesNotExist {
+				return cutil.NewAPIErrorResponse(c, http.StatusBadRequest, "Could not find Domain specified by subdomainId", nil)
+			}
+			logger.Error().Err(derr).Msg("error retrieving Domain specified by subdomainId")
+			return cutil.NewAPIErrorResponse(c, http.StatusInternalServerError, "Failed to retrieve Domain specified by subdomainId", nil)
+		}
+		if domain.TenantID == nil || *domain.TenantID != tenant.ID {
+			return cutil.NewAPIErrorResponse(c, http.StatusBadRequest, "Domain specified by subdomainId does not belong to the Tenant", nil)
+		}
+		if domain.SiteID == nil || *domain.SiteID != site.ID {
+			return cutil.NewAPIErrorResponse(c, http.StatusBadRequest, "Domain specified by subdomainId does not belong to the VPC Site", nil)
+		}
+		if domain.Status != cdbm.DomainStatusReady || domain.ControllerDomainID == nil {
+			return cutil.NewAPIErrorResponse(c, http.StatusBadRequest, "Domain specified by subdomainId must be in Ready state", nil)
+		}
+		apiRequest.ControllerDomainID = domain.ControllerDomainID
+	}
+
 	// Validate the Ready, tenant-allocated IPv4 IP block for this Subnet.
 	// Model validation ensures IPv4BlockID is non-nil.
 	ipBlockFilter := cdbm.IPBlockFilterInput{}
@@ -247,6 +275,11 @@ func (csh CreateSubnetHandler) Handle(c echo.Context) error {
 			return cutil.NewAPIError(http.StatusBadRequest, fmt.Sprintf("Could not create IPAM entry for Subnet. Details: %s", derr.Error()), nil)
 		}
 
+		var domainID *uuid.UUID
+		if domain != nil {
+			domainID = &domain.ID
+		}
+
 		// Create Subnet in DB
 		subnet, derr = sDAO.Create(
 			ctx, tx, cdbm.SubnetCreateInput{
@@ -255,6 +288,7 @@ func (csh CreateSubnetHandler) Handle(c echo.Context) error {
 				Org:          org,
 				SiteID:       site.ID,
 				VpcID:        vpc.ID,
+				DomainID:     domainID,
 				TenantID:     tenant.ID,
 				RoutingType:  &routingType,
 				IPv4Prefix:   &ipv4Prefix,

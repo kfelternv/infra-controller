@@ -18,6 +18,7 @@
 use std::collections::HashMap;
 use std::time::Duration;
 
+use carbide_authn::middleware::{ExternalUserInfo, Principal};
 use carbide_uuid::network::NetworkSegmentId;
 use carbide_uuid::site_prefix::SitePrefixId;
 use carbide_uuid::vpc::{VpcId, VpcPrefixId};
@@ -42,6 +43,7 @@ use rpc::forge::{
 use sqlx::{PgPool, PgTransaction};
 use tonic::Request;
 
+use crate::auth::AuthContext;
 use crate::cfg::file::{FnnConfig, FnnRoutingProfileConfig, VpcIsolationBehaviorType};
 use crate::network_segment::allocate::PrefixAllocator;
 use crate::test_support::network_segment::FIXTURE_TENANT_ORG_ID;
@@ -577,13 +579,20 @@ async fn unattached_segment_bypasses_overlap_lock_and_attach_rechecks(
     )
     .await??;
 
-    let attach = env.api.attach_network_segment_to_vpc(Request::new(
-        rpc::forge::AttachNetworkSegmentToVpcRequest {
-            network_segment_id: Some(segment_id),
-            vpc_id: Some(attach_vpc),
-            allow_replace: false,
-        },
-    ));
+    let mut attach_request = Request::new(rpc::forge::AttachNetworkSegmentToVpcRequest {
+        network_segment_id: Some(segment_id),
+        vpc_id: Some(attach_vpc),
+        allow_replace: false,
+    });
+    attach_request.extensions_mut().insert(AuthContext {
+        principals: vec![Principal::ExternalUser(ExternalUserInfo::new(
+            None,
+            "nico-admin-cli".to_string(),
+            None,
+        ))],
+        authorization: None,
+    });
+    let attach = env.api.attach_network_segment_to_vpc(attach_request);
     let release_prefix = async {
         wait_for_blocked_query(&env.pool, blocker_pid, "tenant_prefix_overlap:checks").await;
         prefix_create.commit().await?;

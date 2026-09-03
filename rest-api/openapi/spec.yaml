@@ -150,6 +150,9 @@ tags:
       Deprecation history:
 
       - `ResourceTypeID` attribute on Allocation Constraint was deprecated in favor of `resourceTypeId` and will be removed on July 9th, 2026 0:00 UTC. Please use `resourceTypeId` instead.
+  - name: Domain
+    description: |-
+      Domain is a tenant-owned DNS zone at a Site. Domains can be assigned to Subnets when the Subnet is created.
   - name: VPC
     x-displayName: VPC
     description: |-
@@ -2893,6 +2896,210 @@ paths:
           in: query
           name: orderBy
           description: Ordering for pagination query
+  '/v2/org/{org}/nico/domain':
+    parameters:
+      - schema:
+          type: string
+        name: org
+        in: path
+        required: true
+        description: Name of the Org
+    post:
+      summary: Create Domain
+      operationId: create-domain
+      description: |-
+        Create a tenant-owned DNS Domain at a Site.
+
+        Org must have a Tenant entity. User must have authorization role with `TENANT_ADMIN` suffix.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/DomainCreateRequest'
+            examples:
+              example-1:
+                value:
+                  name: tenant.example.com
+                  siteId: 72771e6a-6f5e-4de4-a5b9-1266c4197811
+      responses:
+        '201':
+          description: Created
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Domain'
+        '400':
+          $ref: '#/components/responses/ValidationError'
+        '403':
+          $ref: '#/components/responses/ForbiddenError'
+        '404':
+          $ref: '#/components/responses/NotFoundError'
+        '412':
+          $ref: '#/components/responses/GenericHttpError'
+        '504':
+          $ref: '#/components/responses/GatewayTimeoutError'
+      tags:
+        - Domain
+    get:
+      summary: Retrieve all Domains
+      operationId: get-all-domain
+      description: |-
+        Retrieve tenant-owned DNS Domains for the org, optionally confirming the authenticated Tenant ID and filtering by Site. Results are ordered deterministically before pagination, and the `X-Pagination` response header reports the total matching row count.
+
+        Org must have a Tenant entity. User must have authorization role with `TENANT_ADMIN` suffix.
+      parameters:
+        - schema:
+            type: string
+            format: uuid
+          in: query
+          name: siteId
+          description: Filter Domains by Site
+        - schema:
+            type: string
+            format: uuid
+          in: query
+          name: tenantId
+          description: ID of the authenticated Tenant that owns the Domains
+        - schema:
+            $ref: '#/components/schemas/PageNumber'
+            example: 1
+            default: 1
+          in: query
+          name: pageNumber
+          description: Page number for pagination query
+        - schema:
+            type: integer
+            minimum: 1
+            maximum: 100
+            example: 20
+          in: query
+          name: pageSize
+          description: Page size for pagination query
+        - schema:
+            type: string
+            enum:
+              - NAME_ASC
+              - NAME_DESC
+              - CREATED_ASC
+              - CREATED_DESC
+              - UPDATED_ASC
+              - UPDATED_DESC
+          in: query
+          name: orderBy
+          description: Ordering for pagination query
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/Domain'
+          headers:
+            X-Pagination:
+              schema:
+                type: string
+                example: '{"pageNumber":1,"pageSize":20,"total":30,"orderBy":"CREATED_DESC"}'
+              description: Pagination result in JSON format
+        '400':
+          $ref: '#/components/responses/ValidationError'
+        '403':
+          $ref: '#/components/responses/ForbiddenError'
+      tags:
+        - Domain
+  '/v2/org/{org}/nico/domain/{domainId}':
+    parameters:
+      - schema:
+          type: string
+        name: org
+        in: path
+        required: true
+        description: Name of the Org
+      - schema:
+          type: string
+          format: uuid
+        name: domainId
+        in: path
+        required: true
+        description: ID of the Domain
+    get:
+      summary: Retrieve Domain
+      operationId: get-domain
+      description: |-
+        Retrieve a tenant-owned DNS Domain by ID.
+
+        Org must have a Tenant entity. User must have authorization role with `TENANT_ADMIN` suffix.
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Domain'
+        '403':
+          $ref: '#/components/responses/ForbiddenError'
+        '404':
+          $ref: '#/components/responses/NotFoundError'
+      tags:
+        - Domain
+    patch:
+      summary: Update Domain
+      operationId: update-domain
+      description: |-
+        Update the name of a tenant-owned DNS Domain. Ownership, Site, and the internal Core mapping are immutable.
+
+        Org must have a Tenant entity. User must have authorization role with `TENANT_ADMIN` suffix.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/DomainUpdateRequest'
+            examples:
+              example-1:
+                value:
+                  name: renamed.example.com
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Domain'
+        '400':
+          $ref: '#/components/responses/ValidationError'
+        '403':
+          $ref: '#/components/responses/ForbiddenError'
+        '404':
+          $ref: '#/components/responses/NotFoundError'
+        '412':
+          $ref: '#/components/responses/GenericHttpError'
+        '504':
+          $ref: '#/components/responses/GatewayTimeoutError'
+      tags:
+        - Domain
+    delete:
+      summary: Delete Domain
+      operationId: delete-domain
+      description: |-
+        Delete a tenant-owned DNS Domain by ID.
+
+        Org must have a Tenant entity. User must have authorization role with `TENANT_ADMIN` suffix.
+      responses:
+        '204':
+          description: No Content
+        '403':
+          $ref: '#/components/responses/ForbiddenError'
+        '404':
+          $ref: '#/components/responses/NotFoundError'
+        '412':
+          $ref: '#/components/responses/GenericHttpError'
+        '504':
+          $ref: '#/components/responses/GatewayTimeoutError'
+      tags:
+        - Domain
   '/v2/org/{org}/nico/vpc':
     parameters:
       - schema:
@@ -19718,6 +19925,69 @@ components:
           description: 'Name of the VPCPrefix'
           minLength: 2
           maxLength: 256
+      required:
+        - name
+    Domain:
+      title: Domain
+      type: object
+      description: A tenant-owned DNS zone at a Site.
+      properties:
+        id:
+          type: string
+          format: uuid
+          description: Unique REST identifier for the Domain
+          readOnly: true
+        name:
+          type: string
+          description: DNS name of the Domain
+        siteId:
+          type: string
+          format: uuid
+          description: ID of the Site containing the Domain
+        tenantId:
+          type: string
+          format: uuid
+          description: ID of the Tenant that owns the Domain
+        created:
+          type: string
+          format: date-time
+          description: Date/time when the Domain was created
+          readOnly: true
+        updated:
+          type: string
+          format: date-time
+          description: Date/time when the Domain was last updated
+          readOnly: true
+      required:
+        - id
+        - name
+        - siteId
+        - tenantId
+        - created
+        - updated
+    DomainCreateRequest:
+      title: DomainCreateRequest
+      type: object
+      description: Request data for creating a tenant-owned DNS Domain at a Site.
+      properties:
+        name:
+          type: string
+          description: DNS name of the Domain
+        siteId:
+          type: string
+          format: uuid
+          description: ID of the Site where the Domain will be created
+      required:
+        - name
+        - siteId
+    DomainUpdateRequest:
+      title: DomainUpdateRequest
+      type: object
+      description: Request data for renaming a tenant-owned DNS Domain.
+      properties:
+        name:
+          type: string
+          description: New DNS name of the Domain
       required:
         - name
     Subnet:

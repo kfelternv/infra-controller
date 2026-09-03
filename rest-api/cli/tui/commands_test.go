@@ -362,7 +362,7 @@ func TestCmdMachineListRendersIPAddresses(t *testing.T) {
 
 func TestAppendScopeFlags_SiteOnly(t *testing.T) {
 	siteOnlyResources := []string{
-		"vpc", "allocation", "ip-block", "operating-system", "ssh-key-group",
+		"vpc", "domain", "allocation", "ip-block", "operating-system", "ssh-key-group",
 		"network-security-group", "sku", "rack", "expected-machine",
 		"expected-rack", "expected-switch", "expected-power-shelf", "tray",
 		"dpu-extension-service", "infiniband-partition", "nvlink-logical-partition",
@@ -442,7 +442,7 @@ func TestAppendScopeFlags_UnscopedResources(t *testing.T) {
 
 func TestAppendScopeFlags_CoversAllRegisteredFetchers(t *testing.T) {
 	scopeFilteredFetchers := []string{
-		"vpc", "subnet", "instance", "machine",
+		"vpc", "domain", "subnet", "instance", "machine",
 		"allocation", "ip-block", "operating-system",
 		"ssh-key-group", "network-security-group",
 		"sku", "rack", "expected-machine", "vpc-prefix",
@@ -462,7 +462,7 @@ func TestAppendScopeFlags_CoversAllRegisteredFetchers(t *testing.T) {
 
 func TestInvalidateFiltered_MatchesScopeFilteredFetchers(t *testing.T) {
 	scopeFilteredFetchers := []string{
-		"vpc", "subnet", "instance",
+		"vpc", "domain", "subnet", "instance",
 		"allocation", "machine", "ip-block", "operating-system",
 		"ssh-key-group", "network-security-group",
 		"vpc-prefix", "rack", "expected-machine",
@@ -500,7 +500,7 @@ func TestAppendScopeFlags_ScopeFlagCategories_Consistent(t *testing.T) {
 	}
 
 	allScoped := []string{
-		"vpc", "subnet", "instance", "machine",
+		"vpc", "domain", "subnet", "instance", "machine",
 		"allocation", "ip-block", "operating-system",
 		"ssh-key-group", "network-security-group",
 		"sku", "rack", "expected-machine", "vpc-prefix",

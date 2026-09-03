@@ -205,7 +205,7 @@ func appendScopeFlags(s *Session, parts []string) []string {
 	scopeSiteID := strings.TrimSpace(s.Scope.SiteID)
 	scopeVpcID := strings.TrimSpace(s.Scope.VpcID)
 	switch resource {
-	case "vpc", "allocation", "ip-block", "operating-system", "ssh-key-group",
+	case "vpc", "domain", "allocation", "ip-block", "operating-system", "ssh-key-group",
 		"network-security-group", "sku", "rack", "expected-machine", "instance-type",
 		"expected-rack", "expected-switch", "expected-power-shelf", "tray",
 		"dpu-extension-service", "infiniband-partition", "nvlink-logical-partition":

@@ -27,12 +27,13 @@ use db::{self, ObjectColumnFilter, network_security_group};
 use model::resource_pool;
 use model::tenant::{InvalidTenantOrg, Tenant};
 use model::vpc::{
-    NewVpc, UpdateVpc, UpdateVpcVirtualization, VpcRoutingProfileOverrides, VpcStatus,
-    VpcVirtualizationTypeCapabilities,
+    ChangeVpcRoutingProfile, NewVpc, UpdateVpc, UpdateVpcVirtualization,
+    VpcRoutingProfileOverrides, VpcStatus, VpcVirtualizationTypeCapabilities,
 };
 use sqlx::PgConnection;
 use tonic::{Request, Response, Status};
 
+use super::tenant_prefix_overlap;
 use crate::CarbideError;
 use crate::api::{Api, log_request_data};
 use crate::cfg::file::FnnConfig;
@@ -170,40 +171,41 @@ pub(crate) async fn update(
     log_request_data(&request);
     // Preserve operator errors previously returned by handler-level validation
     // without changing how unrelated request-conversion errors are represented.
-    let vpc_update = UpdateVpc::try_from(request.into_inner()).map_err(|error| match error {
-        RpcDataConversionError::MissingArgument("id") => {
-            CarbideError::InvalidArgument("VPC ID is required".to_string()).into()
-        }
-        error @ RpcDataConversionError::InvalidNetworkSecurityGroupId(_) => {
-            CarbideError::from(error).into()
-        }
-        error => Status::from(error),
-    })?;
+    let mut vpc_update =
+        UpdateVpc::try_from(request.into_inner()).map_err(|error| match error {
+            RpcDataConversionError::MissingArgument("id") => {
+                CarbideError::InvalidArgument("VPC ID is required".to_string()).into()
+            }
+            error @ RpcDataConversionError::InvalidNetworkSecurityGroupId(_) => {
+                CarbideError::from(error).into()
+            }
+            error => Status::from(error),
+        })?;
 
     let mut txn = api.txn_begin().await?;
 
-    // Security-group and routing-profile changes both require validation
-    // against the VPC's persisted tenant and virtualization type.
-    if vpc_update.network_security_group_id.is_some()
-        || vpc_update.routing_profile_overrides.is_some()
-        || vpc_update.power_resource_group.is_some()
-    {
-        let Some(vpc) = db::vpc::find_by(
-            &mut txn,
-            ObjectColumnFilter::One(vpc::IdColumn, &vpc_update.id),
-        )
-        .await?
-        .pop() else {
-            return Err(CarbideError::NotFoundError {
-                kind: "Vpc",
-                id: vpc_update.id.to_string(),
-            }
-            .into());
-        };
+    let vpc = db::vpc::find_by(
+        &mut txn,
+        ObjectColumnFilter::One(vpc::IdColumn, &vpc_update.id),
+    )
+    .await?
+    .pop()
+    .ok_or_else(|| CarbideError::NotFoundError {
+        kind: "Vpc",
+        id: vpc_update.id.to_string(),
+    })?;
+    let overlap_enabled = api.runtime_config.tenant_prefix_overlap_enabled;
+    let mut candidate = vpc.clone();
+    candidate.config.network_security_group_id = vpc_update.network_security_group_id.clone();
+    let nsg_changed =
+        candidate.config.network_security_group_id != vpc.config.network_security_group_id;
 
-        // Validate ownership while taking a row lock on the security group.
-        if let Some(ref network_security_group_id) = vpc_update.network_security_group_id
-            && network_security_group::find_by_ids(
+    // Read without resource locks when admission may need the overlap lock.
+    // The locked reads below must still match these observed versions.
+    let candidate_nsg = if let Some(ref network_security_group_id) =
+        vpc_update.network_security_group_id
+    {
+        Some(network_security_group::find_by_ids(
                 &mut txn,
                 std::slice::from_ref(network_security_group_id),
                 Some(&vpc.config.tenant_organization_id.parse().map_err(
@@ -211,48 +213,117 @@ pub(crate) async fn update(
                         CarbideError::from(RpcDataConversionError::InvalidTenantOrg(e.to_string()))
                     },
                 )?),
-                true,
+                !overlap_enabled,
             )
             .await?
             .pop()
-            .is_none()
-        {
-            return Err(CarbideError::FailedPrecondition(format!(
+            .ok_or_else(|| CarbideError::FailedPrecondition(format!(
                 "NetworkSecurityGroup `{network_security_group_id}` does not exist or is not owned by tenant `{}`",
                 vpc.config.tenant_organization_id
-            ))
-            .into());
-        }
+            )))?)
+    } else {
+        None
+    };
 
-        // Only FNN data planes can consume the persisted routing policy.
-        if let Some(routing_profile_overrides) = vpc_update.routing_profile_overrides.as_ref() {
-            vpc.config
-                .network_virtualization_type
-                .ensure_supports_routing_profiles()
-                .map_err(CarbideError::from)?;
+    let mut profile_requires_check = false;
+    // Only FNN data planes can consume the persisted routing policy.
+    if let Some(routing_profile_overrides) = vpc_update.routing_profile_overrides.as_ref() {
+        vpc.config
+            .network_virtualization_type
+            .ensure_supports_routing_profiles()
+            .map_err(CarbideError::from)?;
 
-            // Inline policy is meaningful only when the current runtime
-            // configuration can supply the VPC's named base profile.
-            let (Some(fnn), Some(_)) = (
-                api.runtime_config.fnn.as_ref(),
-                vpc.config.routing_profile_type.as_ref(),
-            ) else {
-                return Err(CarbideError::FailedPrecondition(
+        // Inline policy is meaningful only when the current runtime
+        // configuration can supply the VPC's named base profile.
+        let (Some(fnn), Some(_)) = (
+            api.runtime_config.fnn.as_ref(),
+            vpc.config.routing_profile_type.as_ref(),
+        ) else {
+            return Err(CarbideError::FailedPrecondition(
                     "FNN configuration and a named VPC routing profile are required to update routing-profile overrides"
                         .to_string(),
                 )
                 .into());
-            };
+        };
 
-            let mut candidate_config = vpc.config.clone();
-            candidate_config.routing_profile_overrides = Some(routing_profile_overrides.clone());
-            fnn.resolve_vpc_routing_profile(&candidate_config)?;
-        }
+        candidate.config.routing_profile_overrides = Some(routing_profile_overrides.clone());
+        let candidate_profile = fnn.resolve_vpc_routing_profile(&candidate.config)?;
+        profile_requires_check = overlap_enabled
+            && !tenant_prefix_overlap::routing_profile_is_nonexpanding(
+                &api.runtime_config,
+                fnn.resolve_vpc_routing_profile(&vpc.config)?.as_ref(),
+                &candidate_profile,
+            );
+    }
+    let nsg_is_safe = candidate_nsg.as_ref().is_none_or(|nsg| {
+        tenant_prefix_overlap::nsg_policy_is_safe(
+            &nsg.rules,
+            nsg.stateful_egress,
+            api.runtime_config
+                .network_security_group
+                .stateful_acls_enabled,
+        )
+    });
+    let nsg_requires_check = nsg_changed && !nsg_is_safe;
+    let needs_overlap_check = overlap_enabled
+        && candidate.config.network_virtualization_type == VpcVirtualizationType::Fnn
+        && (profile_requires_check || nsg_requires_check);
+    if needs_overlap_check {
+        db::tenant_prefix_overlap::lock_checks(&mut txn).await?;
     }
 
-    // Note: Because VNI allocation happens on creation and depends on the routing profile type,
-    // we can't allow VPCs to change routing profiles unless we also release and re-allocate their VNIs.
-    // It's better to keep the property immutable.
+    if overlap_enabled {
+        // Keep the existing NSG-before-VPC resource lock order. Even a
+        // metadata-only request must not restore policy changed since its read.
+        if nsg_changed && let Some(observed_nsg) = candidate_nsg.as_ref() {
+            let current_nsg = network_security_group::find_by_ids(
+                &mut txn,
+                std::slice::from_ref(&observed_nsg.id),
+                None,
+                true,
+            )
+            .await?
+            .pop();
+            if current_nsg.as_ref().map(|nsg| nsg.version) != Some(observed_nsg.version) {
+                return Err(CarbideError::ConcurrentModificationError(
+                    "NetworkSecurityGroup",
+                    observed_nsg.version.to_string(),
+                )
+                .into());
+            }
+        }
+        let current_vpc = db::vpc::find_by_with_lock(
+            &mut txn,
+            ObjectColumnFilter::One(vpc::IdColumn, &vpc.id),
+            db::vpc::VpcRowLock::Mutation,
+        )
+        .await?
+        .pop();
+        let expected_version = vpc_update.if_version_match.unwrap_or(vpc.version);
+        if current_vpc.as_ref().map(|vpc| vpc.version) != Some(vpc.version)
+            || vpc.version != expected_version
+        {
+            return Err(CarbideError::ConcurrentModificationError(
+                "vpc",
+                expected_version.to_string(),
+            )
+            .into());
+        }
+        vpc_update.if_version_match = Some(expected_version);
+    }
+    if needs_overlap_check {
+        tenant_prefix_overlap::validate_vpc_policy(
+            api,
+            &mut txn,
+            &candidate,
+            profile_requires_check,
+            nsg_requires_check,
+        )
+        .await?;
+    }
+
+    // Profile changes also move VNI ownership and use ChangeVpcRoutingProfile,
+    // rather than the ordinary metadata/security-group replacement update.
 
     let vpc = db::vpc::update(&vpc_update, &mut txn).await?;
 
@@ -261,6 +332,286 @@ pub(crate) async fn update(
     Ok(Response::new(rpc::VpcUpdateResult {
         vpc: Some(vpc_to_rpc(vpc, api.runtime_config.fnn.as_ref())),
     }))
+}
+
+pub(crate) async fn change_routing_profile(
+    api: &Api,
+    request: Request<rpc::VpcChangeRoutingProfileRequest>,
+) -> Result<Response<rpc::VpcRoutingState>, Status> {
+    log_request_data(&request);
+    let change =
+        ChangeVpcRoutingProfile::try_from(request.into_inner()).map_err(CarbideError::from)?;
+    let mut txn = api.txn_begin().await?;
+    let observed_vpc = if api.runtime_config.tenant_prefix_overlap_enabled {
+        db::vpc::find_by(&mut txn, ObjectColumnFilter::One(vpc::IdColumn, &change.id))
+            .await?
+            .pop()
+    } else {
+        None
+    };
+    let candidate = observed_vpc.as_ref().map(|vpc| {
+        let mut candidate = vpc.clone();
+        candidate.config.routing_profile_type = Some(change.routing_profile_type.clone());
+        candidate
+    });
+    let needs_overlap_check = match (
+        observed_vpc.as_ref(),
+        candidate.as_ref(),
+        api.runtime_config.fnn.as_ref(),
+    ) {
+        (Some(previous), Some(candidate), Some(fnn))
+            if previous.config.network_virtualization_type == VpcVirtualizationType::Fnn =>
+        {
+            match (
+                fnn.resolve_vpc_routing_profile(&previous.config),
+                fnn.resolve_vpc_routing_profile(&candidate.config),
+            ) {
+                (Ok(previous), Ok(candidate)) => {
+                    !tenant_prefix_overlap::routing_profile_is_nonexpanding(
+                        &api.runtime_config,
+                        &previous,
+                        &candidate,
+                    )
+                }
+                // The ordered validation below reports invalid profile selections.
+                _ => false,
+            }
+        }
+        _ => false,
+    };
+    if needs_overlap_check {
+        db::tenant_prefix_overlap::lock_checks(&mut txn).await?;
+    }
+    let vpc = db::vpc::find_by_with_lock(
+        txn.as_mut(),
+        ObjectColumnFilter::One(vpc::IdColumn, &change.id),
+        db::vpc::VpcRowLock::Mutation,
+    )
+    .await?
+    .pop()
+    .ok_or_else(|| CarbideError::NotFoundError {
+        kind: "Vpc",
+        id: change.id.to_string(),
+    })?;
+    if vpc.version != change.if_version_match
+        || observed_vpc
+            .as_ref()
+            .is_some_and(|observed| observed.version != vpc.version)
+    {
+        return Err(CarbideError::ConcurrentModificationError(
+            "vpc",
+            change.if_version_match.to_string(),
+        )
+        .into());
+    }
+    if vpc.config.network_virtualization_type != VpcVirtualizationType::Fnn {
+        return Err(CarbideError::FailedPrecondition(
+            "routing-profile changes require an FNN VPC".to_string(),
+        )
+        .into());
+    }
+    if api.runtime_config.site_global_vpc_vni.is_some() {
+        return Err(CarbideError::FailedPrecondition(
+            "routing-profile changes do not support a site-global VNI".to_string(),
+        )
+        .into());
+    }
+    let fnn = api.runtime_config.fnn.as_ref().ok_or_else(|| {
+        CarbideError::FailedPrecondition("FNN configuration is required".to_string())
+    })?;
+    let source_name = vpc.config.routing_profile_type.as_deref().ok_or_else(|| {
+        CarbideError::FailedPrecondition("a named source routing profile is required".to_string())
+    })?;
+    let source_profile =
+        fnn.routing_profiles
+            .get(source_name)
+            .ok_or_else(|| CarbideError::NotFoundError {
+                kind: "routing_profile",
+                id: source_name.to_string(),
+            })?;
+    let tenant = db::tenant::find(&vpc.config.tenant_organization_id, true, &mut txn).await?;
+    // Authorize only the destination. Checking the source's entitlement could
+    // prevent correcting an already overly permissive VPC.
+    let destination = resolve_vpc_routing(
+        vpc.config.network_virtualization_type,
+        Some(&change.routing_profile_type),
+        None,
+        tenant.as_ref(),
+        Some(fnn),
+        &vpc.config.tenant_organization_id,
+    )?;
+    if source_profile.internal.unwrap_or_default() == destination.internal {
+        return Err(CarbideError::FailedPrecondition(
+            "source and destination routing profiles must have opposite internal settings"
+                .to_string(),
+        )
+        .into());
+    }
+    validate_routing_change_attachments(&mut txn, &vpc).await?;
+    if needs_overlap_check && let Some(candidate) = candidate.as_ref() {
+        tenant_prefix_overlap::validate_vpc_policy(api, &mut txn, candidate, true, false).await?;
+    }
+
+    let allocations = find_vpc_vni_allocations(api, &mut txn, &vpc).await?;
+    let destination_pool = if destination.internal {
+        api.common_pools.ethernet.pool_vpc_vni.as_ref()
+    } else {
+        api.common_pools.ethernet.pool_external_vpc_vni.as_ref()
+    };
+    if allocations.active_pool.name() == destination_pool.name() {
+        return Err(CarbideError::FailedPrecondition(
+            "destination pool already owns the active VNI".to_string(),
+        )
+        .into());
+    }
+    if !db::resource_pool::pool_has_rows(&mut txn, destination_pool.name()).await? {
+        return Err(CarbideError::FailedPrecondition(format!(
+            "destination pool `{}` has no materialized values",
+            destination_pool.name(),
+        ))
+        .into());
+    }
+    if let Some(vni) = db::resource_pool::find_pool_overlap(
+        &mut txn,
+        &api.common_pools.ethernet.pool_vpc_vni,
+        &api.common_pools.ethernet.pool_external_vpc_vni,
+    )
+    .await?
+    {
+        return Err(CarbideError::FailedPrecondition(format!(
+            "internal and external VNI pools overlap at VNI `{vni}`",
+        ))
+        .into());
+    }
+    // The active VNI becomes retained and must remain releasable too.
+    validate_transition_vni(allocations.active_vni)?;
+    if change.vni == Some(allocations.active_vni) {
+        return Err(CarbideError::FailedPrecondition(format!(
+            "requested VNI `{}` is already active on this VPC",
+            allocations.active_vni,
+        ))
+        .into());
+    }
+    let destination_vni = match (allocations.inactive, change.vni) {
+        (Some((_, retained_vni)), Some(requested_vni)) if retained_vni != requested_vni => {
+            return Err(CarbideError::FailedPrecondition(format!(
+                "requested VNI `{requested_vni}` must match retained VNI `{retained_vni}` in pool `{}`",
+                destination_pool.name(),
+            ))
+            .into());
+        }
+        (Some((_, vni)), _) => vni,
+        (None, Some(vni)) => {
+            allocate_exact_vpc_vni(destination_pool, &mut txn, &vpc.id.to_string(), vni).await?
+        }
+        (None, None) => {
+            allocate_vpc_vni(
+                api,
+                &mut txn,
+                &vpc.id.to_string(),
+                destination.internal,
+                None,
+            )
+            .await?
+        }
+    };
+    // A pool can contain values that inspection supports but cleanup cannot
+    // release. Reject them here, rolling back any newly allocated value.
+    validate_transition_vni(destination_vni)?;
+    let updated = db::vpc::change_routing_profile(&change, &mut txn, destination_vni).await?;
+    let state = vpc_routing_state(
+        updated,
+        VpcVniAllocations {
+            active_pool: destination_pool,
+            active_vni: destination_vni,
+            inactive: Some((allocations.active_pool, allocations.active_vni)),
+        },
+    )?;
+    txn.commit().await?;
+    Ok(Response::new(state))
+}
+
+fn validate_transition_vni(vni: i32) -> Result<(), CarbideError> {
+    if !(1..=0x00ff_ffff).contains(&vni) {
+        return Err(CarbideError::FailedPrecondition(format!(
+            "routing-profile transition VNI `{vni}` must be between 1 and 16777215",
+        )));
+    }
+    Ok(())
+}
+
+async fn validate_routing_change_attachments(
+    txn: &mut PgConnection,
+    vpc: &model::vpc::Vpc,
+) -> Result<(), CarbideError> {
+    if vpc
+        .config
+        .routing_profile_overrides
+        .as_ref()
+        .is_some_and(|overrides| *overrides != VpcRoutingProfileOverrides::default())
+    {
+        return Err(CarbideError::FailedPrecondition(
+            "routing-profile changes do not support VPC routing overrides".to_string(),
+        ));
+    }
+    if db::vpc_prefix::has_tenant_managed_site_prefix(txn, vpc.id).await? {
+        return Err(CarbideError::FailedPrecondition(
+            "routing-profile changes do not support tenant-managed SitePrefix attachments"
+                .to_string(),
+        ));
+    }
+    // Deleting instances can still have configuration applied on a DPU.
+    // Instance admission does not share this VPC lock; the operator's hold
+    // must prevent attachment changes during this scan and convergence.
+    let instance_ids = db::instance::find_ids(
+        &mut *txn,
+        model::instance::InstanceSearchFilter {
+            vpc_id: Some(vpc.id.to_string()),
+            ..Default::default()
+        },
+    )
+    .await?;
+    let instances = db::instance::find(
+        &mut *txn,
+        ObjectColumnFilter::List(db::instance::IdColumn, &instance_ids),
+    )
+    .await?;
+    for instance in instances {
+        // Pending updates retain both configurations until their old resources
+        // are released, including interfaces not in the current configuration.
+        let pending = instance.update_network_config_request.as_ref();
+        for config in std::iter::once(&instance.config.network).chain(
+            pending
+                .into_iter()
+                .flat_map(|update| [&update.old_config, &update.new_config]),
+        ) {
+            for interface in &config.interfaces {
+                if interface
+                    .routing_profile
+                    .as_ref()
+                    .is_none_or(|profile| profile.allowed_anycast_prefixes.is_empty())
+                {
+                    continue;
+                }
+                let references_vpc = if interface.vpc_id == Some(vpc.id) {
+                    true
+                } else if let Some(segment_id) = interface.network_segment_id {
+                    db::vpc::find_by_segment(&mut *txn, segment_id)
+                        .await?
+                        .is_some_and(|owner| owner.id == vpc.id)
+                } else {
+                    false
+                };
+                if references_vpc {
+                    return Err(CarbideError::FailedPrecondition(format!(
+                        "instance `{}` has an interface routing override in VPC `{}`",
+                        instance.id, vpc.id,
+                    )));
+                }
+            }
+        }
+    }
+    Ok(())
 }
 
 /// Releases the operator-selected inactive allocation without changing VPC configuration.
@@ -356,6 +707,7 @@ async fn release_inactive_vpc_vni(
 }
 
 struct VpcVniAllocations<'a> {
+    active_pool: &'a resource_pool::ResourcePool<i32>,
     active_vni: i32,
     inactive: Option<(&'a resource_pool::ResourcePool<i32>, i32)>,
 }
@@ -391,19 +743,19 @@ async fn find_vpc_vni_allocations<'a>(
     .await
     .map_err(db::DatabaseError::from)?;
 
-    let inactive = match (internal_vni, external_vni) {
+    let (active_pool, inactive) = match (internal_vni, external_vni) {
         (Some(internal_vni), Some(external_vni))
             if internal_vni == active_vni && external_vni != active_vni =>
         {
-            Some((external_pool, external_vni))
+            (internal_pool, Some((external_pool, external_vni)))
         }
         (Some(internal_vni), Some(external_vni))
             if external_vni == active_vni && internal_vni != active_vni =>
         {
-            Some((internal_pool, internal_vni))
+            (external_pool, Some((internal_pool, internal_vni)))
         }
-        (Some(internal_vni), None) if internal_vni == active_vni => None,
-        (None, Some(external_vni)) if external_vni == active_vni => None,
+        (Some(internal_vni), None) if internal_vni == active_vni => (internal_pool, None),
+        (None, Some(external_vni)) if external_vni == active_vni => (external_pool, None),
         _ => {
             return Err(CarbideError::FailedPrecondition(format!(
                 "VPC `{}` has inconsistent VNI allocations: active VNI `{active_vni}`, internal allocation {internal_vni:?}, external allocation {external_vni:?}",
@@ -413,6 +765,7 @@ async fn find_vpc_vni_allocations<'a>(
     };
 
     Ok(VpcVniAllocations {
+        active_pool,
         active_vni,
         inactive,
     })
@@ -426,7 +779,27 @@ pub(crate) async fn update_virtualization(
 
     let mut txn = api.txn_begin().await?;
 
-    let updater = UpdateVpcVirtualization::try_from(request.into_inner())?;
+    let mut updater = UpdateVpcVirtualization::try_from(request.into_inner())?;
+    let observed_vpc = if api.runtime_config.tenant_prefix_overlap_enabled {
+        db::vpc::find_by(
+            &mut txn,
+            ObjectColumnFilter::One(vpc::IdColumn, &updater.id),
+        )
+        .await?
+        .pop()
+    } else {
+        None
+    };
+    let needs_overlap_check = observed_vpc.as_ref().is_some_and(|vpc| {
+        super::vpc_peering::vpc_type_change_expands_receivers(
+            api,
+            vpc.config.network_virtualization_type,
+            updater.network_virtualization_type,
+        )
+    });
+    if needs_overlap_check {
+        db::tenant_prefix_overlap::lock_checks(&mut txn).await?;
+    }
 
     // Serialize this transition with VpcPrefix creation. A tenant-managed
     // SitePrefix can be attached only to FNN, so the VPC must remain FNN for
@@ -442,6 +815,16 @@ pub(crate) async fn update_virtualization(
         kind: "vpc",
         id: updater.id.to_string(),
     })?;
+    if let Some(observed) = observed_vpc {
+        if current_vpc.version != observed.version {
+            return Err(CarbideError::ConcurrentModificationError(
+                "vpc",
+                observed.version.to_string(),
+            )
+            .into());
+        }
+        updater.if_version_match.get_or_insert(observed.version);
+    }
     if current_vpc.config.slaac_enabled {
         updater
             .network_virtualization_type
@@ -476,6 +859,9 @@ pub(crate) async fn update_virtualization(
         .into());
     }
     db::vpc::update_virtualization(&updater, &mut txn).await?;
+    if needs_overlap_check {
+        super::vpc_peering::validate_vpc_type_change(api, &mut txn, updater.id).await?;
+    }
 
     txn.commit().await?;
 
@@ -633,6 +1019,16 @@ pub(crate) async fn get_routing_state(
         id: vpc_id.to_string(),
     })?;
     let allocations = find_vpc_vni_allocations(api, &mut txn, &vpc).await?;
+    let state = vpc_routing_state(vpc, allocations)?;
+    txn.commit().await?;
+    Ok(Response::new(state))
+}
+
+fn vpc_routing_state(
+    vpc: model::vpc::Vpc,
+    allocations: VpcVniAllocations<'_>,
+) -> Result<rpc::VpcRoutingState, CarbideError> {
+    let vpc_id = vpc.id;
     let to_rpc_vni = |vni| {
         u32::try_from(vni).map_err(|_| {
             CarbideError::FailedPrecondition(format!(
@@ -647,15 +1043,13 @@ pub(crate) async fn get_routing_state(
         }),
         None => None,
     };
-    let state = rpc::VpcRoutingState {
+    Ok(rpc::VpcRoutingState {
         id: Some(vpc.id),
         version: vpc.version.to_string(),
         routing_profile_type: vpc.config.routing_profile_type,
         active_vni: to_rpc_vni(allocations.active_vni)?,
         retained_allocation,
-    };
-    txn.commit().await?;
-    Ok(Response::new(state))
+    })
 }
 
 /// Converts a persisted VPC to RPC and populates its runtime-derived effective routing profile.
@@ -776,6 +1170,37 @@ async fn allocate_vpc_vni(
     }
 }
 
+/// `allocate_exact_vpc_vni` claims a requested VNI from the already validated pool.
+/// Unlike VPC creation, routing changes accept either assignment partition.
+async fn allocate_exact_vpc_vni(
+    pool: &resource_pool::ResourcePool<i32>,
+    txn: &mut PgConnection,
+    owner_id: &str,
+    vni: i32,
+) -> Result<i32, CarbideError> {
+    db::resource_pool::allocate_exact(pool, txn, resource_pool::OwnerType::Vpc, owner_id, vni)
+        .await
+        .map_err(|error| {
+            if matches!(error, db::DatabaseError::FailedPrecondition(_)) {
+                db::resource_pool::emit_requested_vni_unavailable(
+                    pool.value_type,
+                    owner_id,
+                    vni,
+                    pool.name(),
+                );
+            } else {
+                db::resource_pool::emit_database_allocation_failure(
+                    pool.value_type,
+                    owner_id,
+                    true,
+                    pool.name(),
+                    &error,
+                );
+            }
+            CarbideError::from(error)
+        })
+}
+
 /// Resolution of routing-related state for a VPC at create time. The
 /// `internal` flag isn't strictly part of the routing profile, but it
 /// gets decided together with `profile_type` from the same inputs
@@ -849,7 +1274,7 @@ fn resolve_vpc_routing(
         // Every FNN VPC needs a tenant profile to establish its named routing policy and
         // authorize any explicitly requested profile or inline overrides.
         (_, None) => Err(CarbideError::FailedPrecondition(format!(
-            "tenant `{organization_id}` must have a routing profile before creating an FNN VPC"
+            "tenant `{organization_id}` must have a routing profile for an FNN VPC"
         ))),
 
         // Tenant has a routing profile; resolve the request against it.
@@ -917,6 +1342,22 @@ mod tests {
 
     use super::*;
     use crate::cfg::file::FnnRoutingProfileConfig;
+
+    #[test]
+    fn transition_vni_must_be_releasable() {
+        scenarios!(
+            run = |vni| validate_transition_vni(vni)
+                .map_err(|error| tonic::Status::from(error).code());
+            "valid transition bounds" {
+                1 => Yields(()),
+                16_777_215 => Yields(()),
+            }
+            "outside transition bounds" {
+                0 => FailsWith(tonic::Code::FailedPrecondition),
+                16_777_216 => FailsWith(tonic::Code::FailedPrecondition),
+            }
+        );
+    }
 
     fn tenant_with_profile(profile: Option<&str>) -> Tenant {
         Tenant {
@@ -1091,6 +1532,36 @@ mod tests {
             }
 
             "requested profile access tier" {
+                RoutingResolutionInput {
+                    network_virtualization_type: Fnn,
+                    requested_profile_type: Some("PARTNER"),
+                    routing_profile_overrides: None,
+                    tenant: Some(tenant_with_profile(Some("INTERNAL"))),
+                    fnn_config: Some(fnn_with_profiles(&[
+                        ("INTERNAL", profile(true, 1)),
+                        ("PARTNER", profile(false, 1)),
+                    ])),
+                } => Yields((Some("PARTNER".to_string()), false)),
+                RoutingResolutionInput {
+                    network_virtualization_type: Fnn,
+                    requested_profile_type: Some("PARTNER"),
+                    routing_profile_overrides: None,
+                    tenant: Some(tenant_with_profile(Some("INTERNAL"))),
+                    fnn_config: Some(fnn_with_profiles(&[
+                        ("INTERNAL", profile(true, 1)),
+                        ("PARTNER", FnnRoutingProfileConfig { access_tier: None, ..profile(false, 1) }),
+                    ])),
+                } => FailsWith(FailedPrecondition),
+                RoutingResolutionInput {
+                    network_virtualization_type: Fnn,
+                    requested_profile_type: Some("PARTNER"),
+                    routing_profile_overrides: None,
+                    tenant: Some(tenant_with_profile(Some("INTERNAL"))),
+                    fnn_config: Some(fnn_with_profiles(&[
+                        ("INTERNAL", FnnRoutingProfileConfig { access_tier: None, ..profile(true, 1) }),
+                        ("PARTNER", profile(false, 1)),
+                    ])),
+                } => Yields((Some("PARTNER".to_string()), false)),
                 // An ADMIN tenant may select a narrower EXTERNAL routing profile.
                 RoutingResolutionInput {
                     network_virtualization_type: Fnn,

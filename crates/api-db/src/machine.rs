@@ -69,8 +69,8 @@ use sqlx::postgres::PgRow;
 use sqlx::{FromRow, PgConnection, Pool, Postgres, Row};
 
 use super::{DatabaseError, ObjectFilter, Transaction, queries};
-use crate::DatabaseResult;
 use crate::db_read::DbReader;
+use crate::{ConditionalWrite, DatabaseResult};
 
 #[derive(Serialize)]
 struct ReprovisionRequestRestart {
@@ -704,11 +704,15 @@ pub async fn find_by_query(
     find_by_hostname(txn, query).await
 }
 
+/// Records the database statement execution time as the machine's reboot timestamp.
+///
+/// This ensures a reboot reported after a concurrent state transition is recorded as newer than
+/// that transition, even when the reporting transaction began first.
 pub async fn update_reboot_time<ID: MachineIdSubtypeTrait>(
     machine: &Machine<ID>,
     txn: &mut PgConnection,
 ) -> Result<(), DatabaseError> {
-    let query = "UPDATE machines SET last_reboot_time=NOW() WHERE id=$1 RETURNING id";
+    let query = "UPDATE machines SET last_reboot_time=clock_timestamp() WHERE id=$1 RETURNING id";
     let _id = sqlx::query_as::<_, MachineId>(query)
         .bind(machine.id.to_string())
         .fetch_one(txn)
@@ -849,11 +853,16 @@ pub async fn clear_bios_password_set_time(
         .map_err(|e| DatabaseError::query(query, e))
 }
 
+/// Records the database statement execution time as the machine's discovery timestamp.
+///
+/// This ensures discovery completed after a concurrent state transition is recorded as newer than
+/// that transition, even when the discovery transaction began first.
 pub async fn update_discovery_time(
     machine_id: &MachineId,
     txn: &mut PgConnection,
 ) -> Result<(), DatabaseError> {
-    let query = "UPDATE machines SET last_discovery_time=NOW() WHERE id=$1 RETURNING id";
+    let query =
+        "UPDATE machines SET last_discovery_time=clock_timestamp() WHERE id=$1 RETURNING id";
     let _id = sqlx::query_as::<_, MachineId>(query)
         .bind(machine_id)
         .fetch_one(txn)
@@ -1072,6 +1081,12 @@ pub async fn update_network_status_observation(
     Ok(())
 }
 
+/// `ExtensionServiceObservationNotCurrent` means the conditional observation
+/// update did not match, but the machine was present when rechecked. The
+/// rejected observation does not replace the stored service entry.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ExtensionServiceObservationNotCurrent;
+
 /// Updates the current extension-service observation for one service type.
 ///
 /// Writers own their type key, so the DPU agent's KubernetesPod observation
@@ -1079,16 +1094,16 @@ pub async fn update_network_status_observation(
 /// is a single JSONB update: PostgreSQL serializes concurrent row updates and
 /// `jsonb_set` retains every other service-type entry.
 ///
-/// Returns `false` when the machine exists but a newer observation for this
-/// same service type is already present, and [`DatabaseError::NotFoundError`]
-/// when the machine row is absent, so a superseded report is distinguishable
-/// from a machine that went away.
+/// Returns `Applied(())` when the observation is stored. A conditional miss
+/// returns `NotApplied` if the machine exists when rechecked, or
+/// [`DatabaseError::NotFoundError`] if it is absent. The identity recheck is
+/// a separate read, not part of the timestamp comparison's snapshot.
 pub async fn update_extension_service_status_observation(
     txn: &mut PgConnection,
     machine_id: &MachineId,
     service_type: ExtensionServiceType,
     observation: &InstanceExtensionServiceStatusObservation,
-) -> Result<bool, DatabaseError> {
+) -> Result<ConditionalWrite<(), ExtensionServiceObservationNotCurrent>, DatabaseError> {
     let query = r#"
         UPDATE machines
         SET extension_service_status_observations = jsonb_set(
@@ -1114,7 +1129,7 @@ pub async fn update_extension_service_status_observation(
         .await
         .map_err(|e| DatabaseError::query(query, e))?;
     if updated.is_some() {
-        return Ok(true);
+        return Ok(ConditionalWrite::Applied(()));
     }
 
     // The update above matches on machine identity and observation freshness
@@ -1127,7 +1142,9 @@ pub async fn update_extension_service_status_observation(
         .await
         .map_err(|e| DatabaseError::query(identity_query, e))?;
     if machine_exists.is_some() {
-        return Ok(false);
+        return Ok(ConditionalWrite::NotApplied(
+            ExtensionServiceObservationNotCurrent,
+        ));
     }
 
     // Captures why the update failed in unit tests even though all prerequisite
@@ -1615,13 +1632,21 @@ pub async fn set_use_admin_network_changed(
     Ok(())
 }
 
-/// Clears the `use_admin_network_changed` flag only if the machine is still at
-/// the expected network config version.
+/// `AdminNetworkChangeNotPending` means no pending flag matches the acknowledged
+/// version. The machine may be missing, its network config version may differ,
+/// or `use_admin_network_changed` may already be false or unset.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct AdminNetworkChangeNotPending;
+
+/// Clears the pending `use_admin_network_changed` flag only if the machine is
+/// still at the expected network config version, without advancing that version.
+/// Returns `NotApplied(AdminNetworkChangeNotPending)` when no pending flag matches;
+/// database failures remain errors.
 pub async fn clear_use_admin_network_changed_if_version_matches(
     txn: &mut PgConnection,
     machine_id: &DpuMachineId,
     expected_version: &ConfigVersion,
-) -> Result<bool, DatabaseError> {
+) -> Result<ConditionalWrite<(), AdminNetworkChangeNotPending>, DatabaseError> {
     let query = r#"
         UPDATE machines
         SET network_config = jsonb_set(COALESCE(network_config, '{}'::jsonb), '{use_admin_network_changed}', 'false'::jsonb)
@@ -1636,7 +1661,11 @@ pub async fn clear_use_admin_network_changed_if_version_matches(
         .await
         .map_err(|e| DatabaseError::query(query, e))?;
 
-    Ok(result.rows_affected() > 0)
+    Ok(if result.rows_affected() > 0 {
+        ConditionalWrite::Applied(())
+    } else {
+        ConditionalWrite::NotApplied(AdminNetworkChangeNotPending)
+    })
 }
 
 /// Replaces predicted host id with stable host id.
@@ -2379,11 +2408,15 @@ pub async fn update_state(
     Ok(())
 }
 
+/// Records the database statement execution time as the machine's validation timestamp.
+///
+/// This ensures validation completed after a concurrent state transition is recorded as newer than
+/// that transition, even when the validation transaction began first.
 pub async fn update_machine_validation_time(
     machine_id: &MachineId,
     txn: &mut PgConnection,
 ) -> Result<(), DatabaseError> {
-    let query = "UPDATE machines SET last_machine_validation_time=NOW() WHERE id=$1 RETURNING id";
+    let query = "UPDATE machines SET last_machine_validation_time=clock_timestamp() WHERE id=$1 RETURNING id";
     let _id = sqlx::query_as::<_, MachineId>(query)
         .bind(machine_id)
         .fetch_one(txn)
@@ -3523,6 +3556,121 @@ mod test {
     use model::resource_pool::{ResourcePool, ValueType};
     use tokio::sync::oneshot;
 
+    #[crate::sqlx_test]
+    async fn extension_service_observations_preserve_per_service_timestamp_order(
+        pool: sqlx::PgPool,
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        use chrono::{DateTime, Utc};
+        use config_version::ConfigVersion;
+        use model::extension_service::ExtensionServiceType;
+        use model::instance::status::extension_service::{
+            InstanceExtensionServiceStatusObservation,
+            InstanceExtensionServiceStatusObservationByType,
+        };
+
+        use super::{
+            ExtensionServiceObservationNotCurrent, update_extension_service_status_observation,
+        };
+        use crate::ConditionalWrite::{self, Applied, NotApplied};
+
+        let machine_id =
+            MachineId::from_str("fm100htes3rn1npvbtm5qd57dkilaag7ljugl1llmm7rfuq1ov50i0rpl30")?;
+        let observation = InstanceExtensionServiceStatusObservation {
+            config_version: ConfigVersion::initial(),
+            instance_config_version: None,
+            extension_service_statuses: Vec::new(),
+            observed_at: DateTime::from_timestamp(1_722_000_000, 0).unwrap(),
+        };
+        let mut txn = pool.begin().await?;
+        let missing = update_extension_service_status_observation(
+            txn.as_mut(),
+            &machine_id,
+            ExtensionServiceType::KubernetesPod,
+            &observation,
+        )
+        .await;
+        assert!(
+            matches!(missing, Err(crate::DatabaseError::NotFoundError { kind: "machine", id }) if id == machine_id.to_string())
+        );
+        super::create(
+            txn.as_mut(),
+            None,
+            &machine_id,
+            ManagedHostState::Ready,
+            None,
+            2,
+        )
+        .await?;
+        txn.commit().await?;
+
+        struct Case {
+            scenario: &'static str,
+            service_type: ExtensionServiceType,
+            observed_at: DateTime<Utc>,
+            config_version: ConfigVersion,
+            expect: ConditionalWrite<(), ExtensionServiceObservationNotCurrent>,
+        }
+        let mut expected = InstanceExtensionServiceStatusObservationByType::default();
+        for case in [
+            Case {
+                scenario: "initial observation",
+                service_type: ExtensionServiceType::KubernetesPod,
+                observed_at: observation.observed_at,
+                config_version: observation.config_version,
+                expect: Applied(()),
+            },
+            Case {
+                scenario: "another service has an independent timestamp",
+                service_type: ExtensionServiceType::DpfHelmChart,
+                observed_at: observation.observed_at - chrono::Duration::seconds(1),
+                config_version: observation.config_version,
+                expect: Applied(()),
+            },
+            Case {
+                scenario: "older observation leaves both services unchanged",
+                service_type: ExtensionServiceType::KubernetesPod,
+                observed_at: observation.observed_at - chrono::Duration::seconds(1),
+                config_version: observation.config_version.increment(),
+                expect: NotApplied(ExtensionServiceObservationNotCurrent),
+            },
+            Case {
+                scenario: "equal timestamp can replace the payload",
+                service_type: ExtensionServiceType::KubernetesPod,
+                observed_at: observation.observed_at,
+                config_version: observation.config_version.increment(),
+                expect: Applied(()),
+            },
+        ] {
+            let incoming = InstanceExtensionServiceStatusObservation {
+                config_version: case.config_version,
+                observed_at: case.observed_at,
+                ..observation.clone()
+            };
+            let mut txn = pool.begin().await?;
+            let result = update_extension_service_status_observation(
+                txn.as_mut(),
+                &machine_id,
+                case.service_type.clone(),
+                &incoming,
+            )
+            .await?;
+            txn.commit().await?;
+            assert_eq!(result, case.expect, "{}", case.scenario);
+            if let Applied(()) = case.expect {
+                expected.set_for_service_type(case.service_type, incoming);
+            }
+            let persisted: sqlx::types::Json<InstanceExtensionServiceStatusObservationByType> =
+                sqlx::query_scalar(
+                    "SELECT extension_service_status_observations FROM machines WHERE id = $1",
+                )
+                .bind(machine_id)
+                .fetch_one(&pool)
+                .await?;
+            assert_eq!(persisted.0, expected, "{}", case.scenario);
+        }
+        Ok(())
+    }
+
     fn common_pools_without_seeded_values() -> CommonPools {
         let (stop_sender, _stop_receiver) = oneshot::channel();
         CommonPools {
@@ -3640,9 +3788,17 @@ mod test {
     }
 
     #[crate::sqlx_test]
-    async fn cleanup_time_follows_state_committed_after_transaction_start(
+    async fn completion_markers_follow_state_committed_after_transaction_start(
         pool: sqlx::PgPool,
     ) -> Result<(), Box<dyn std::error::Error>> {
+        #[derive(Clone, Copy)]
+        enum CompletionMarker {
+            Cleanup,
+            Discovery,
+            MachineValidation,
+            Reboot,
+        }
+
         let machine_id =
             MachineId::from_str("fm100htes3rn1npvbtm5qd57dkilaag7ljugl1llmm7rfuq1ov50i0rpl30")?;
         let mut setup_txn = pool.begin().await?;
@@ -3657,60 +3813,86 @@ mod test {
         .await?;
         setup_txn.commit().await?;
 
-        let mut cleanup_txn = pool.begin().await?;
-        let cleanup_transaction_started_at: chrono::DateTime<chrono::Utc> =
-            sqlx::query_scalar("SELECT transaction_timestamp()")
-                .fetch_one(cleanup_txn.as_mut())
-                .await?;
-        let machine = super::find_one(
-            cleanup_txn.as_mut(),
-            &machine_id,
-            MachineSearchConfig::default(),
-        )
-        .await?
-        .expect("machine should exist before recording cleanup");
+        for (case, marker) in [
+            ("cleanup", CompletionMarker::Cleanup),
+            ("discovery", CompletionMarker::Discovery),
+            ("machine validation", CompletionMarker::MachineValidation),
+            ("reboot", CompletionMarker::Reboot),
+        ] {
+            let mut marker_txn = pool.begin().await?;
+            let marker_transaction_started_at: chrono::DateTime<chrono::Utc> =
+                sqlx::query_scalar("SELECT transaction_timestamp()")
+                    .fetch_one(marker_txn.as_mut())
+                    .await?;
+            let machine = super::find_one(
+                marker_txn.as_mut(),
+                &machine_id,
+                MachineSearchConfig::default(),
+            )
+            .await?
+            .unwrap_or_else(|| panic!("{case}: machine should exist before recording completion"));
 
-        tokio::time::sleep(std::time::Duration::from_millis(1)).await;
-        let mut state_txn = pool.begin().await?;
-        let machine_for_state_update = super::find_one(
-            state_txn.as_mut(),
-            &machine_id,
-            MachineSearchConfig::default(),
-        )
-        .await?
-        .expect("machine should exist before advancing its state version");
-        super::advance(
-            &machine_for_state_update,
-            state_txn.as_mut(),
-            &ManagedHostState::Ready,
-            None,
-        )
-        .await?;
-        state_txn.commit().await?;
+            tokio::time::sleep(std::time::Duration::from_millis(1)).await;
+            let mut state_txn = pool.begin().await?;
+            let machine_for_state_update = super::find_one(
+                state_txn.as_mut(),
+                &machine_id,
+                MachineSearchConfig::default(),
+            )
+            .await?
+            .unwrap_or_else(|| {
+                panic!("{case}: machine should exist before advancing its state version")
+            });
+            super::advance(
+                &machine_for_state_update,
+                state_txn.as_mut(),
+                &ManagedHostState::Ready,
+                None,
+            )
+            .await?;
+            state_txn.commit().await?;
 
-        super::update_cleanup_time(&machine, cleanup_txn.as_mut()).await?;
-        cleanup_txn.commit().await?;
+            match marker {
+                CompletionMarker::Cleanup => {
+                    super::update_cleanup_time(&machine, marker_txn.as_mut()).await?
+                }
+                CompletionMarker::Discovery => {
+                    super::update_discovery_time(&machine.id, marker_txn.as_mut()).await?
+                }
+                CompletionMarker::MachineValidation => {
+                    super::update_machine_validation_time(&machine.id, marker_txn.as_mut()).await?
+                }
+                CompletionMarker::Reboot => {
+                    super::update_reboot_time(&machine, marker_txn.as_mut()).await?
+                }
+            }
+            marker_txn.commit().await?;
 
-        let mut verify_txn = pool.begin().await?;
-        let machine = super::find_one(
-            verify_txn.as_mut(),
-            &machine_id,
-            MachineSearchConfig::default(),
-        )
-        .await?
-        .expect("machine should exist after recording cleanup");
-        let cleanup_time = machine
-            .status
-            .last_cleanup_time
-            .expect("cleanup time should be recorded");
-        assert!(
-            cleanup_transaction_started_at < machine.state.version.timestamp(),
-            "the test must start the cleanup transaction before advancing the state version"
-        );
-        assert!(
-            cleanup_time > machine.state.version.timestamp(),
-            "cleanup recorded after a state transition must be newer than that state version"
-        );
+            let mut verify_txn = pool.begin().await?;
+            let machine = super::find_one(
+                verify_txn.as_mut(),
+                &machine_id,
+                MachineSearchConfig::default(),
+            )
+            .await?
+            .unwrap_or_else(|| panic!("{case}: machine should exist after recording completion"));
+            let marker_time = match marker {
+                CompletionMarker::Cleanup => machine.status.last_cleanup_time,
+                CompletionMarker::Discovery => machine.status.last_discovery_time,
+                CompletionMarker::MachineValidation => machine.last_machine_validation_time,
+                CompletionMarker::Reboot => machine.status.last_reboot_time,
+            }
+            .unwrap_or_else(|| panic!("{case}: completion time should be recorded"));
+            assert!(
+                marker_transaction_started_at < machine.state.version.timestamp(),
+                "{case}: the marker transaction must start before advancing the state version"
+            );
+            assert!(
+                marker_time > machine.state.version.timestamp(),
+                "{case}: completion recorded after a state transition must be newer than that state version"
+            );
+            verify_txn.commit().await?;
+        }
 
         Ok(())
     }

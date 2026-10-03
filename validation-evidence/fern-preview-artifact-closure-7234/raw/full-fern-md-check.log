@@ -1,0 +1,5 @@
+PWD=/home/developer/workspace/.wt-6002-ee6b
+COMMAND=fern docs md check
+[docs]:
+       ✓ All 144 MDX files are valid
+EXIT=0

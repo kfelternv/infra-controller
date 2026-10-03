@@ -1,0 +1,41 @@
+node=v24.21.0
+fern=5.114.1
+fern
+
+Commands:
+  fern completion                   Generate shell completion script
+  fern diff                         Diff two versions of an API
+  fern init                         Initialize a Fern API
+  fern token                        Generate a Fern Token
+  fern add <generator>              Add a code generator to generators.yml
+  fern generate                     Generate all generators in the specified
+                                    group
+  fern ir <path-to-output>          Generate IR (Intermediate Representation)
+  fern check                        Validates your Fern Definition. Logs errors.
+  fern login                        Log in to Fern via GitHub
+  fern logout                       Log out of Fern
+  fern mcp                          Manage the Fern MCP server
+  fern format                       Formats your Fern Definition
+  fern write-definition             Write underlying Fern Definition for OpenAPI
+                                    specs and API Dependencies.
+  fern docs                         Commands for managing your docs
+  fern overrides                    Commands for managing OpenAPI overrides
+  fern api                          Commands for managing your API specs
+  fern self-update [version]        Updates the globally installed Fern CLI to
+                                    the latest version or the specified version
+  fern upgrade                      Upgrades Fern CLI version in
+                                    fern.config.json
+  fern downgrade <version>          Downgrades Fern CLI version in
+                                    fern.config.json
+  fern jsonschema <path-to-output>  Generate JSON Schema for a specific type
+  fern export <output-path>         Export your API to an OpenAPI spec
+  fern sdk                          Configure and generate SDKs
+  fern generator                    Operate on the generators within your Fern
+                                    configuration
+  fern org                          Manage org-level configuration
+
+Options:
+      --help       Show help                                           [boolean]
+      --log-level
+          [choices: "trace", "debug", "info", "warn", "error"] [default: "info"]
+  -v, --version    Print current version

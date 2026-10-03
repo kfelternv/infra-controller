@@ -1,0 +1,47 @@
+PWD=/home/developer/workspace/evidence/fern-artifact-closure-7234/packaged
+COMMAND=fern check --local --warnings
+[docs] 8 errors, 1 warning
+    [warning] Missing redirects check skipped: not authenticated. Run 'fern login' or set the FERN_TOKEN environment variable to enable this check.
+
+    [error]
+        path: ../docs/development/build-guide.md -> navigation -> 0 -> layout -> 8 -> contents -> 3 -> contents -> 11 -> development/build-guide.md
+        issue: broken link to ../../.cargo/config.toml (resolved path: infra-controller/documentation/reference/.cargo/config.toml)
+	fix here: ../docs/development/build-guide.md:5:18
+
+    [error]
+        path: ../docs/development/build-guide.md -> navigation -> 0 -> layout -> 8 -> contents -> 3 -> contents -> 11 -> development/build-guide.md
+        issue: broken link to ../../.envrc (resolved path: infra-controller/documentation/reference/.envrc)
+	fix here: ../docs/development/build-guide.md:7:8
+
+    [error]
+        path: ../docs/development/build-guide.md -> navigation -> 0 -> layout -> 8 -> contents -> 3 -> contents -> 11 -> development/build-guide.md
+        issue: broken link to ../../dev/docker/Dockerfile.build-artifacts-container-aarch64 (resolved path: infra-controller/documentation/reference/dev/docker/Dockerfile.build-artifacts-container-aarch64)
+	fix here: ../docs/development/build-guide.md:25:1
+
+    [error]
+        path: ../docs/getting-started/quick-start.md -> navigation -> 0 -> layout -> 3 -> contents -> 2 -> getting-started/quick-start.md
+        issue: broken link to ../../helm-prereqs/README.md (resolved path: infra-controller/documentation/helm-prereqs/README.md)
+	fix here: ../docs/getting-started/quick-start.md:352:1
+
+    [error]
+        path: ../docs/manuals/upgrade.md -> navigation -> 0 -> layout -> 7 -> contents -> 0 -> manuals/upgrade.md
+        issue: broken link to ../../helm-prereqs/README.md (resolved path: infra-controller/documentation/helm-prereqs/README.md)
+	fix here: ../docs/manuals/upgrade.md:3:407
+
+    [error]
+        path: ../docs/manuals/upgrade.md -> navigation -> 0 -> layout -> 7 -> contents -> 0 -> manuals/upgrade.md
+        issue: broken link to ../../helm-prereqs/README.md (resolved path: infra-controller/documentation/helm-prereqs/README.md)
+	fix here: ../docs/manuals/upgrade.md:50:140
+
+    [error]
+        path: ../docs/manuals/upgrade.md -> navigation -> 0 -> layout -> 7 -> contents -> 0 -> manuals/upgrade.md
+        issue: broken link to ../../helm-prereqs/README.md (resolved path: infra-controller/documentation/helm-prereqs/README.md)
+	fix here: ../docs/manuals/upgrade.md:226:168
+
+    [error]
+        path: ../docs/operations/firmware-updates/configuration.md -> navigation -> 0 -> layout -> 7 -> contents -> 2 -> contents -> 1 -> operations/firmware-updates/configuration.md
+        issue: broken link to ../../../CONTRIBUTING.md (resolved path: infra-controller/documentation/CONTRIBUTING.md)
+	fix here: ../docs/operations/firmware-updates/configuration.md:252:14
+
+Found 8 errors and 1 warning in 0.001 seconds.
+EXIT=1

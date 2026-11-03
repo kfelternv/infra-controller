@@ -55,8 +55,8 @@ fn ensure_not_reverse_zone_name(proposed_name: &str) -> Result<(), CarbideError>
 }
 
 /// Additional authorization beyond RPC RBAC: only the REST site's exact
-/// service identity may supply a reserved ID or cancel one. Admin CLI users
-/// retain ordinary create/delete but cannot claim another tenant's identity.
+/// service identity may supply a reserved ID or cancel one. These checks do
+/// not grant other callers permission to use ordinary create/delete.
 fn require_site_agent<T>(request: &Request<T>) -> Result<(), Status> {
     let allowed = request.extensions().get::<AuthContext>().is_some_and(|auth| {
         has_exclusive_identity(&auth.principals, |principal| {
@@ -75,9 +75,8 @@ fn require_site_agent<T>(request: &Request<T>) -> Result<(), Status> {
     Ok(())
 }
 
-/// RPC RBAC permits both the operator CLI and site agent on these two
-/// methods. Only the site agent may use a reserved ID; conversely its service
-/// identity must never use the unrestricted operator operation. A request
+/// Site-agent writes must use a reserved ID operation. Other callers still
+/// require ordinary RPC permission and cannot use a reserved ID. A request
 /// containing both identities is not an operator request.
 fn authorize_domain_intent<T>(request: &Request<T>, reserved: bool) -> Result<(), Status> {
     if reserved {

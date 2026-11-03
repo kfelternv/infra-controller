@@ -130,10 +130,16 @@ func TestClientSubnetOperations_RejectInvalidSuccessResponses(t *testing.T) {
 	}
 	domainID := "domain-1"
 	createRequest := SubnetCreateRequest{Name: "tenant-net", VpcID: "vpc-1", SubdomainID: &domainID, IPv4BlockID: "block-1", PrefixLength: 24}
+	attachRequest := SubnetAttachVpcRequest{VpcID: "vpc-2", AllowReplace: true}
 
 	for name, body := range bodies {
 		t.Run("CreateSubnet "+name, func(t *testing.T) {
 			subnet, apiErr := newSimpleTestClient(serveStatusBody(t, http.StatusCreated, body).URL).CreateSubnet(ctx, createRequest)
+			assert.Nil(t, subnet)
+			requireInvalidResponse(t, apiErr)
+		})
+		t.Run("AttachSubnetToVpc "+name, func(t *testing.T) {
+			subnet, apiErr := newSimpleTestClient(serveStatusBody(t, http.StatusOK, body).URL).AttachSubnetToVpc(ctx, "subnet-1", attachRequest)
 			assert.Nil(t, subnet)
 			requireInvalidResponse(t, apiErr)
 		})
@@ -146,6 +152,17 @@ func TestClientSubnetOperations_RejectInvalidSuccessResponses(t *testing.T) {
 		assert.Equal(t, "subnet-1", created.GetId())
 		assert.Equal(t, "domain-1", created.GetSubdomainId())
 
+		attached, apiErr := newSimpleTestClient(serveStatusBody(t, http.StatusOK, validSubnetResponseJSON).URL).AttachSubnetToVpc(ctx, "subnet-1", attachRequest)
+		require.Nil(t, apiErr)
+		require.NotNil(t, attached)
+		assert.Equal(t, "subnet-1", attached.GetId())
 	})
 
+	t.Run("API conflict status keeps its code", func(t *testing.T) {
+		subnet, apiErr := newSimpleTestClient(serveStatusBody(t, http.StatusConflict, `{"message":"Subnet is attached"}`).URL).AttachSubnetToVpc(ctx, "subnet-1", attachRequest)
+		assert.Nil(t, subnet)
+		require.NotNil(t, apiErr)
+		assert.Equal(t, http.StatusConflict, apiErr.Code)
+		assert.Equal(t, "Subnet is attached", apiErr.Message)
+	})
 }

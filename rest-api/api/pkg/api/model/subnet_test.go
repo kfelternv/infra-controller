@@ -174,6 +174,41 @@ func TestAPISubnetCreateRequest_ToProto(t *testing.T) {
 	})
 }
 
+func TestAPISubnetAttachVpcRequest_Validate(t *testing.T) {
+	tests := []struct {
+		name    string
+		request APISubnetAttachVpcRequest
+		wantErr bool
+	}{
+		{name: "valid target", request: APISubnetAttachVpcRequest{VpcID: uuid.NewString()}},
+		{name: "missing target", request: APISubnetAttachVpcRequest{}, wantErr: true},
+		{name: "invalid target", request: APISubnetAttachVpcRequest{VpcID: "invalid"}, wantErr: true},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			assert.Equal(t, test.wantErr, test.request.Validate() != nil)
+		})
+	}
+}
+
+func TestAPISubnetAttachVpcRequest_ToProto(t *testing.T) {
+	segmentID := uuid.New()
+	vpcID := uuid.New()
+	for _, allowReplace := range []bool{false, true} {
+		request := APISubnetAttachVpcRequest{
+			VpcID:                      uuid.NewString(),
+			AllowReplace:               allowReplace,
+			ControllerNetworkSegmentID: segmentID,
+			ControllerVpcID:            vpcID,
+		}
+		protoRequest := request.ToProto()
+		assert.Equal(t, segmentID.String(), protoRequest.GetNetworkSegmentId().GetValue())
+		assert.Equal(t, vpcID.String(), protoRequest.GetVpcId().GetValue())
+		assert.Equal(t, allowReplace, protoRequest.GetAllowReplace())
+	}
+}
+
 func TestAPISubnetUpdateRequest_Validate(t *testing.T) {
 	tests := []struct {
 		desc      string

@@ -123,6 +123,36 @@ func (scr *APISubnetCreateRequest) ToProto(subnet *cdbm.Subnet, vpc *cdbm.Vpc, r
 	}
 }
 
+// APISubnetAttachVpcRequest captures a request to reassign a Subnet to another VPC.
+type APISubnetAttachVpcRequest struct {
+	// VpcID identifies the target REST VPC.
+	VpcID string `json:"vpcId"`
+	// AllowReplace permits replacing an attachment to a different VPC.
+	AllowReplace bool `json:"allowReplace,omitempty"`
+	// ControllerNetworkSegmentID is the Site-facing Subnet ID resolved by the handler.
+	ControllerNetworkSegmentID uuid.UUID `json:"-"`
+	// ControllerVpcID is the Site-facing target VPC ID resolved by the handler.
+	ControllerVpcID uuid.UUID `json:"-"`
+}
+
+// Validate ensures the target REST VPC ID is present and valid.
+func (savr *APISubnetAttachVpcRequest) Validate() error {
+	return validation.ValidateStruct(savr,
+		validation.Field(&savr.VpcID,
+			validation.Required.Error(validationErrorValueRequired),
+			validationis.UUID.Error(validationErrorInvalidUUID)),
+	)
+}
+
+// ToProto builds the Site-facing request after the handler has resolved both controller IDs.
+func (savr *APISubnetAttachVpcRequest) ToProto() *corev1.AttachNetworkSegmentToVpcRequest {
+	return &corev1.AttachNetworkSegmentToVpcRequest{
+		NetworkSegmentId: &corev1.NetworkSegmentId{Value: savr.ControllerNetworkSegmentID.String()},
+		VpcId:            &corev1.VpcId{Value: savr.ControllerVpcID.String()},
+		AllowReplace:     savr.AllowReplace,
+	}
+}
+
 // APISubnetUpdateRequest is the data structure to capture user request to update a Subnet
 type APISubnetUpdateRequest struct {
 	// Name is the name of the Subnet

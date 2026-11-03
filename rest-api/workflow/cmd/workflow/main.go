@@ -243,6 +243,7 @@ func run(ctx context.Context) error {
 
 		// Subnet workflows
 		w.RegisterWorkflow(subnetWorkflow.DeleteSubnetByID)
+		w.RegisterWorkflow(subnetWorkflow.ReconcileSubnetAttachmentIntents)
 		w.RegisterWorkflow(domainWorkflow.ReconcileReservedDomains)
 
 		// Instance workflows
@@ -505,6 +506,9 @@ func run(ctx context.Context) error {
 	// The existing monitor starts below w.Run cannot execute until shutdown;
 	// schedule this new durable recovery cron *before* the blocking worker run.
 	if tcfg.Namespace == cwfn.CloudNamespace {
+		if err := subnetWorkflow.ExecuteReconcileSubnetAttachmentIntents(ctx, tc); err != nil {
+			log.Error().Err(err).Msg("failed to schedule Subnet attachment recovery; outstanding intents will remain pending")
+		}
 		if err := domainWorkflow.ExecuteReconcileReservedDomains(ctx, tc); err != nil {
 			log.Error().Err(err).Msg("failed to schedule reserved Domain recovery; outstanding intents will remain pending")
 		}

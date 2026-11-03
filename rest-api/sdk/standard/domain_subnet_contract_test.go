@@ -158,7 +158,25 @@ func TestDomain_MarshalJSON(t *testing.T) {
 	require.NotContains(t, response, "controllerDomainId")
 }
 
-func TestDomainAPIService_DocumentedErrorModels(t *testing.T) {
+func TestSubnetAPIService_AttachVpcToSubnet(t *testing.T) {
+	transport := &sdkContractTransport{status: http.StatusOK, responseBody: subnetResponse}
+	client := newSDKContractClient(transport)
+
+	subnet, _, err := client.SubnetAPI.AttachVpcToSubnet(context.Background(), "tenant-org", "subnet-id").
+		SubnetAttachVpcRequest(*NewSubnetAttachVpcRequest("target-vpc-id")).
+		Execute()
+	require.NoError(t, err)
+	require.Equal(t, "target-vpc-id", subnet.GetVpcId())
+	require.NotNil(t, transport.request)
+	require.Equal(t, http.MethodPost, transport.request.Method)
+	require.Equal(t, "/v2/org/tenant-org/nico/subnet/subnet-id/attach-vpc", transport.request.URL.Path)
+
+	var body map[string]any
+	require.NoError(t, json.Unmarshal(transport.body, &body))
+	require.Equal(t, map[string]any{"vpcId": "target-vpc-id", "allowReplace": false}, body)
+}
+
+func TestDomainSubnetAPIService_DocumentedErrorModels(t *testing.T) {
 	tests := []struct {
 		name    string
 		status  int
@@ -189,6 +207,26 @@ func TestDomainAPIService_DocumentedErrorModels(t *testing.T) {
 			message: "Domain is not available for deletion",
 			execute: func(client *APIClient) error {
 				_, err := client.DNSDomainAPI.DeleteDomain(context.Background(), "tenant-org", "domain-id").Execute()
+				return err
+			},
+		},
+		{
+			name:    "attach VPC without allowReplace",
+			status:  http.StatusConflict,
+			message: "Replacing the current Subnet VPC requires allowReplace",
+			execute: func(client *APIClient) error {
+				_, _, err := client.SubnetAPI.AttachVpcToSubnet(context.Background(), "tenant-org", "subnet-id").
+					SubnetAttachVpcRequest(*NewSubnetAttachVpcRequest("target-vpc-id")).
+					Execute()
+				return err
+			},
+		},
+		{
+			name:    "delete subnet with pending reassignment",
+			status:  http.StatusConflict,
+			message: "Subnet VPC reassignment is pending reconciliation",
+			execute: func(client *APIClient) error {
+				_, err := client.SubnetAPI.DeleteSubnet(context.Background(), "tenant-org", "subnet-id").Execute()
 				return err
 			},
 		},

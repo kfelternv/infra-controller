@@ -63,7 +63,7 @@ func TestNewAPIRoutes(t *testing.T) {
 		"instance-type":             5,
 		"machine":                   23,
 		"allocation":                6,
-		"subnet":                    5,
+		"subnet":                    6,
 		"machine-instance-type":     3,
 		"user":                      1,
 		"operating-system":          5,
@@ -195,6 +195,8 @@ func TestNewAPIRoutes(t *testing.T) {
 			taskPath := "/org/:orgName/" + cfg.GetAPIName() + "/task"
 			assertRouteExists(t, got, http.MethodGet, taskPath)
 			assertRouteBefore(t, got, http.MethodGet, taskPath, http.MethodGet, taskPath+"/:id")
+			subnetPath := "/org/:orgName/" + cfg.GetAPIName() + "/subnet"
+			assertRouteHandlerType(t, got, http.MethodPost, subnetPath+"/:subnetId/attach-vpc", apiHandler.AttachSubnetVpcHandler{})
 			tenantPath := "/org/:orgName/" + cfg.GetAPIName() + "/tenant"
 			assertRouteExists(t, got, http.MethodGet, tenantPath+"/current/routing-profile")
 			vpcRoutingProfilePath := "/org/:orgName/" + cfg.GetAPIName() + "/vpc/:id/routing-profile"

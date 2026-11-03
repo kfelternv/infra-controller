@@ -81,6 +81,7 @@ type ClientInterface interface {
 
 	// Subnet management interfaces
 	CreateSubnet(ctx context.Context, request SubnetCreateRequest) (*standard.Subnet, *ApiError)
+	AttachSubnetToVpc(ctx context.Context, id string, request SubnetAttachVpcRequest) (*standard.Subnet, *ApiError)
 
 	// VPC management interfaces
 	CreateVpc(ctx context.Context, request VpcCreateRequest) (*Vpc, *ApiError)
@@ -657,6 +658,15 @@ func (c *Client) CreateSubnet(ctx context.Context, request SubnetCreateRequest) 
 	logger.Info().Msgf("Creating Subnet for org: %s", c.Config.Org)
 
 	return NewSubnetManager(c).Create(ctx, request)
+}
+func (c *Client) AttachSubnetToVpc(ctx context.Context, id string, request SubnetAttachVpcRequest) (*standard.Subnet, *ApiError) {
+	ctx = WithLogger(ctx, c.Logger)
+	ctx = context.WithValue(ctx, standard.ContextAccessToken, c.Config.Token)
+
+	logger := LoggerFromContext(ctx)
+	logger.Info().Msgf("Attaching Subnet to VPC for org: %s", c.Config.Org)
+
+	return NewSubnetManager(c).AttachVpc(ctx, id, request)
 }
 
 // VPC

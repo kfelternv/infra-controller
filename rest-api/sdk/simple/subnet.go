@@ -19,6 +19,12 @@ type SubnetCreateRequest struct {
 	PrefixLength int32   `json:"prefixLength"`
 }
 
+// SubnetAttachVpcRequest represents a request to attach a Subnet to a VPC.
+type SubnetAttachVpcRequest struct {
+	VpcID        string `json:"vpcId"`
+	AllowReplace bool   `json:"allowReplace"`
+}
+
 // SubnetManager manages Subnet operations.
 type SubnetManager struct {
 	client *Client
@@ -40,6 +46,12 @@ func toStandardSubnetCreateRequest(request SubnetCreateRequest) standard.SubnetC
 	return *apiRequest
 }
 
+func toStandardSubnetAttachVpcRequest(request SubnetAttachVpcRequest) standard.SubnetAttachVpcRequest {
+	apiRequest := standard.NewSubnetAttachVpcRequest(request.VpcID)
+	apiRequest.SetAllowReplace(request.AllowReplace)
+	return *apiRequest
+}
+
 // Create creates a Subnet.
 func (sm SubnetManager) Create(ctx context.Context, request SubnetCreateRequest) (*standard.Subnet, *ApiError) {
 	ctx = WithLogger(ctx, sm.client.Logger)
@@ -48,6 +60,20 @@ func (sm SubnetManager) Create(ctx context.Context, request SubnetCreateRequest)
 	apiRequest := toStandardSubnetCreateRequest(request)
 	apiSubnet, response, err := sm.client.apiClient.SubnetAPI.CreateSubnet(ctx, sm.client.apiMetadata.Organization).
 		SubnetCreateRequest(apiRequest).Execute()
+	if apiErr := modelResponseError("Subnet", response, err, apiSubnet != nil); apiErr != nil {
+		return nil, apiErr
+	}
+	return apiSubnet, nil
+}
+
+// AttachVpc attaches a Subnet to a VPC, replacing an existing attachment only when allowed.
+func (sm SubnetManager) AttachVpc(ctx context.Context, id string, request SubnetAttachVpcRequest) (*standard.Subnet, *ApiError) {
+	ctx = WithLogger(ctx, sm.client.Logger)
+	ctx = context.WithValue(ctx, standard.ContextAccessToken, sm.client.Config.Token)
+
+	apiRequest := toStandardSubnetAttachVpcRequest(request)
+	apiSubnet, response, err := sm.client.apiClient.SubnetAPI.AttachVpcToSubnet(ctx, sm.client.apiMetadata.Organization, id).
+		SubnetAttachVpcRequest(apiRequest).Execute()
 	if apiErr := modelResponseError("Subnet", response, err, apiSubnet != nil); apiErr != nil {
 		return nil, apiErr
 	}

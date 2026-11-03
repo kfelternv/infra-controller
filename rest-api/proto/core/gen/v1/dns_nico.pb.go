@@ -905,9 +905,10 @@ type CreateDomainRequest struct {
 	// normalized to ASCII lowercase with trailing dots removed; other forward
 	// names must already be lowercase.
 	// Live names are unique across all owners, with case and trailing dots ignored
-	// when checking uniqueness. A deleted domain's name may be reused, and parent
-	// and child domains may coexist.
-	// Duplicate live names are rejected with INVALID_ARGUMENT.
+	// when checking uniqueness. A deleted domain's name may be reused. Legacy
+	// domains may nest each other, but cannot be an ancestor or descendant of a
+	// reserved domain; reserved domains reject every live ancestor or descendant.
+	// Name conflicts are rejected with INVALID_ARGUMENT.
 	Name string `protobuf:"bytes,1,opt,name=name,proto3" json:"name,omitempty"`
 	// Default record TTL in seconds, 30 to 86400 inclusive; values outside that
 	// range are rejected with INVALID_ARGUMENT. Absent means the site default

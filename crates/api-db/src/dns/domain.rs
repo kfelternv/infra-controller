@@ -106,16 +106,72 @@ impl<'a> ColumnInfo<'a> for NameColumn {
     }
 }
 
+/// Serialize all forward-zone writers against the *entire* forward namespace.
+/// A name-specific lock does not serialize an ancestor with its child. Legacy
+/// writers retain the historical ability to create nested zones, but cannot
+/// race a tenant-reserved overlap check into accepting an unsafe new zone.
+async fn lock_forward_namespace(txn: &mut PgConnection, name: &str) -> DatabaseResult<bool> {
+    if super::normalize_reverse_zone_name(name).is_some() {
+        return Ok(false);
+    }
+    let query = "SELECT pg_advisory_xact_lock(hashtextextended('dns:forward-zone-namespace', 0))";
+    sqlx::query(query)
+        .execute(txn)
+        .await
+        .map_err(|error| DatabaseError::query(query, error))?;
+    Ok(true)
+}
+
+/// Checked under the forward namespace lock. Only newly reserved (tenant)
+/// zones reject ancestor/descendant authority changes against all zones;
+/// legacy admin callers can nest legacy zones, but not bypass an existing
+/// reserved zone. Every forward writer participates in the same lock.
+async fn ensure_forward_name_free(
+    txn: &mut PgConnection,
+    name: &str,
+    reject_overlaps: bool,
+) -> DatabaseResult<()> {
+    let name = super::normalize_domain(name);
+    let query = "SELECT EXISTS (
+        SELECT 1 FROM domains
+        WHERE deleted IS NULL
+          AND lower(rtrim(name, '.')) NOT LIKE '%.in-addr.arpa'
+          AND lower(rtrim(name, '.')) NOT LIKE '%.ip6.arpa'
+          AND (
+            lower(rtrim(name, '.')) = $1
+            OR (($2 OR reserved_create) AND (
+              right(lower(rtrim(name, '.')), length($1) + 1) = '.' || $1
+              OR right($1, length(lower(rtrim(name, '.'))) + 1) = '.' || lower(rtrim(name, '.'))
+            ))
+          )
+    )";
+    let occupied: bool = sqlx::query_scalar(query)
+        .bind(&name)
+        .bind(reject_overlaps)
+        .fetch_one(txn)
+        .await
+        .map_err(|error| DatabaseError::query(query, error))?;
+    if occupied {
+        return Err(DatabaseError::InvalidArgument(format!(
+            "forward DNS domain {name} conflicts with an existing zone"
+        )));
+    }
+    Ok(())
+}
+
 /// Creates an infrastructure domain, or a forward domain owned by a live VPC.
 ///
 /// Live names must be unique across all owners, ignoring case and trailing
-/// dots, and each VPC may own at most one live domain. Parent and child domain
-/// names may coexist.
+/// dots, and each VPC may own at most one live domain. Parent and child names
+/// may coexist unless they overlap an existing REST-reserved tenant zone.
 ///
-/// Call this inside a transaction so the VPC row lock stays held from owner
-/// validation until the domain is committed.
+/// Call this inside a transaction so namespace and VPC locks stay held until
+/// the domain is committed.
 pub async fn persist(value: NewDomain, txn: &mut PgConnection) -> DatabaseResult<Domain> {
     validate_domain_name(&value.name)?;
+    if lock_forward_namespace(txn, &value.name).await? {
+        ensure_forward_name_free(txn, &value.name, false).await?;
+    }
     validate_scope(&value.name, value.vpc_id, txn).await?;
 
     // Create default metadata entry
@@ -158,6 +214,9 @@ pub async fn persist_reserved(
     txn: &mut PgConnection,
 ) -> DatabaseResult<Domain> {
     validate_domain_name(&value.name)?;
+    if lock_forward_namespace(txn, &value.name).await? {
+        ensure_forward_name_free(txn, &value.name, true).await?;
+    }
     validate_scope(&value.name, value.vpc_id, txn).await?;
     let metadata_id = super::domain_metadata::DbMetadata::create_default(txn).await?;
     let query = "INSERT INTO domains
@@ -203,6 +262,10 @@ pub async fn persist_first(
     txn: &mut PgConnection,
 ) -> DatabaseResult<Option<Domain>> {
     validate_domain_name(&value.name)?;
+    // Preserve the historic `None` on nonempty domains, but serialize
+    // forward writers so the tenant overlap scan cannot race this insert.
+    lock_forward_namespace(txn, &value.name).await?;
+
     validate_scope(&value.name, value.vpc_id, txn).await?;
 
     let metadata_id = super::domain_metadata::DbMetadata::create_default(txn).await?;

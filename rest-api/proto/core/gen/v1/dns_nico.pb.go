@@ -901,7 +901,9 @@ type CreateDomainRequest struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
 	// Reverse DNS serves inventory-derived PTRs, not managed zones. Names at or below
 	// in-addr.arpa or ip6.arpa are rejected with INVALID_ARGUMENT, ignoring case,
-	// surrounding whitespace, and trailing dots. Forward names must be lowercase.
+	// surrounding whitespace, and trailing dots. Reserved-ID forward names are
+	// normalized to ASCII lowercase with trailing dots removed; other forward
+	// names must already be lowercase.
 	// Live names are unique across all owners, with case and trailing dots ignored
 	// when checking uniqueness. A deleted domain's name may be reused, and parent
 	// and child domains may coexist.
@@ -916,10 +918,11 @@ type CreateDomainRequest struct {
 	// live domain; another is rejected with INVALID_ARGUMENT. The owning VPC
 	// cannot be deleted while this domain is live.
 	VpcId *VpcId `protobuf:"bytes,3,opt,name=vpc_id,json=vpcId,proto3" json:"vpc_id,omitempty"`
-	// Internal REST ownership-index retry, accepted only from the exclusive
-	// site-agent identity; other callers receive PERMISSION_DENIED. Omit for
-	// legacy callers. A cancelled ID or a replay whose name, VPC, or TTL differs
-	// from its original request is rejected with FAILED_PRECONDITION.
+	// Internal REST ownership-index retry, required for the exclusive SiteAgent
+	// identity. Other callers supplying an ID, or SiteAgent omitting it, receive
+	// PERMISSION_DENIED. Omit for legacy/operator calls. A cancelled, deleted, or
+	// legacy-created ID is rejected with FAILED_PRECONDITION, as is a replay whose
+	// canonical name, VPC, or requested TTL differs from the original intent.
 	ReservedId    *DomainId `protobuf:"bytes,4,opt,name=reserved_id,json=reservedId,proto3" json:"reserved_id,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
@@ -1091,11 +1094,13 @@ type DomainDeletionRequest struct {
 	// a live network segment or machine interface references the Domain.
 	// Repeated deletion of a previously deleted Domain succeeds.
 	Id *DomainId `protobuf:"bytes,1,opt,name=id,proto3" json:"id,omitempty"`
-	// Internal cancellation of an owned, durably reserved ID, accepted only from
-	// the exclusive site-agent identity; other callers receive PERMISSION_DENIED.
+	// Internal cancellation of an owned, durably reserved ID. Only the exclusive
+	// SiteAgent identity may set this to true, and SiteAgent must use this mode;
+	// other combinations receive PERMISSION_DENIED. False when omitted for
+	// legacy/operator deletes.
 	// On an absent ID this records a terminal tombstone so a delayed CreateDomain
-	// cannot resurrect the zone. A live ID not created through reserved_id is
-	// rejected with FAILED_PRECONDITION. Omit for legacy/admin CLI deletes.
+	// cannot resurrect the zone. Any existing ID not created through reserved_id
+	// is rejected with FAILED_PRECONDITION, including a deleted legacy Domain.
 	CancelReservedId bool `protobuf:"varint,2,opt,name=cancel_reserved_id,json=cancelReservedId,proto3" json:"cancel_reserved_id,omitempty"`
 	unknownFields    protoimpl.UnknownFields
 	sizeCache        protoimpl.SizeCache

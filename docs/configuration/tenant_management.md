@@ -680,6 +680,48 @@ Verify:
 nicocli subnet list --output table
 ```
 
+### Subnet VPC Reassignment and Recovery
+
+Tenant Admins can reassign an unused Subnet with
+`POST /v2/org/{org}/nico/subnet/{subnetId}/attach-vpc`. Supply the target REST
+`vpcId` and `allowReplace: true` when replacing a different VPC. The source and
+target must belong to the same Tenant and Site and use the same Ethernet
+virtualizer mode. This operation does not detach a Subnet or move it to FNN or
+FLAT networking.
+
+Deploy the supporting components in this order before enabling reassignment:
+
+1. Upgrade every Core API writer with the attachment caller and mode checks,
+   replacement consent, and source/version preconditions. A mixed Core rollout
+   does not establish these guarantees; older Core builds ignore unknown
+   protobuf fields.
+2. Upgrade every Site Agent with the `AttachNetworkSegmentToVpcRequest`
+   `allow_replace`, `expected_source_vpc_id`, and `expected_segment_version`
+   fields. Its generic proxy silently discards fields unknown to its build.
+   A Registered Site alone does not prove compatibility. Supporting Core builds
+   reject Site Agent attachment requests that omit the expected version.
+3. Apply the REST database migrations, then upgrade all Cloud workflow workers
+   that process Subnet inventory and recovery. Confirm that the Cloud Temporal
+   namespace has `subnet-attachment-intent-recovery` scheduled every two minutes
+   before enabling requests; a scheduling failure leaves outstanding operations
+   pending.
+4. Upgrade all REST API replicas, then enable reassignment. Keep these compatible
+   components running while requests are enabled or an operation remains pending.
+
+REST records the source VPC, target VPC, and Core segment version before sending
+the request. Core enforces those preconditions; REST validation alone cannot
+prevent a delayed request from replacing a newer attachment. A `409` reporting
+pending reconciliation is not proof of rollback. Retrieve the same Subnet to
+observe its reconciled `vpcId` before retrying.
+
+Recovery confirms the target directly with Core or retries the recorded
+operation only while its source and version still match. A changed version or
+definitive rejection clears the pending operation. An unavailable Site, revoked
+Tenant access, or an unconfirmed result keeps it pending. A third VPC at the
+recorded version requires operator reconciliation; preserve the pending record
+until that state is resolved. Inventory absence or elapsed time does not prove
+that the original request can no longer execute.
+
 ## Launching an Instance
 
 An instance in NICo is a bare-metal machine assigned to a tenant within a VPC. Creating an instance claims a machine from the tenant's compute allocation, associates it with a VPC, and triggers the provisioning workflow (OS installation, network configuration, security lockdown).

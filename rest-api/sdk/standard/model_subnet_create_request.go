@@ -30,7 +30,7 @@ type SubnetCreateRequest struct {
 	Description NullableString `json:"description,omitempty"`
 	// ID of the Ethernet virtualizer VPC containing the Subnet
 	VpcId string `json:"vpcId"`
-	// Optional ID of a tenant-owned REST Domain at the same Site. This can only be set when the Subnet is created.
+	// Optional ID of a Ready, tenant-owned REST Domain at the same Site. This can only be set when the Subnet is created.
 	SubdomainId *string `json:"subdomainId,omitempty"`
 	// ID of the Ready, derived Tenant IPv4 Block from an Allocation
 	Ipv4BlockId string `json:"ipv4BlockId"`

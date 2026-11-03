@@ -848,12 +848,15 @@ impl ApiClient {
         &self,
         id: ::carbide_uuid::domain::DomainId,
     ) -> CarbideCliResult<()> {
-        self.0
-            .delete_domain(::rpc::protos::dns::DomainDeletionRequest {
-                id: Some(id),
-                ..Default::default()
-            })
-            .await?;
+        #[allow(
+            clippy::needless_update,
+            reason = "operator calls retain protobuf defaults for optional operation modes"
+        )]
+        let request = ::rpc::protos::dns::DomainDeletionRequest {
+            id: Some(id),
+            ..Default::default()
+        };
+        self.0.delete_domain(request).await?;
         Ok(())
     }
 

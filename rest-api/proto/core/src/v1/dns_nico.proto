@@ -146,6 +146,11 @@ message CreateDomainRequest {
   // live domain; another is rejected with INVALID_ARGUMENT. The owning VPC
   // cannot be deleted while this domain is live.
   common.VpcId vpc_id = 3;
+  // Internal REST ownership-index retry, accepted only from the exclusive
+  // site-agent identity; other callers receive PERMISSION_DENIED. Omit for
+  // legacy callers. A cancelled ID or a replay whose name, VPC, or TTL differs
+  // from its original request is rejected with FAILED_PRECONDITION.
+  common.DomainId reserved_id = 4;
 }
 
 message UpdateDomainRequest {
@@ -168,6 +173,12 @@ message DomainDeletionRequest {
   // a live network segment or machine interface references the Domain.
   // Repeated deletion of a previously deleted Domain succeeds.
   common.DomainId id = 1;
+  // Internal cancellation of an owned, durably reserved ID, accepted only from
+  // the exclusive site-agent identity; other callers receive PERMISSION_DENIED.
+  // On an absent ID this records a terminal tombstone so a delayed CreateDomain
+  // cannot resurrect the zone. A live ID not created through reserved_id is
+  // rejected with FAILED_PRECONDITION. Omit for legacy/admin CLI deletes.
+  bool cancel_reserved_id = 2;
 }
 
 message DomainDeletionResult{

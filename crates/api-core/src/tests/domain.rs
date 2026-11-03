@@ -22,6 +22,7 @@ async fn create_domain(env: &TestEnv, name: &str) -> DomainId {
             name: name.to_string(),
             default_ttl: None,
             vpc_id: None,
+            reserved_id: None,
         }))
         .await
         .unwrap()
@@ -88,6 +89,7 @@ async fn test_domain_delete_rejects_live_network_segment_reference(pool: PgPool)
         .api
         .delete_domain(Request::new(DomainDeletionRequest {
             id: Some(domain_id),
+            cancel_reserved_id: false,
         }))
         .await
         .unwrap_err();
@@ -126,6 +128,7 @@ async fn test_domain_delete_rejects_live_machine_interface_reference(pool: PgPoo
         .api
         .delete_domain(Request::new(DomainDeletionRequest {
             id: Some(domain_id),
+            cancel_reserved_id: false,
         }))
         .await
         .unwrap_err();
@@ -140,6 +143,7 @@ async fn test_unreferenced_domain_delete_is_idempotent(pool: PgPool) {
     let domain_id = create_domain(&env, "unreferenced.example").await;
     let request = DomainDeletionRequest {
         id: Some(domain_id),
+        cancel_reserved_id: false,
     };
 
     env.api
@@ -174,6 +178,7 @@ async fn test_network_segment_creation_rechecks_domain_after_concurrent_delete(p
             name: domain_name.clone(),
             default_ttl: None,
             vpc_id: None,
+            reserved_id: None,
         }))
         .await
         .unwrap_err();
@@ -206,6 +211,7 @@ async fn test_network_segment_creation_rechecks_domain_after_concurrent_delete(p
         delete_api
             .delete_domain(Request::new(DomainDeletionRequest {
                 id: Some(domain_id),
+                cancel_reserved_id: false,
             }))
             .await
     });

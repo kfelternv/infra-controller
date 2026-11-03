@@ -3381,7 +3381,7 @@ func TestGetAllVPCHandler_Handle(t *testing.T) {
 	dbSession := testSiteInitDB(t)
 	defer dbSession.Close()
 
-	testVPCSetupSchema(t, dbSession)
+	common.TestSetupSchema(t, dbSession)
 
 	ipOrg := "test-provider-org"
 	ipOrgRoles := []string{authz.ProviderAdminRole}
@@ -3521,6 +3521,56 @@ func TestGetAllVPCHandler_Handle(t *testing.T) {
 			wantTotalCount:     totalCount,
 			wantRespCode:       http.StatusOK,
 			verifyChildSpanner: true,
+		},
+		{
+			name: "get all VPCs for matching Tenant ID success",
+			fields: fields{
+				dbSession: dbSession,
+				tc:        tc,
+				cfg:       cfg,
+			},
+			args: args{
+				org: tnOrg,
+				query: url.Values{
+					"tenantId": []string{tn.ID.String()},
+				},
+				user: tnu,
+			},
+			wantCount:      paginator.DefaultLimit,
+			wantTotalCount: totalCount,
+			wantRespCode:   http.StatusOK,
+		},
+		{
+			name: "get all VPCs failure, invalid Tenant ID in request",
+			fields: fields{
+				dbSession: dbSession,
+				tc:        tc,
+				cfg:       cfg,
+			},
+			args: args{
+				org: tnOrg,
+				query: url.Values{
+					"tenantId": []string{"invalid-tenant-id"},
+				},
+				user: tnu,
+			},
+			wantRespCode: http.StatusBadRequest,
+		},
+		{
+			name: "get all VPCs failure, Tenant ID belongs to another org",
+			fields: fields{
+				dbSession: dbSession,
+				tc:        tc,
+				cfg:       cfg,
+			},
+			args: args{
+				org: tnOrg,
+				query: url.Values{
+					"tenantId": []string{tn2.ID.String()},
+				},
+				user: tnu,
+			},
+			wantRespCode: http.StatusForbidden,
 		},
 		{
 			name: "get all VPCs when no allocations, should pass",

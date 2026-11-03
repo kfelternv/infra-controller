@@ -71,7 +71,7 @@ func TestParseMutationResponseRequiringID(t *testing.T) {
 	}
 }
 
-func TestAppendScopeFlags_NoSession(t *testing.T) {
+func testAppendScopeFlags_NoSession(t *testing.T) {
 	got := appendScopeFlags(nil, []string{"machine", "list"})
 	want := []string{"machine", "list"}
 	if !equal(got, want) {
@@ -79,7 +79,7 @@ func TestAppendScopeFlags_NoSession(t *testing.T) {
 	}
 }
 
-func TestAppendScopeFlags_SiteScope_MachineList(t *testing.T) {
+func testAppendScopeFlags_SiteScope_MachineList(t *testing.T) {
 	s := &Session{Scope: Scope{SiteID: "site-123", SiteName: "pdx-dev3"}}
 	got := appendScopeFlags(s, []string{"machine", "list"})
 	want := []string{"machine", "list", "--site-id", "site-123"}
@@ -88,7 +88,7 @@ func TestAppendScopeFlags_SiteScope_MachineList(t *testing.T) {
 	}
 }
 
-func TestAppendScopeFlags_SiteScope_VPCList(t *testing.T) {
+func testAppendScopeFlags_SiteScope_VPCList(t *testing.T) {
 	s := &Session{Scope: Scope{SiteID: "site-123"}}
 	got := appendScopeFlags(s, []string{"vpc", "list"})
 	want := []string{"vpc", "list", "--site-id", "site-123"}
@@ -97,7 +97,7 @@ func TestAppendScopeFlags_SiteScope_VPCList(t *testing.T) {
 	}
 }
 
-func TestAppendScopeFlags_BothScopes_SubnetList(t *testing.T) {
+func testAppendScopeFlags_BothScopes_SubnetList(t *testing.T) {
 	s := &Session{Scope: Scope{SiteID: "site-123", VpcID: "vpc-456"}}
 	got := appendScopeFlags(s, []string{"subnet", "list"})
 	want := []string{"subnet", "list", "--site-id", "site-123", "--vpc-id", "vpc-456"}
@@ -106,7 +106,7 @@ func TestAppendScopeFlags_BothScopes_SubnetList(t *testing.T) {
 	}
 }
 
-func TestAppendScopeFlags_BothScopes_InstanceList(t *testing.T) {
+func testAppendScopeFlags_BothScopes_InstanceList(t *testing.T) {
 	s := &Session{Scope: Scope{SiteID: "site-123", VpcID: "vpc-456"}}
 	got := appendScopeFlags(s, []string{"instance", "list"})
 	want := []string{"instance", "list", "--site-id", "site-123", "--vpc-id", "vpc-456"}
@@ -115,7 +115,7 @@ func TestAppendScopeFlags_BothScopes_InstanceList(t *testing.T) {
 	}
 }
 
-func TestAppendScopeFlags_NonListAction_Ignored(t *testing.T) {
+func testAppendScopeFlags_NonListAction_Ignored(t *testing.T) {
 	s := &Session{Scope: Scope{SiteID: "site-123"}}
 	got := appendScopeFlags(s, []string{"machine", "get"})
 	want := []string{"machine", "get"}
@@ -124,7 +124,7 @@ func TestAppendScopeFlags_NonListAction_Ignored(t *testing.T) {
 	}
 }
 
-func TestAppendScopeFlags_UnknownResource_NoFlags(t *testing.T) {
+func testAppendScopeFlags_UnknownResource_NoFlags(t *testing.T) {
 	s := &Session{Scope: Scope{SiteID: "site-123"}}
 	got := appendScopeFlags(s, []string{"site", "list"})
 	want := []string{"site", "list"}
@@ -133,7 +133,7 @@ func TestAppendScopeFlags_UnknownResource_NoFlags(t *testing.T) {
 	}
 }
 
-func TestAppendScopeFlags_SinglePart_NoFlags(t *testing.T) {
+func testAppendScopeFlags_SinglePart_NoFlags(t *testing.T) {
 	s := &Session{Scope: Scope{SiteID: "site-123"}}
 	got := appendScopeFlags(s, []string{"help"})
 	want := []string{"help"}
@@ -142,7 +142,7 @@ func TestAppendScopeFlags_SinglePart_NoFlags(t *testing.T) {
 	}
 }
 
-func TestAppendScopeFlags_VpcOnlyScope_SubnetList(t *testing.T) {
+func testAppendScopeFlags_VpcOnlyScope_SubnetList(t *testing.T) {
 	s := &Session{Scope: Scope{VpcID: "vpc-456"}}
 	got := appendScopeFlags(s, []string{"subnet", "list"})
 	want := []string{"subnet", "list", "--vpc-id", "vpc-456"}
@@ -419,7 +419,7 @@ func TestCmdOSListRendersType(t *testing.T) {
 
 // --- VPC scope coverage tests ---
 
-func TestAppendScopeFlags_SiteOnly(t *testing.T) {
+func testAppendScopeFlags_SiteOnly(t *testing.T) {
 	siteOnlyResources := []string{
 		"vpc", "allocation", "ip-block", "operating-system", "ssh-key-group",
 		"network-security-group", "sku", "rack", "expected-machine",
@@ -440,7 +440,7 @@ func TestAppendScopeFlags_SiteOnly(t *testing.T) {
 	}
 }
 
-func TestAppendScopeFlags_SiteAndVPC(t *testing.T) {
+func testAppendScopeFlags_SiteAndVPC(t *testing.T) {
 	vpcResources := []string{"subnet", "vpc-prefix", "instance", "machine"}
 
 	s := &Session{Scope: Scope{SiteID: "site-1", VpcID: "vpc-1"}}
@@ -456,7 +456,7 @@ func TestAppendScopeFlags_SiteAndVPC(t *testing.T) {
 	}
 }
 
-func TestAppendScopeFlags_NoScope(t *testing.T) {
+func testAppendScopeFlags_NoScope(t *testing.T) {
 	s := &Session{Scope: Scope{}}
 
 	got := appendScopeFlags(s, []string{"machine", "list"})
@@ -465,7 +465,7 @@ func TestAppendScopeFlags_NoScope(t *testing.T) {
 	}
 }
 
-func TestAppendScopeFlags_VPCOnlyScope(t *testing.T) {
+func testAppendScopeFlags_VPCOnlyScope(t *testing.T) {
 	s := &Session{Scope: Scope{VpcID: "vpc-1"}}
 
 	got := appendScopeFlags(s, []string{"instance", "list"})
@@ -477,7 +477,7 @@ func TestAppendScopeFlags_VPCOnlyScope(t *testing.T) {
 	}
 }
 
-func TestAppendScopeFlags_NonListAction(t *testing.T) {
+func testAppendScopeFlags_NonListAction(t *testing.T) {
 	s := &Session{Scope: Scope{SiteID: "site-1", VpcID: "vpc-1"}}
 
 	got := appendScopeFlags(s, []string{"machine", "get"})
@@ -486,7 +486,7 @@ func TestAppendScopeFlags_NonListAction(t *testing.T) {
 	}
 }
 
-func TestAppendScopeFlags_UnscopedResources(t *testing.T) {
+func testAppendScopeFlags_UnscopedResources(t *testing.T) {
 	unscopedResources := []string{"site", "audit", "ssh-key", "tenant-account"}
 
 	s := &Session{Scope: Scope{SiteID: "site-1", VpcID: "vpc-1"}}
@@ -499,7 +499,7 @@ func TestAppendScopeFlags_UnscopedResources(t *testing.T) {
 	}
 }
 
-func TestAppendScopeFlags_CoversAllRegisteredFetchers(t *testing.T) {
+func testAppendScopeFlags_CoversAllRegisteredFetchers(t *testing.T) {
 	scopeFilteredFetchers := []string{
 		"vpc", "subnet", "instance", "machine",
 		"allocation", "ip-block", "operating-system",
@@ -519,7 +519,7 @@ func TestAppendScopeFlags_CoversAllRegisteredFetchers(t *testing.T) {
 	}
 }
 
-func TestInvalidateFiltered_MatchesScopeFilteredFetchers(t *testing.T) {
+func testInvalidateFiltered_MatchesScopeFilteredFetchers(t *testing.T) {
 	scopeFilteredFetchers := []string{
 		"vpc", "subnet", "instance",
 		"allocation", "machine", "ip-block", "operating-system",
@@ -551,7 +551,7 @@ func TestInvalidateFiltered_MatchesScopeFilteredFetchers(t *testing.T) {
 	}
 }
 
-func TestAppendScopeFlags_ScopeFlagCategories_Consistent(t *testing.T) {
+func testAppendScopeFlags_ScopeFlagCategories_Consistent(t *testing.T) {
 	s := &Session{Scope: Scope{SiteID: "s", VpcID: "v"}}
 
 	vpcFilteredInFetchers := map[string]bool{
@@ -577,7 +577,7 @@ func TestAppendScopeFlags_ScopeFlagCategories_Consistent(t *testing.T) {
 	}
 }
 
-func TestAllCommands_HaveUniqueNames(t *testing.T) {
+func testAllCommands_HaveUniqueNames(t *testing.T) {
 	commands := AllCommands()
 	seen := map[string]bool{}
 	for _, cmd := range commands {
@@ -588,7 +588,7 @@ func TestAllCommands_HaveUniqueNames(t *testing.T) {
 	}
 }
 
-func TestInvalidateFiltered_ListMatchesAppendScopeFlags(t *testing.T) {
+func testInvalidateFiltered_ListMatchesAppendScopeFlags(t *testing.T) {
 	s := &Session{Scope: Scope{SiteID: "s"}}
 
 	c := NewCache()
@@ -801,7 +801,7 @@ func TestInstanceRebootInputs_RebootBody(t *testing.T) {
 	}
 }
 
-func TestAllCommands_HasInstanceUpdateAndReboot(t *testing.T) {
+func testAllCommands_HasInstanceUpdateAndReboot(t *testing.T) {
 	// Regression guard: the TUI command registry must expose
 	// `instance update` (so users can rename, swap OS, rotate ssh key
 	// groups) and `instance reboot` as a distinct operation.
@@ -1103,14 +1103,14 @@ func TestPrintLabelHint(t *testing.T) {
 	})
 }
 
-func TestInvalidateFilteredIncludesInstanceType(t *testing.T) {
+func testInvalidateFilteredIncludesInstanceType(t *testing.T) {
 	c := NewCache()
 	c.Set("instance-type", []NamedItem{{Name: "it1", ID: "1"}})
 	c.InvalidateFiltered()
 	assert.Nil(t, c.Get("instance-type"), "instance-type cache should be invalidated by InvalidateFiltered")
 }
 
-func TestAppendScopeFlagsIncludesInstanceType(t *testing.T) {
+func testAppendScopeFlagsIncludesInstanceType(t *testing.T) {
 	s := &Session{
 		Scope: Scope{SiteID: "site-1"},
 		Cache: NewCache(),
@@ -1225,6 +1225,125 @@ func TestFilterSubnetVPCs(t *testing.T) {
 				return
 			}
 			require.Equal(t, []NamedItem{test.vpc}, got)
+		})
+	}
+}
+
+func TestFilterSubnetAttachVPCs(t *testing.T) {
+	eligible := NamedItem{
+		Name:   "Target VPC",
+		ID:     "vpc-1",
+		Status: "Ready",
+		Extra: map[string]string{
+			"networkVirtualizationType": "ETHERNET_VIRTUALIZER",
+			"siteId":                    "site-1",
+			"tenantId":                  "tenant-1",
+		},
+	}
+	tests := []struct {
+		name                       string
+		mutate                     func(*NamedItem)
+		excludedID                 string
+		requiredVirtualizationType string
+		wantIncluded               bool
+	}{
+		{name: "matching Ready tenant Ethernet virtualizer included", requiredVirtualizationType: "ETHERNET_VIRTUALIZER", wantIncluded: true},
+		{name: "pending excluded", mutate: func(vpc *NamedItem) { vpc.Status = "Pending" }},
+		{name: "legacy untyped matches Ethernet virtualizer", mutate: func(vpc *NamedItem) { delete(vpc.Extra, "networkVirtualizationType") }, requiredVirtualizationType: "ETHERNET_VIRTUALIZER", wantIncluded: true},
+		{name: "Ethernet virtualizer with NVUE matches same mode", mutate: func(vpc *NamedItem) { vpc.Extra["networkVirtualizationType"] = "ETHERNET_VIRTUALIZER_WITH_NVUE" }, requiredVirtualizationType: "ETHERNET_VIRTUALIZER_WITH_NVUE", wantIncluded: true},
+		{name: "Ethernet virtualizer with NVUE excluded for Ethernet virtualizer source", mutate: func(vpc *NamedItem) { vpc.Extra["networkVirtualizationType"] = "ETHERNET_VIRTUALIZER_WITH_NVUE" }, requiredVirtualizationType: "ETHERNET_VIRTUALIZER"},
+		{name: "Ethernet virtualizer excluded for NVUE source", requiredVirtualizationType: "ETHERNET_VIRTUALIZER_WITH_NVUE"},
+		{name: "FNN excluded", mutate: func(vpc *NamedItem) { vpc.Extra["networkVirtualizationType"] = "FNN" }},
+		{name: "other Site excluded", mutate: func(vpc *NamedItem) { vpc.Extra["siteId"] = "site-2" }},
+		{name: "other Tenant excluded", mutate: func(vpc *NamedItem) { vpc.Extra["tenantId"] = "tenant-2" }},
+		{name: "missing Tenant excluded", mutate: func(vpc *NamedItem) { delete(vpc.Extra, "tenantId") }},
+		{name: "source VPC excluded from targets", excludedID: "vpc-1"},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			vpc := eligible
+			vpc.Extra = map[string]string{
+				"networkVirtualizationType": eligible.Extra["networkVirtualizationType"],
+				"siteId":                    eligible.Extra["siteId"],
+				"tenantId":                  eligible.Extra["tenantId"],
+			}
+			if test.mutate != nil {
+				test.mutate(&vpc)
+			}
+			got := filterSubnetAttachVPCs([]NamedItem{vpc}, "site-1", "tenant-1", test.excludedID, test.requiredVirtualizationType)
+			if !test.wantIncluded {
+				assert.Empty(t, got)
+				return
+			}
+			require.Equal(t, []NamedItem{vpc}, got)
+		})
+	}
+}
+
+func TestFilterSubnetAttachSources(t *testing.T) {
+	eligibleVPC := NamedItem{
+		ID:     "vpc-1",
+		Status: "Ready",
+		Extra: map[string]string{
+			"networkVirtualizationType": "ETHERNET_VIRTUALIZER",
+			"siteId":                    "site-1",
+			"tenantId":                  "tenant-1",
+		},
+	}
+	eligibleSubnet := NamedItem{
+		ID:     "subnet-1",
+		Status: "Ready",
+		Extra: map[string]string{
+			"siteId":      "site-1",
+			"vpcId":       "vpc-1",
+			"acquiredIPs": "2",
+		},
+	}
+	tests := []struct {
+		name         string
+		mutateVPC    func(*NamedItem)
+		mutateSubnet func(*NamedItem)
+		wantIncluded bool
+	}{
+		{name: "Ready unallocated tenant Subnet included", wantIncluded: true},
+		{name: "pending Subnet excluded", mutateSubnet: func(subnet *NamedItem) { subnet.Status = "Pending" }},
+		{name: "other Site Subnet excluded", mutateSubnet: func(subnet *NamedItem) { subnet.Extra["siteId"] = "site-2" }},
+		{name: "missing usage excluded", mutateSubnet: func(subnet *NamedItem) { delete(subnet.Extra, "acquiredIPs") }},
+		{name: "Subnet with workload IP excluded", mutateSubnet: func(subnet *NamedItem) { subnet.Extra["acquiredIPs"] = "3" }},
+		{name: "Subnet without source VPC excluded", mutateSubnet: func(subnet *NamedItem) { subnet.Extra["vpcId"] = "vpc-missing" }},
+		{name: "pending source VPC excluded", mutateVPC: func(vpc *NamedItem) { vpc.Status = "Pending" }},
+		{name: "other Tenant source VPC excluded", mutateVPC: func(vpc *NamedItem) { vpc.Extra["tenantId"] = "tenant-2" }},
+		{name: "FNN source VPC excluded", mutateVPC: func(vpc *NamedItem) { vpc.Extra["networkVirtualizationType"] = "FNN" }},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			vpc := eligibleVPC
+			vpc.Extra = map[string]string{
+				"networkVirtualizationType": eligibleVPC.Extra["networkVirtualizationType"],
+				"siteId":                    eligibleVPC.Extra["siteId"],
+				"tenantId":                  eligibleVPC.Extra["tenantId"],
+			}
+			subnet := eligibleSubnet
+			subnet.Extra = map[string]string{
+				"siteId":      eligibleSubnet.Extra["siteId"],
+				"vpcId":       eligibleSubnet.Extra["vpcId"],
+				"acquiredIPs": eligibleSubnet.Extra["acquiredIPs"],
+			}
+			if test.mutateVPC != nil {
+				test.mutateVPC(&vpc)
+			}
+			if test.mutateSubnet != nil {
+				test.mutateSubnet(&subnet)
+			}
+
+			got := filterSubnetAttachSources([]NamedItem{subnet}, []NamedItem{vpc}, "site-1", "tenant-1")
+			if !test.wantIncluded {
+				assert.Empty(t, got)
+				return
+			}
+			require.Equal(t, []NamedItem{subnet}, got)
 		})
 	}
 }
@@ -1644,7 +1763,7 @@ func TestPowerStateChoices_UseCanonicalValues(t *testing.T) {
 		"interactive choices must prefer the canonical power states over compatibility aliases")
 }
 
-func TestAllCommands_HasLifecycleAndTaskCommands(t *testing.T) {
+func testAllCommands_HasLifecycleAndTaskCommands(t *testing.T) {
 	commands := AllCommands()
 	names := make(map[string]bool, len(commands))
 	for _, cmd := range commands {
@@ -2391,5 +2510,49 @@ func TestBuildIPBlockSelectItems(t *testing.T) {
 				assert.Equal(t, test.want[index].protocol, items[index].Extra["protocolVersion"])
 			}
 		})
+	}
+}
+
+func TestAppendScopeFlags(t *testing.T) {
+	for _, test := range []struct {
+		name string
+		run  func(*testing.T)
+	}{
+		{name: "NoSession", run: testAppendScopeFlags_NoSession},
+		{name: "SiteScope_MachineList", run: testAppendScopeFlags_SiteScope_MachineList},
+		{name: "SiteScope_VPCList", run: testAppendScopeFlags_SiteScope_VPCList},
+		{name: "BothScopes_SubnetList", run: testAppendScopeFlags_BothScopes_SubnetList},
+		{name: "BothScopes_InstanceList", run: testAppendScopeFlags_BothScopes_InstanceList},
+		{name: "NonListAction_Ignored", run: testAppendScopeFlags_NonListAction_Ignored},
+		{name: "UnknownResource_NoFlags", run: testAppendScopeFlags_UnknownResource_NoFlags},
+		{name: "SinglePart_NoFlags", run: testAppendScopeFlags_SinglePart_NoFlags},
+		{name: "VpcOnlyScope_SubnetList", run: testAppendScopeFlags_VpcOnlyScope_SubnetList},
+		{name: "SiteOnly", run: testAppendScopeFlags_SiteOnly},
+		{name: "SiteAndVPC", run: testAppendScopeFlags_SiteAndVPC},
+		{name: "NoScope", run: testAppendScopeFlags_NoScope},
+		{name: "VPCOnlyScope", run: testAppendScopeFlags_VPCOnlyScope},
+		{name: "NonListAction", run: testAppendScopeFlags_NonListAction},
+		{name: "UnscopedResources", run: testAppendScopeFlags_UnscopedResources},
+		{name: "CoversAllRegisteredFetchers", run: testAppendScopeFlags_CoversAllRegisteredFetchers},
+		{name: "ScopeFlagCategories_Consistent", run: testAppendScopeFlags_ScopeFlagCategories_Consistent},
+		{name: "IncludesInstanceType", run: testAppendScopeFlagsIncludesInstanceType},
+	} {
+		t.Run(test.name, test.run)
+	}
+}
+
+func TestAllCommands(t *testing.T) {
+	for _, test := range []struct {
+		name string
+		run  func(*testing.T)
+	}{
+		{name: "HaveUniqueNames", run: testAllCommands_HaveUniqueNames},
+		{name: "HasInstanceUpdateAndReboot", run: testAllCommands_HasInstanceUpdateAndReboot},
+		{name: "HasLifecycleAndTaskCommands", run: testAllCommands_HasLifecycleAndTaskCommands},
+		{name: "CoversGeneratedCLISurface", run: testAllCommands_CoversGeneratedCLISurface},
+		{name: "RegistersConciseAliases", run: testAllCommands_RegistersConciseAliases},
+		{name: "RegistersRepresentativeFormerGaps", run: testAllCommands_RegistersRepresentativeFormerGaps},
+	} {
+		t.Run(test.name, test.run)
 	}
 }

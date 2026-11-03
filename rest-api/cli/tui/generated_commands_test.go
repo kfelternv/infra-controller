@@ -44,7 +44,7 @@ func TestQuoteShellCommandArgument(t *testing.T) {
 	}
 }
 
-func TestAllCommands_CoversGeneratedCLISurface(t *testing.T) {
+func testAllCommands_CoversGeneratedCLISurface(t *testing.T) {
 	spec, err := appcli.ParseSpec(openapi.Spec)
 	require.NoError(t, err)
 
@@ -93,7 +93,7 @@ func TestAllCommands_CoversGeneratedCLISurface(t *testing.T) {
 	assert.Empty(t, missing, "generated CLI commands missing from the TUI")
 }
 
-func TestAllCommands_RegistersConciseAliases(t *testing.T) {
+func testAllCommands_RegistersConciseAliases(t *testing.T) {
 	commands := commandNames(AllCommands())
 	for _, test := range []struct {
 		name string
@@ -183,7 +183,7 @@ func testMachinePowerAliasesExecuteSameOperation(t *testing.T) {
 	}
 }
 
-func TestAllCommands_RegistersRepresentativeFormerGaps(t *testing.T) {
+func testAllCommands_RegistersRepresentativeFormerGaps(t *testing.T) {
 	commands := commandNames(AllCommands())
 	for _, name := range []string{
 		"allocation constraint update",
@@ -315,6 +315,85 @@ func testGeneratedCommand_ReadOnlyUsesSessionClientScopeAndFetchesAll(t *testing
 	assert.Contains(t, output, "--site-id site-1")
 	assert.Contains(t, output, "--all")
 	assert.Contains(t, output, `"H100"`)
+}
+
+// Generated DNS Domain list must preserve the selected Site scope while
+// exposing Pending rows for observability (unlike subnet's Ready-only chooser).
+func testGeneratedDNSDomainList_UsesSelectedSiteAndShowsPending(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		assert.Equal(t, "/v2/org/acme/nico/domain", r.URL.Path)
+		assert.Equal(t, "site-1", r.URL.Query().Get("siteId"))
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = io.WriteString(w, `[{"id":"domain-1","status":"Pending","name":"dev.example","siteId":"site-1"}]`)
+	}))
+	defer server.Close()
+
+	session := NewSession(appcli.NewClient(server.URL, "acme", "token", nil, false), "acme", "")
+	session.Scope.SiteID = "site-1"
+	command := requireTUICommand(t, "dns-domain list")
+	var runErr error
+	output := captureStdout(func() {
+		runErr = command.Run(session, nil)
+	})
+	require.NoError(t, runErr)
+	assert.Contains(t, output, "Pending")
+	assert.Contains(t, output, "--site-id site-1")
+}
+
+func testGeneratedCommand_DomainNamespaces(t *testing.T) {
+	for _, test := range []struct {
+		name, command, argument, method, path, input string
+		wantDNSLists                                 int32
+	}{
+		{
+			name: "fabric ID does not use DNS discovery", command: "domain get", argument: "fabric-1",
+			method: http.MethodGet, path: "/v2/org/acme/nico/domain/nvlink/fabric-1",
+		},
+		{
+			name: "Pending DNS Domain can be read", command: "dns-domain get", argument: "pending.example.com",
+			method: http.MethodGet, path: "/v2/org/acme/nico/domain/domain-1", wantDNSLists: 1,
+		},
+		{
+			name: "Pending DNS Domain can be deleted", command: "dns-domain delete", argument: "pending.example.com",
+			method: http.MethodDelete, path: "/v2/org/acme/nico/domain/domain-1", input: "y\n", wantDNSLists: 1,
+		},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			var dnsLists, targetCalls atomic.Int32
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				w.Header().Set("Content-Type", "application/json")
+				switch {
+				case r.Method == http.MethodGet && r.URL.Path == "/v2/org/acme/nico/domain":
+					dnsLists.Add(1)
+					assert.Equal(t, "tenant-1", r.URL.Query().Get("tenantId"))
+					_, _ = io.WriteString(w, `[{"id":"domain-1","name":"pending.example.com","siteId":"site-1","tenantId":"tenant-1","status":"Pending"}]`)
+				case r.Method == test.method && r.URL.Path == test.path:
+					targetCalls.Add(1)
+					if test.method == http.MethodDelete {
+						w.WriteHeader(http.StatusNoContent)
+					} else {
+						_, _ = io.WriteString(w, `{"id":"domain-1","name":"pending.example.com","status":"Pending"}`)
+					}
+				default:
+					http.NotFound(w, r)
+				}
+			}))
+			defer server.Close()
+			session := NewSession(appcli.NewClient(server.URL, "acme", "token", nil, false), "acme", "")
+			session.Scope.SiteID = "site-1"
+			session.Cache.Set("_tenant", []NamedItem{{Name: "acme", ID: "tenant-1"}})
+			args := []string{test.argument}
+			if test.command == "domain get" {
+				args = []string{"--site-id", "site-1", test.argument}
+			}
+			_, err := withStdin(t, test.input, func() (string, error) {
+				return "", requireTUICommand(t, test.command).Run(session, args)
+			})
+			require.NoError(t, err)
+			assert.Equal(t, test.wantDNSLists, dnsLists.Load())
+			assert.EqualValues(t, 1, targetCalls.Load())
+		})
+	}
 }
 
 func testGeneratedCommand_ExplicitPaginationIsNotOverridden(t *testing.T) {
@@ -646,6 +725,7 @@ func TestGeneratedPathResourcePolicy_CoversEveryParameter(t *testing.T) {
 		}
 	}
 	assert.ElementsMatch(t, []string{
+		"domain get|id",
 		"measured-boot machine remove|id",
 		"measured-boot profile remove|id",
 		"measured-boot-trusted-machine delete|id",
@@ -1243,6 +1323,8 @@ func TestRunGeneratedTUICommand(t *testing.T) {
 	}{
 		{name: "machine power aliases", run: testMachinePowerAliasesExecuteSameOperation},
 		{name: "read-only session client and scope", run: testGeneratedCommand_ReadOnlyUsesSessionClientScopeAndFetchesAll},
+		{name: "DNS and fabric Domain namespaces", run: testGeneratedCommand_DomainNamespaces},
+		{name: "DNS Domain list scope and reservations", run: testGeneratedDNSDomainList_UsesSelectedSiteAndShowsPending},
 		{name: "explicit pagination", run: testGeneratedCommand_ExplicitPaginationIsNotOverridden},
 		{name: "required query", run: testGeneratedCommand_PromptsForRequiredQuery},
 		{name: "mutation confirmation and cache invalidation", run: testGeneratedCommand_MutationConfirmsRedactsAndInvalidatesCache},

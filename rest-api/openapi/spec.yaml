@@ -3215,14 +3215,22 @@ paths:
                 type: string
                 example: '{"pageNumber":1,"pageSize":20,"total":30,"orderBy": "CREATED_DESC"}'
               description: Pagination result in JSON format
+        '400':
+          $ref: '#/components/responses/ValidationError'
         '403':
           $ref: '#/components/responses/ForbiddenError'
       operationId: get-all-vpc
       description: |-
-        Retrieve all VPCs for the org.
+        Retrieve all VPCs for the org. When `tenantId` is supplied, it must match the org's current Tenant.
 
         Org must have a Tenant entity. User must have authorization role with `TENANT_ADMIN` suffix
       parameters:
+        - schema:
+            type: string
+            format: uuid
+          in: query
+          name: tenantId
+          description: Optional ID of the current Tenant. A different Tenant ID is rejected.
         - schema:
             type: string
             format: uuid

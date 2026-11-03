@@ -113,6 +113,93 @@ func TestTerminalEOFIsTransient(t *testing.T) {
 	}
 }
 
+func TestCmdSubnetCreate(t *testing.T) {
+	binaryPath := buildRegressionCLI(t)
+	for _, test := range []struct {
+		name         string
+		assignDomain bool
+		includeReady bool
+		wantErr      bool
+	}{
+		{name: "Domain remains optional"},
+		{name: "only Ready Domains at the VPC Site are selectable", assignDomain: true, includeReady: true},
+		{name: "reservations deletions and other Sites cannot be assigned", assignDomain: true, wantErr: true},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			recorder := &cliRegressionRecorder{}
+			baseHandler := newInteractiveRegressionHandler(recorder)
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if r.URL.Path != "/v2/org/acme/nico/domain" {
+					baseHandler.ServeHTTP(w, r)
+					return
+				}
+				recorder.append(cliRegressionRequest{Method: r.Method, Path: r.URL.Path, Query: r.URL.RawQuery})
+				assert.Equal(t, "tenant-1", r.URL.Query().Get("tenantId"))
+				assert.Equal(t, "site-1", r.URL.Query().Get("siteId"))
+				domains := []map[string]string{
+					{"id": "domain-pending", "status": "Pending", "siteId": "site-1", "tenantId": "tenant-1"},
+					{"id": "domain-deleting", "status": "Deleting", "siteId": "site-1", "tenantId": "tenant-1"},
+					{"id": "domain-other-site", "status": "Ready", "siteId": "site-2", "tenantId": "tenant-1"},
+				}
+				if test.includeReady {
+					domains = append(domains, map[string]string{"id": "domain-ready", "name": "ready.example.com", "status": "Ready", "siteId": "site-1", "tenantId": "tenant-1"})
+				}
+				require.NoError(t, json.NewEncoder(w).Encode(domains))
+			}))
+			defer server.Close()
+			command := exec.Command(binaryPath, "--config", writeRegressionConfig(t, server.URL), "tui")
+			command.Env = regressionEnvironment(map[string]string{"NICO_TOKEN": ptyAuthToken, "TERM": "xterm-256color"})
+			terminal := startRegressionPTY(t, command)
+			defer terminal.close()
+			terminal.waitFor(t, "Type a command or")
+			terminal.send(t, "scope site site-one\r")
+			terminal.waitFor(t, "Scope set: site =")
+			terminal.send(t, "subnet create\r")
+			terminal.waitFor(t, "Ready Ethernet virtualizer VPC:")
+			terminal.send(t, "vpc-one\r")
+			terminal.waitFor(t, "Subnet name")
+			terminal.send(t, "tenant-subnet-created\r")
+			terminal.waitFor(t, "Description (optional)")
+			terminal.send(t, "\r")
+			terminal.waitFor(t, "IPv4 prefix length (8-30)")
+			terminal.send(t, "24\r")
+			terminal.waitFor(t, "Tenant IPv4 Block:")
+			terminal.send(t, "tenant-ready\r")
+			terminal.waitFor(t, "Assign a DNS Domain?")
+			if test.assignDomain {
+				terminal.send(t, "y\r")
+			} else {
+				terminal.send(t, "n\r")
+			}
+			if test.wantErr {
+				terminal.waitFor(t, "no DNS Domain available")
+				assert.Empty(t, recorder.matching(http.MethodPost, "/v2/org/acme/nico/subnet"))
+			} else {
+				terminal.waitFor(t, "--ipv4block-id tenant-ready-id")
+				if test.assignDomain {
+					terminal.waitFor(t, "--subdomain-id domain-ready")
+				}
+				terminal.waitFor(t, "IPv4 Subnet created: tenant-subnet-created")
+				posts := recorder.matching(http.MethodPost, "/v2/org/acme/nico/subnet")
+				require.Len(t, posts, 1)
+				var body map[string]interface{}
+				require.NoError(t, json.Unmarshal([]byte(posts[0].Body), &body))
+				assert.Equal(t, "vpc-1", body["vpcId"])
+				assert.Equal(t, "tenant-ready-id", body["ipv4BlockId"])
+				assert.EqualValues(t, 24, body["prefixLength"])
+				if test.assignDomain {
+					assert.Equal(t, "domain-ready", body["subdomainId"])
+				} else {
+					assert.NotContains(t, body, "subdomainId")
+					assert.Empty(t, recorder.matching(http.MethodGet, "/v2/org/acme/nico/domain"))
+				}
+			}
+			terminal.send(t, "exit\r")
+			terminal.waitForExit(t)
+		})
+	}
+}
+
 func TestCLIRegression_RealTerminalAndNonInteractive(t *testing.T) {
 	binaryPath := buildRegressionCLI(t)
 
@@ -257,7 +344,7 @@ func TestCLIRegression_RealTerminalAndNonInteractive(t *testing.T) {
 		terminal.waitFor(t, "VPC prefix created: tenant-ipv6-prefix")
 
 		// Subnet creation must carry the selected Ethernet virtualizer VPC,
-		// tenant IPv4 block, and prefix length through the real terminal flow.
+		// tenant IPv4 block, Domain, and prefix length through the real terminal flow.
 		terminal.send(t, "subnet create\r")
 		terminal.waitFor(t, "Ready Ethernet virtualizer VPC:")
 		terminal.send(t, "vpc-one\r")
@@ -269,6 +356,9 @@ func TestCLIRegression_RealTerminalAndNonInteractive(t *testing.T) {
 		terminal.send(t, "24\r")
 		terminal.waitFor(t, "Tenant IPv4 Block:")
 		terminal.send(t, "tenant-ready\r")
+		terminal.waitFor(t, "Assign a DNS Domain?")
+		terminal.send(t, "y\r")
+		terminal.waitFor(t, "DNS Domain:")
 		terminal.waitFor(t, "IPv4 Subnet created: tenant-subnet-created")
 
 		// Instance creation must stop before the API request when the selected
@@ -672,7 +762,7 @@ func TestCLIRegression_RealTerminalAndNonInteractive(t *testing.T) {
 		require.Len(t, subnetCreateRequests, 1)
 		assert.JSONEq(
 			t,
-			`{"name":"tenant-subnet-created","vpcId":"vpc-1","ipv4BlockId":"tenant-ready-id","prefixLength":24}`,
+			`{"name":"tenant-subnet-created","vpcId":"vpc-1","subdomainId":"domain-1","ipv4BlockId":"tenant-ready-id","prefixLength":24}`,
 			subnetCreateRequests[0].Body,
 		)
 
@@ -1291,10 +1381,15 @@ func newInteractiveRegressionHandler(recorder *cliRegressionRecorder) http.Handl
 		case request.Method == http.MethodGet &&
 			request.URL.Path == "/v2/org/acme/nico/vpc":
 			_, _ = io.WriteString(w, `[
-				{"id":"vpc-1","name":"vpc-one","siteId":"site-1","status":"Ready","networkVirtualizationType":"ETHERNET_VIRTUALIZER"},
-				{"id":"vpc-2","name":"vpc-two","siteId":"site-1","status":"Ready","networkVirtualizationType":"FNN","slaacEnabled":true},
-				{"id":"vpc-flat","name":"flat-vpc","siteId":"site-1","status":"Ready","networkVirtualizationType":"FLAT"},
-				{"id":"vpc-allocated","name":"allocated-vpc","siteId":"site-2","status":"Ready","networkVirtualizationType":"ETHERNET_VIRTUALIZER"}
+					{"id":"vpc-1","name":"vpc-one","siteId":"site-1","tenantId":"tenant-1","status":"Ready","networkVirtualizationType":"ETHERNET_VIRTUALIZER"},
+					{"id":"vpc-2","name":"vpc-two","siteId":"site-1","tenantId":"tenant-1","status":"Ready","networkVirtualizationType":"FNN","slaacEnabled":true},
+					{"id":"vpc-flat","name":"flat-vpc","siteId":"site-1","tenantId":"tenant-1","status":"Ready","networkVirtualizationType":"FLAT"},
+					{"id":"vpc-allocated","name":"allocated-vpc","siteId":"site-2","tenantId":"tenant-1","status":"Ready","networkVirtualizationType":"ETHERNET_VIRTUALIZER"}
+				]`)
+		case request.Method == http.MethodGet &&
+			request.URL.Path == "/v2/org/acme/nico/domain":
+			_, _ = io.WriteString(w, `[
+				{"id":"domain-1","name":"tenant.example.com","siteId":"site-1","tenantId":"tenant-1","status":"Ready"}
 			]`)
 		case request.Method == http.MethodGet &&
 			request.URL.Path == "/v2/org/acme/nico/subnet":

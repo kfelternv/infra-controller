@@ -5,7 +5,7 @@ package tui
 
 import "testing"
 
-func TestInvalidateFiltered_ClearsScopeFilteredTypes(t *testing.T) {
+func testInvalidateFiltered_ClearsScopeFilteredTypes(t *testing.T) {
 	scopeFiltered := []string{
 		"vpc", "subnet", "instance",
 		"allocation", "machine", "ip-block", "operating-system",
@@ -30,7 +30,7 @@ func TestInvalidateFiltered_ClearsScopeFilteredTypes(t *testing.T) {
 	}
 }
 
-func TestInvalidateFiltered_PreservesUnscopedTypes(t *testing.T) {
+func testInvalidateFiltered_PreservesUnscopedTypes(t *testing.T) {
 	unscoped := []string{"site", "audit", "ssh-key", "tenant-account"}
 
 	c := NewCache()
@@ -101,5 +101,20 @@ func TestCache_GetSetLookup(t *testing.T) {
 	}
 	if got := c.Get("missing"); got != nil {
 		t.Error("Get should return nil for unfetched type")
+	}
+}
+
+func TestCache_InvalidateFiltered(t *testing.T) {
+	for _, test := range []struct {
+		name string
+		run  func(*testing.T)
+	}{
+		{name: "ClearsScopeFilteredTypes", run: testInvalidateFiltered_ClearsScopeFilteredTypes},
+		{name: "PreservesUnscopedTypes", run: testInvalidateFiltered_PreservesUnscopedTypes},
+		{name: "MatchesScopeFilteredFetchers", run: testInvalidateFiltered_MatchesScopeFilteredFetchers},
+		{name: "ListMatchesAppendScopeFlags", run: testInvalidateFiltered_ListMatchesAppendScopeFlags},
+		{name: "IncludesInstanceType", run: testInvalidateFilteredIncludesInstanceType},
+	} {
+		t.Run(test.name, test.run)
 	}
 }

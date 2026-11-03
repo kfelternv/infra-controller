@@ -72,7 +72,7 @@ func TestMatchGeneratedAutocompleteItemRejectsAmbiguousNames(t *testing.T) {
 	assert.Equal(t, "machine-2", item.ID)
 }
 
-func TestGetAllSuggestions_GeneratedResourcesUseCanonicalFetchers(t *testing.T) {
+func testGetAllSuggestions_GeneratedResourcesUseCanonicalFetchers(t *testing.T) {
 	tests := []struct {
 		name         string
 		command      string
@@ -126,7 +126,7 @@ func TestGetAllSuggestions_GeneratedResourcesUseCanonicalFetchers(t *testing.T) 
 	}
 }
 
-func TestGetAllSuggestions_GeneratedDependentSecondPathUsesResolvedParent(t *testing.T) {
+func testGetAllSuggestions_GeneratedDependentSecondPathUsesResolvedParent(t *testing.T) {
 	requestPath := make(chan string, 1)
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		requestPath <- r.URL.Path
@@ -175,7 +175,7 @@ func TestGetAllSuggestions_GeneratedDependentSecondPathUsesResolvedParent(t *tes
 	assert.Equal(t, []string{"workload-a", "InstanceType / gpu.large"}, args)
 }
 
-func TestGetAllSuggestions_GeneratedAssociationUsesParentScopedMachineNames(t *testing.T) {
+func testGetAllSuggestions_GeneratedAssociationUsesParentScopedMachineNames(t *testing.T) {
 	requestPath := make(chan string, 1)
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		requestPath <- r.URL.Path
@@ -220,7 +220,7 @@ func TestGetAllSuggestions_GeneratedAssociationUsesParentScopedMachineNames(t *t
 	)
 }
 
-func TestGetAllSuggestions_PreservesManualAliasCompletion(t *testing.T) {
+func testGetAllSuggestions_PreservesManualAliasCompletion(t *testing.T) {
 	cache := NewCache()
 	resolver := NewResolver(cache)
 	resolver.RegisterFetcher("machine", func(context.Context) ([]NamedItem, error) {
@@ -237,7 +237,41 @@ func TestGetAllSuggestions_PreservesManualAliasCompletion(t *testing.T) {
 	assert.Equal(t, []string{"machine dpu get host-one"}, suggestions)
 }
 
-func TestGetAllSuggestions_GeneratedResourceAfterValueFlag(t *testing.T) {
+func testGetAllSuggestions_SubnetAttachOnlyOffersEligibleSources(t *testing.T) {
+	cache := NewCache()
+	resolver := NewResolver(cache)
+	session := &Session{
+		Org:      "acme",
+		Scope:    Scope{SiteID: "site-1"},
+		Cache:    cache,
+		Resolver: resolver,
+	}
+	cache.Set("_tenant", []NamedItem{{Name: "acme", ID: "tenant-1"}})
+	cache.Set("vpc", []NamedItem{
+		{ID: "vpc-1", Status: "Ready", Extra: map[string]string{"siteId": "site-1", "tenantId": "tenant-1", "networkVirtualizationType": "ETHERNET_VIRTUALIZER"}},
+		{ID: "vpc-2", Status: "Ready", Extra: map[string]string{"siteId": "site-1", "tenantId": "tenant-2", "networkVirtualizationType": "ETHERNET_VIRTUALIZER"}},
+	})
+	cache.Set("subnet", []NamedItem{
+		{Name: "eligible-subnet", ID: "subnet-1", Status: "Ready", Extra: map[string]string{"siteId": "site-1", "vpcId": "vpc-1", "acquiredIPs": "2"}},
+		{Name: "used-subnet", ID: "subnet-2", Status: "Ready", Extra: map[string]string{"siteId": "site-1", "vpcId": "vpc-1", "acquiredIPs": "3"}},
+		{Name: "other-tenant-subnet", ID: "subnet-3", Status: "Ready", Extra: map[string]string{"siteId": "site-1", "vpcId": "vpc-2", "acquiredIPs": "2"}},
+	})
+
+	for _, commandName := range []string{
+		"subnet attach-vpc",
+		"subnet attach-vpc-to attach-vpc-to-subnet",
+	} {
+		t.Run(commandName, func(t *testing.T) {
+			assert.Equal(
+				t,
+				[]string{commandName + " eligible-subnet"},
+				getAllSuggestions(session, commandName+" elig", []string{commandName}),
+			)
+		})
+	}
+}
+
+func testGetAllSuggestions_GeneratedResourceAfterValueFlag(t *testing.T) {
 	cache := NewCache()
 	resolver := NewResolver(cache)
 	resolver.RegisterFetcher("machine", func(context.Context) ([]NamedItem, error) {
@@ -289,5 +323,44 @@ func TestGetAllSuggestions_GeneratedResourceAfterValueFlag(t *testing.T) {
 				),
 			)
 		})
+	}
+}
+
+func testGetAllSuggestions_SubnetAttachBoundsBlockingFetcher(t *testing.T) {
+	cache := NewCache()
+	resolver := NewResolver(cache)
+	resolver.RegisterFetcher("vpc", func(ctx context.Context) ([]NamedItem, error) {
+		<-ctx.Done()
+		return nil, ctx.Err()
+	})
+	session := &Session{
+		Org:      "acme",
+		Scope:    Scope{SiteID: "site-1"},
+		Cache:    cache,
+		Resolver: resolver,
+	}
+	cache.Set("_tenant", []NamedItem{{Name: "acme", ID: "tenant-1"}})
+
+	started := time.Now()
+	assert.Nil(t, getAllSuggestions(session, "subnet attach-vpc sub", []string{"subnet attach-vpc"}))
+	elapsed := time.Since(started)
+	assert.GreaterOrEqual(t, elapsed, autocompleteFetchTimeout)
+	assert.Less(t, elapsed, autocompleteFetchTimeout+time.Second)
+}
+
+func TestGetAllSuggestions(t *testing.T) {
+	for _, test := range []struct {
+		name string
+		run  func(*testing.T)
+	}{
+		{name: "GeneratedResourcesUseCanonicalFetchers", run: testGetAllSuggestions_GeneratedResourcesUseCanonicalFetchers},
+		{name: "GeneratedDependentSecondPathUsesResolvedParent", run: testGetAllSuggestions_GeneratedDependentSecondPathUsesResolvedParent},
+		{name: "GeneratedAssociationUsesParentScopedMachineNames", run: testGetAllSuggestions_GeneratedAssociationUsesParentScopedMachineNames},
+		{name: "PreservesManualAliasCompletion", run: testGetAllSuggestions_PreservesManualAliasCompletion},
+		{name: "SubnetAttachOnlyOffersEligibleSources", run: testGetAllSuggestions_SubnetAttachOnlyOffersEligibleSources},
+		{name: "GeneratedResourceAfterValueFlag", run: testGetAllSuggestions_GeneratedResourceAfterValueFlag},
+		{name: "SubnetAttachBoundsBlockingFetcher", run: testGetAllSuggestions_SubnetAttachBoundsBlockingFetcher},
+	} {
+		t.Run(test.name, test.run)
 	}
 }

@@ -29,6 +29,23 @@ The domain is created only when no domain exists yet, and most sites use a singl
 - Segments created later through the API or CLI name their subdomain explicitly: `nico-admin-cli network-segment create ... --subdomain-id <domain-id>` (required for `host-inband` segments; list domains with `nico-admin-cli domain show`).
 - A segment with no subdomain produces no DNS at all: its interfaces and instances have no zone to live in.
 
+## Tenant Domain REST Lifecycle
+
+Tenant administrators can create, list, retrieve, and delete their own DNS Domains through `/v2/org/{org}/nico/domain` and `/v2/org/{org}/nico/domain/{domainId}`. The Tenant must have access to the Site. Creation and explicit deletion require a Registered Site. These endpoints use REST Domain IDs; a Core Domain ID or a matching DNS name does not establish REST ownership.
+
+Deploy the supporting components in this order before enabling tenant Domain mutations:
+
+1. Upgrade every Core API writer with Domain reference guards, reserved-ID creation and cancellation, and reserved-zone overlap enforcement. The shared locks require all writers to participate; upgrading one replica does not establish those guarantees.
+2. Upgrade the Site Agent with the corresponding `CreateDomainRequest.reserved_id` and `DomainDeletionRequest.cancel_reserved_id` protobuf fields. The generic Site proxy discards request fields unknown to its build, so a Registered Site alone does not prove protocol compatibility.
+3. Apply the REST database migrations and upgrade the Cloud workflow workers. Confirm that the Cloud Temporal namespace has the `domain-reserved-intent-recovery` workflow scheduled every two minutes.
+4. Upgrade the REST API. Keep compatible Core, Site Agent, and workflow-worker builds running while these Domain operations are enabled or recovery remains outstanding.
+
+A new Domain can return `202` with status `Pending` while Core creation is unconfirmed. Retrieve that same REST ID until it becomes `Ready` or `Error`. An identical create retry reuses the reservation. `Error` is terminal: delete the owned reservation before requesting a new create. Tenant zones cannot overlap an existing Site forward zone at an ancestor or descendant DNS-label boundary; non-overlapping sibling zones are allowed.
+
+Configure upstream delegation or forwarding for the new zone using the site's [DNS deployment procedures](../provisioning/ip-and-network-configuration.md#3-dns-configuration) before relying on client resolution.
+
+Deletion returns `204` only after Core deletion or cancellation and REST removal are confirmed. A Domain referenced by a Network Segment or Machine Interface cannot be deleted. An unconfirmed deletion retains `Deleting`; retry deletion with the same REST ID. Recovery pauses Core writes when Site registration or Tenant access is unavailable. Keep the reservation intact until compatible components and authorized access can complete the operation.
+
 ## Reverse DNS
 
 Reverse resolution mirrors the forward records that matter to humans:

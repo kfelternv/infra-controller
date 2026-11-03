@@ -154,6 +154,9 @@ tags:
       Deprecation history:
 
       - `ResourceTypeID` attribute on Allocation Constraint was deprecated in favor of `resourceTypeId` and will be removed on July 9th, 2026 0:00 UTC. Please use `resourceTypeId` instead.
+  - name: DNS Domain
+    description: |-
+      DNS Domain is a tenant-owned DNS zone at a Site. Domains can be assigned to Subnets when the Subnet is created.
   - name: VPC
     x-displayName: VPC
     description: |-
@@ -2903,6 +2906,248 @@ paths:
           in: query
           name: orderBy
           description: Ordering for pagination query
+  '/v2/org/{org}/nico/domain':
+    parameters:
+      - schema:
+          type: string
+        name: org
+        in: path
+        required: true
+        description: Name of the Org
+    post:
+      summary: Create Domain
+      operationId: create-domain
+      description: |-
+        Create a tenant-owned DNS Domain at a Site. Domain IDs in this API are
+        tenant-owned REST IDs; Core DNS IDs are not accepted from clients.
+        Repeating the same authenticated tenant/Site/normalized name creation
+        intent returns the same reserved Domain (202 while Pending, 200 once
+        Ready), not a new Core Domain or an adoption by DNS name. After 202,
+        poll GET on the returned Domain ID until status is Ready or Error.
+        Error is terminal and
+        unusable: an identical create retry returns 409; an authorized caller
+        can delete the owned REST Domain ID for that Site before retrying a
+        new create. Pending and Deleting are unfinished operations;
+        a 504 does not prove that a Core write
+        was rolled back. A create timeout at the Core proxy normally returns
+        202 Pending here, not 504. Tenant-managed DNS zones cannot claim a
+        reverse DNS zone, or equal/contain/be contained by an existing Site
+        forward zone at DNS-label boundaries (including another tenant's
+        zone). Non-overlapping sibling zones are allowed. Names are not
+        rewritten to make them unique; conflicting names or creation intents
+        are rejected without exposing the other zone's owner.
+
+        Org must have a Tenant entity. User must have authorization role with `TENANT_ADMIN` suffix.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/DomainCreateRequest'
+            examples:
+              example-1:
+                value:
+                  name: tenant.example.com
+                  siteId: ea144def-d68f-44c3-9485-4b103fa2686f
+      responses:
+        '201':
+          description: Created
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Domain'
+        '200':
+          description: Existing Ready Domain for an identical authenticated tenant/Site/name create request
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Domain'
+        '202':
+          description: Pending, reserved Domain identity; Core creation is not yet confirmed
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Domain'
+              example:
+                id: 3c5a130c-6545-42cf-ae41-14236b70d05a
+                name: tenant.example.com
+                siteId: ea144def-d68f-44c3-9485-4b103fa2686f
+                tenantId: f97df110-f4de-492e-8849-4a6af68026b0
+                status: Pending
+                created: '2019-08-24T14:15:22Z'
+                updated: '2019-08-24T14:15:22Z'
+        '409':
+          $ref: '#/components/responses/GenericHttpError'
+        '400':
+          $ref: '#/components/responses/ValidationError'
+        '403':
+          $ref: '#/components/responses/ForbiddenError'
+        '404':
+          $ref: '#/components/responses/NotFoundError'
+        '412':
+          $ref: '#/components/responses/GenericHttpError'
+        '504':
+          $ref: '#/components/responses/GatewayTimeoutError'
+      tags:
+        - DNS Domain
+    get:
+      summary: Retrieve all Domains
+      operationId: get-all-domain
+      description: |-
+        Retrieve tenant-owned DNS Domains for the org, optionally confirming the authenticated Tenant ID and filtering by Site. Results are ordered deterministically before pagination, and the `X-Pagination` response header reports the total matching row count.
+
+        Org must have a Tenant entity. User must have authorization role with `TENANT_ADMIN` suffix.
+      parameters:
+        - schema:
+            type: string
+            format: uuid
+          in: query
+          name: siteId
+          description: Filter Domains by Site
+        - schema:
+            type: string
+            format: uuid
+          in: query
+          name: tenantId
+          description: ID of the authenticated Tenant that owns the Domains
+        - schema:
+            $ref: '#/components/schemas/PageNumber'
+            example: 1
+            default: 1
+          in: query
+          name: pageNumber
+          description: Page number for pagination query
+        - schema:
+            type: integer
+            minimum: 1
+            maximum: 100
+            example: 20
+          in: query
+          name: pageSize
+          description: Page size for pagination query
+        - schema:
+            type: string
+            enum:
+              - NAME_ASC
+              - NAME_DESC
+              - CREATED_ASC
+              - CREATED_DESC
+              - UPDATED_ASC
+              - UPDATED_DESC
+            default: CREATED_ASC
+          in: query
+          name: orderBy
+          description: Ordering for pagination query. Defaults to CREATED_ASC, with Domain ID ascending as the tie-breaker.
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/Domain'
+          headers:
+            X-Pagination:
+              schema:
+                type: string
+                example: '{"pageNumber":1,"pageSize":20,"total":30,"orderBy":null}'
+              description: Pagination result in JSON format. orderBy echoes the supplied query value and is null when omitted, even though the effective default is CREATED_ASC.
+        '400':
+          $ref: '#/components/responses/ValidationError'
+        '403':
+          $ref: '#/components/responses/ForbiddenError'
+      tags:
+        - DNS Domain
+  '/v2/org/{org}/nico/domain/{domainId}':
+    parameters:
+      - schema:
+          type: string
+        name: org
+        in: path
+        required: true
+        description: Name of the Org
+      - schema:
+          type: string
+          format: uuid
+        name: domainId
+        in: path
+        required: true
+        description: ID of the Domain
+    get:
+      summary: Retrieve Domain
+      operationId: get-domain
+      description: |-
+        Retrieve a tenant-owned DNS Domain by ID.
+
+        Org must have a Tenant entity. User must have authorization role with `TENANT_ADMIN` suffix.
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Domain'
+        '400':
+          $ref: '#/components/responses/ValidationError'
+        '403':
+          $ref: '#/components/responses/ForbiddenError'
+        '404':
+          $ref: '#/components/responses/NotFoundError'
+      tags:
+        - DNS Domain
+    delete:
+      summary: Delete Domain
+      operationId: delete-domain
+      description: |-
+        Delete a tenant-owned DNS Domain by its REST ID. Referenced Domains
+        cannot be deleted. A definitive 412 refusal restores a newly requested
+        Ready Domain unless a newer deletion or recovery owner has taken over;
+        in that case, it remains Deleting until recovery confirms the refusal.
+        If Core deletion or its reserved-ID cancellation cannot be confirmed,
+        the owned reservation remains Deleting. Retry
+        DELETE with the same REST ID after an unconfirmed 504; 204 means Core
+        deletion/cancellation and REST removal were both confirmed. Do not
+        interpret a 504 as absence or rollback. The owning tenant with a
+        current Site association may read the reservation. Explicit DELETE
+        retries require that Site to be Registered; if it becomes unregistered
+        or Site access is revoked, the durable Deleting reservation remains
+        visible only to an authorized owner and is not considered deleted.
+        Recovery also pauses Core writes until Site registration and tenant
+        access are valid again. Reconcile intentionally revoked access through
+        an authorized Site/operator workflow; do not grant access solely to
+        force cleanup, or substitute a different Site or Core ID.
+
+        Org must have a Tenant entity. User must have authorization role with `TENANT_ADMIN` suffix.
+      responses:
+        '204':
+          description: No Content
+        '400':
+          $ref: '#/components/responses/ValidationError'
+        '403':
+          $ref: '#/components/responses/ForbiddenError'
+        '404':
+          $ref: '#/components/responses/NotFoundError'
+        '409':
+          description: The Domain is not in a deletable state, or it changed while deletion was being reserved.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/NICoAPIError'
+        '412':
+          description: >-
+            Core refused deletion because the Domain is still referenced. A newly
+            requested Ready Domain is restored unless a newer deletion or recovery
+            owner has taken over; then it remains Deleting until recovery confirms
+            the refusal.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/NICoAPIError'
+        '504':
+          $ref: '#/components/responses/GatewayTimeoutError'
+      tags:
+        - DNS Domain
   '/v2/org/{org}/nico/vpc':
     parameters:
       - schema:
@@ -23039,6 +23284,76 @@ components:
           maxLength: 256
       required:
         - name
+    Domain:
+      title: Domain
+      type: object
+      description: A tenant-owned DNS zone at a Site.
+      examples:
+        - id: 3c5a130c-6545-42cf-ae41-14236b70d05a
+          name: tenant.example.com
+          siteId: ea144def-d68f-44c3-9485-4b103fa2686f
+          tenantId: f97df110-f4de-492e-8849-4a6af68026b0
+          status: Ready
+          created: '2019-08-24T14:15:22Z'
+          updated: '2019-08-24T14:15:22Z'
+      properties:
+        id:
+          type: string
+          format: uuid
+          description: Unique REST identifier for the Domain
+          readOnly: true
+        name:
+          type: string
+          description: DNS name of the Domain
+        siteId:
+          type: string
+          format: uuid
+          description: ID of the Site containing the Domain
+        tenantId:
+          type: string
+          format: uuid
+          description: ID of the Tenant that owns the Domain
+        status:
+          type: string
+          enum: [Pending, Ready, Deleting, Error]
+          description: Ready confirms Core creation. Pending and Deleting are durable retry states.
+          readOnly: true
+        created:
+          type: string
+          format: date-time
+          description: Date/time when the Domain was created
+          readOnly: true
+        updated:
+          type: string
+          format: date-time
+          description: Date/time when the Domain was last updated
+          readOnly: true
+      required:
+        - id
+        - name
+        - siteId
+        - tenantId
+        - status
+        - created
+        - updated
+    DomainCreateRequest:
+      title: DomainCreateRequest
+      type: object
+      description: Request data for creating a tenant-owned DNS Domain at a Site.
+      examples:
+        - name: tenant.example.com
+          siteId: ea144def-d68f-44c3-9485-4b103fa2686f
+      properties:
+        name:
+          type: string
+          description: DNS name of the Domain
+        siteId:
+          type: string
+          format: uuid
+          description: ID of the Site where the Domain will be created
+      required:
+        - name
+        - siteId
     Subnet:
       title: Subnet
       type: object

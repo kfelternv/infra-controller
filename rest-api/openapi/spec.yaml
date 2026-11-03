@@ -23610,7 +23610,7 @@ components:
           format: uuid
         subdomainId:
           type: string
-          description: 'Optional ID of a tenant-owned REST Domain at the same Site. This can only be set when the Subnet is created.'
+          description: 'Optional ID of a Ready, tenant-owned REST Domain at the same Site. This can only be set when the Subnet is created.'
           format: uuid
         ipv4BlockId:
           type: string

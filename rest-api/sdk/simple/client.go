@@ -79,6 +79,9 @@ type ClientInterface interface {
 	GetDomain(ctx context.Context, id string) (*Domain, *ApiError)
 	DeleteDomain(ctx context.Context, id string) *ApiError
 
+	// Subnet management interfaces
+	CreateSubnet(ctx context.Context, request SubnetCreateRequest) (*standard.Subnet, *ApiError)
+
 	// VPC management interfaces
 	CreateVpc(ctx context.Context, request VpcCreateRequest) (*Vpc, *ApiError)
 	GetVpcs(ctx context.Context, vpcFilter *VpcFilter, paginationFilter *PaginationFilter) ([]Vpc, *standard.PaginationResponse, *ApiError)
@@ -643,6 +646,17 @@ func (c *Client) DeleteDomain(ctx context.Context, id string) *ApiError {
 	logger.Info().Msgf("Deleting Domain for org: %s", c.Config.Org)
 
 	return NewDomainManager(c).Delete(ctx, id)
+}
+
+// Subnet
+func (c *Client) CreateSubnet(ctx context.Context, request SubnetCreateRequest) (*standard.Subnet, *ApiError) {
+	ctx = WithLogger(ctx, c.Logger)
+	ctx = context.WithValue(ctx, standard.ContextAccessToken, c.Config.Token)
+
+	logger := LoggerFromContext(ctx)
+	logger.Info().Msgf("Creating Subnet for org: %s", c.Config.Org)
+
+	return NewSubnetManager(c).Create(ctx, request)
 }
 
 // VPC

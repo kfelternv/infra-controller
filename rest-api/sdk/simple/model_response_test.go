@@ -121,3 +121,31 @@ func TestClientDomainOperations_RejectInvalidSuccessResponses(t *testing.T) {
 		assert.Equal(t, http.StatusNotFound, apiErr.Code)
 	})
 }
+
+func TestClientSubnetOperations_RejectInvalidSuccessResponses(t *testing.T) {
+	ctx := context.Background()
+	bodies := map[string]string{"missing required subdomainId": subnetWithoutSubdomainJSON}
+	for name, body := range invalidModelBodies {
+		bodies[name] = body
+	}
+	domainID := "domain-1"
+	createRequest := SubnetCreateRequest{Name: "tenant-net", VpcID: "vpc-1", SubdomainID: &domainID, IPv4BlockID: "block-1", PrefixLength: 24}
+
+	for name, body := range bodies {
+		t.Run("CreateSubnet "+name, func(t *testing.T) {
+			subnet, apiErr := newSimpleTestClient(serveStatusBody(t, http.StatusCreated, body).URL).CreateSubnet(ctx, createRequest)
+			assert.Nil(t, subnet)
+			requireInvalidResponse(t, apiErr)
+		})
+	}
+
+	t.Run("valid Subnet responses succeed", func(t *testing.T) {
+		created, apiErr := newSimpleTestClient(serveStatusBody(t, http.StatusCreated, validSubnetResponseJSON).URL).CreateSubnet(ctx, createRequest)
+		require.Nil(t, apiErr)
+		require.NotNil(t, created)
+		assert.Equal(t, "subnet-1", created.GetId())
+		assert.Equal(t, "domain-1", created.GetSubdomainId())
+
+	})
+
+}

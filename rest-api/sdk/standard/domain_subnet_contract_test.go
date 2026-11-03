@@ -242,3 +242,65 @@ func newSDKContractClient(transport *sdkContractTransport) *APIClient {
 	configuration.HTTPClient = &http.Client{Transport: transport}
 	return NewAPIClient(configuration)
 }
+
+func TestSubnetCreateRequest_MarshalJSON(t *testing.T) {
+	subdomainID := "domain-id"
+	tests := []struct {
+		name        string
+		subdomainID *string
+	}{
+		{name: "omitted"},
+		{name: "set", subdomainID: &subdomainID},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			request := NewSubnetCreateRequest("tenant-subnet", "vpc-id", "ip-block-id", 24)
+			if tt.subdomainID != nil {
+				request.SetSubdomainId(*tt.subdomainID)
+			}
+
+			encoded, err := json.Marshal(request)
+			require.NoError(t, err)
+
+			var body map[string]any
+			require.NoError(t, json.Unmarshal(encoded, &body))
+			if tt.subdomainID == nil {
+				require.NotContains(t, body, "subdomainId")
+				return
+			}
+			require.Equal(t, *tt.subdomainID, body["subdomainId"])
+		})
+	}
+}
+
+func TestSubnet_UnmarshalJSON(t *testing.T) {
+	t.Run("accepts and preserves explicit null subdomain", func(t *testing.T) {
+		var subnet Subnet
+		require.NoError(t, json.Unmarshal([]byte(subnetResponse), &subnet))
+
+		subdomainID, set := subnet.GetSubdomainIdOk()
+		require.True(t, set)
+		require.Nil(t, subdomainID)
+
+		encoded, err := json.Marshal(subnet)
+		require.NoError(t, err)
+
+		var response map[string]any
+		require.NoError(t, json.Unmarshal(encoded, &response))
+		require.Contains(t, response, "subdomainId")
+		require.Nil(t, response["subdomainId"])
+	})
+
+	t.Run("rejects missing required subdomain", func(t *testing.T) {
+		var response map[string]any
+		require.NoError(t, json.Unmarshal([]byte(subnetResponse), &response))
+		delete(response, "subdomainId")
+
+		missingSubdomain, err := json.Marshal(response)
+		require.NoError(t, err)
+
+		var subnet Subnet
+		require.ErrorContains(t, json.Unmarshal(missingSubdomain, &subnet), "required property subdomainId")
+	})
+}

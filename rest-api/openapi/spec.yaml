@@ -2924,10 +2924,10 @@ paths:
         intent returns the same reserved Domain (202 while Pending, 200 once
         Ready), not a new Core Domain or an adoption by DNS name. After 202,
         poll GET on the returned Domain ID until status is Ready or Error.
-        Error is terminal and
+        Only Ready may be used as a Subnet subdomainId. Error is terminal and
         unusable: an identical create retry returns 409; an authorized caller
         can delete the owned REST Domain ID for that Site before retrying a
-        new create. Pending and Deleting are unfinished operations;
+        new create. Pending and Deleting are also unusable for Subnet creation;
         a 504 does not prove that a Core write
         was rolled back. A create timeout at the Core proxy normally returns
         202 Pending here, not 504. Tenant-managed DNS zones cannot claim a
@@ -2963,7 +2963,7 @@ paths:
               schema:
                 $ref: '#/components/schemas/Domain'
         '202':
-          description: Pending, reserved Domain identity; Core creation is not yet confirmed
+          description: Pending, reserved Domain identity; not yet usable as subdomainId
           content:
             application/json:
               schema:
@@ -4527,8 +4527,10 @@ paths:
                   value:
                     - id: 497f6eca-6276-4993-bfeb-53cbbbba6f08
                       name: spark-gpu-net
+                      description: null
                       siteId: ea144def-d68f-44c3-9485-4b103fa2686f
                       vpcId: 5e28ad7c-5fb7-46d6-a28a-fc0ba6fdc4a3
+                      subdomainId: null
                       controllerNetworkSegmentId: abe7b0e8-67db-4e89-903e-fc4f2bd7f034
                       ipv4Prefix: 202.168.16.0
                       ipv4BlockId: 8c1d1a06-90a2-4863-8ee1-6029265b9f0a
@@ -4539,6 +4541,7 @@ paths:
                       prefixLength: 20
                       routingType: Public
                       status: Ready
+                      mtu: 1500
                       statusHistory:
                         - status: Ready
                           message: Subnet has been successfully provisioned on Site
@@ -4647,8 +4650,10 @@ paths:
                   value:
                     id: 497f6eca-6276-4993-bfeb-53cbbbba6f08
                     name: spark-gpu-net
+                    description: null
                     siteId: ea144def-d68f-44c3-9485-4b103fa2686f
                     vpcId: 5e28ad7c-5fb7-46d6-a28a-fc0ba6fdc4a3
+                    subdomainId: null
                     controllerNetworkSegmentId: null
                     ipv4Prefix: 202.168.16.0
                     ipv4BlockId: 8c1d1a06-90a2-4863-8ee1-6029265b9f0a
@@ -4659,6 +4664,7 @@ paths:
                     prefixLength: 20
                     routingType: Public
                     status: Pending
+                    mtu: 1500
                     statusHistory:
                       - status: Pending
                         message: 'Request received, pending processing'
@@ -4721,8 +4727,10 @@ paths:
                   value:
                     id: 497f6eca-6276-4993-bfeb-53cbbbba6f08
                     name: spark-gpu-net
+                    description: null
                     siteId: ea144def-d68f-44c3-9485-4b103fa2686f
                     vpcId: 5e28ad7c-5fb7-46d6-a28a-fc0ba6fdc4a3
+                    subdomainId: 3c5a130c-6545-42cf-ae41-14236b70d05a
                     controllerNetworkSegmentId: abe7b0e8-67db-4e89-903e-fc4f2bd7f034
                     ipv4Prefix: 202.168.16.0
                     ipv4BlockId: 8c1d1a06-90a2-4863-8ee1-6029265b9f0a
@@ -4733,6 +4741,7 @@ paths:
                     prefixLength: 20
                     routingType: Public
                     status: Ready
+                    mtu: 1500
                     statusHistory:
                       - status: Ready
                         message: Subnet has been successfully provisioned on Site
@@ -4801,6 +4810,7 @@ paths:
                     description: Subnet for dedicated GPU nodes
                     siteId: ea144def-d68f-44c3-9485-4b103fa2686f
                     vpcId: 5e28ad7c-5fb7-46d6-a28a-fc0ba6fdc4a3
+                    subdomainId: null
                     controllerNetworkSegmentId: null
                     ipv4Prefix: 212.168.0.250
                     ipv4BlockId: 8c1d1a06-90a2-4863-8ee1-6029265b9f0a
@@ -4811,6 +4821,7 @@ paths:
                     prefixLength: 20
                     routingType: Public
                     status: Pending
+                    mtu: 1500
                     statusHistory:
                       - status: Pending
                         message: 'Request received, pending processing'
@@ -23316,7 +23327,7 @@ components:
         status:
           type: string
           enum: [Pending, Ready, Deleting, Error]
-          description: Ready confirms Core creation. Pending and Deleting are durable retry states.
+          description: Only Ready Domains can be used as a Subnet subdomainId. Pending and Deleting are durable retry states.
           readOnly: true
         created:
           type: string
@@ -23358,12 +23369,25 @@ components:
       title: Subnet
       type: object
       description: Subnets are network grouping constructs for baremetal machines.
+      x-go-has-nullable-required-properties: true
+      x-go-nullable-required-properties:
+        - description
+        - subdomainId
+        - controllerNetworkSegmentId
+        - ipv4Prefix
+        - ipv4BlockId
+        - ipv4Gateway
+        - ipv6Prefix
+        - ipv6BlockId
+        - ipv6Gateway
+        - routingType
       examples:
         - id: 497f6eca-6276-4993-bfeb-53cbbbba6f08
           name: spark-gpu-net
           description: Subnet for GPU nodes
           siteId: ea144def-d68f-44c3-9485-4b103fa2686f
           vpcId: 5e28ad7c-5fb7-46d6-a28a-fc0ba6fdc4a3
+          subdomainId: 3c5a130c-6545-42cf-ae41-14236b70d05a
           controllerNetworkSegmentId: abe7b0e8-67db-4e89-903e-fc4f2bd7f034
           ipv4Prefix: 204.168.0.250
           ipv4BlockId: 8c1d1a06-90a2-4863-8ee1-6029265b9f0a
@@ -23374,6 +23398,7 @@ components:
           prefixLength: 20
           routingType: Public
           status: Pending
+          mtu: 1500
           statusHistory:
             - status: Pending
               message: 'Request received, pending processing'
@@ -23386,6 +23411,7 @@ components:
           description: Provisioned subnet with IPv4 usage (includeUsageStats=true)
           siteId: ea144def-d68f-44c3-9485-4b103fa2686f
           vpcId: 5e28ad7c-5fb7-46d6-a28a-fc0ba6fdc4a3
+          subdomainId: null
           controllerNetworkSegmentId: abe7b0e8-67db-4e89-903e-fc4f2bd7f034
           ipv4Prefix: 10.217.98.64
           ipv4BlockId: 8c1d1a06-90a2-4863-8ee1-6029265b9f0a
@@ -23396,6 +23422,7 @@ components:
           prefixLength: 28
           routingType: Public
           status: Ready
+          mtu: 1500
           usageStats:
             availableIPs: 16
             acquiredIPs: 6
@@ -23437,6 +23464,12 @@ components:
         vpcId:
           type: string
           description: 'ID of the VPC containing the Subnet'
+          format: uuid
+        subdomainId:
+          type:
+            - string
+            - 'null'
+          description: 'ID of the tenant-owned REST Domain assigned when the Subnet was created'
           format: uuid
         controllerNetworkSegmentId:
           type:
@@ -23521,6 +23554,26 @@ components:
           description: 'Date/time when the Subnet was last updated'
           format: date-time
           readOnly: true
+      required:
+        - id
+        - name
+        - description
+        - siteId
+        - vpcId
+        - subdomainId
+        - controllerNetworkSegmentId
+        - ipv4Prefix
+        - ipv4BlockId
+        - ipv4Gateway
+        - ipv6Prefix
+        - ipv6BlockId
+        - ipv6Gateway
+        - prefixLength
+        - routingType
+        - status
+        - statusHistory
+        - created
+        - updated
     SubnetStatus:
       title: SubnetStatus
       type: string
@@ -23554,6 +23607,10 @@ components:
         vpcId:
           type: string
           description: 'ID of the Ethernet virtualizer VPC containing the Subnet'
+          format: uuid
+        subdomainId:
+          type: string
+          description: 'Optional ID of a tenant-owned REST Domain at the same Site. This can only be set when the Subnet is created.'
           format: uuid
         ipv4BlockId:
           type: string

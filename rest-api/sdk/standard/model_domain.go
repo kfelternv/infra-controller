@@ -33,7 +33,7 @@ type Domain struct {
 	SiteId string `json:"siteId"`
 	// ID of the Tenant that owns the Domain
 	TenantId string `json:"tenantId"`
-	// Ready confirms Core creation. Pending and Deleting are durable retry states.
+	// Only Ready Domains can be used as a Subnet subdomainId. Pending and Deleting are durable retry states.
 	Status string `json:"status"`
 	// Date/time when the Domain was created
 	Created time.Time `json:"created"`

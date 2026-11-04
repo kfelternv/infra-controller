@@ -349,7 +349,10 @@ impl InternalRBACRules {
         x.perm("FindExploredManagedHostsByIds", vec![ForgeAdminCLI, Flow]);
         x.perm("FindExploredMlxDeviceHostIds", vec![ForgeAdminCLI]);
         x.perm("FindExploredMlxDevicesByIds", vec![ForgeAdminCLI]);
-        x.perm("AdminForceDeleteMachine", vec![ForgeAdminCLI, Machineatron]);
+        x.perm(
+            "AdminForceDeleteMachine",
+            vec![ForgeAdminCLI, Machineatron, SiteAgent],
+        );
         x.perm("AdminFindReservedAddressIds", vec![ForgeAdminCLI]);
         x.perm("AdminFindReservedAddressesByIds", vec![ForgeAdminCLI]);
         x.perm("AdminReleaseReservedAddresses", vec![ForgeAdminCLI]);
@@ -1875,6 +1878,7 @@ mod rbac_rule_tests {
 
         // REST admin operations proxy to Core as the site agent (issue #4597).
         for method in [
+            "AdminForceDeleteMachine",
             "AdminBmcReset",
             "AdminPowerControl",
             "TriggerDpuReprovisioning",

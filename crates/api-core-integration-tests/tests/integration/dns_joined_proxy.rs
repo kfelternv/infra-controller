@@ -8,11 +8,13 @@
 //! No shared service or Temporal frontend is used.
 use std::net::TcpListener;
 use std::path::Path;
-use std::process::Command;
+use std::time::Duration;
 
 use carbide_authn::middleware::Principal;
 use carbide_test_harness::prelude::*;
 use rpc::forge::forge_server::Forge;
+use sqlx::ConnectOptions;
+use tokio::process::Command;
 use tonic::{Request, Status};
 
 #[test]
@@ -85,11 +87,14 @@ async fn domain_rest_site_core_joined_cancellation_body(pool: PgPool) {
         .unwrap_or_else(|| db_options.get_host().to_owned());
     let db_port = db_options.get_port().to_string();
     let db_user = db_options.get_username().to_owned();
-    let result = tokio::task::spawn_blocking(move || {
-        Command::new("timeout")
+    let db_url = db_options.to_url_lossy();
+    let db_password = urlencoding::decode(db_url.password().unwrap_or_default())
+        .expect("SQLx password encoding")
+        .into_owned();
+    let result = tokio::time::timeout(
+        Duration::from_secs(180),
+        Command::new("go")
             .args([
-                "180s",
-                "go",
                 "test",
                 "-p",
                 "1",
@@ -106,13 +111,15 @@ async fn domain_rest_site_core_joined_cancellation_body(pool: PgPool) {
             .env("PGHOST", db_host)
             .env("PGPORT", db_port)
             .env("PGUSER", db_user)
+            .env("PGPASSWORD", db_password)
             .env("CORE_JOINED_ADDR", addr.to_string())
             .env("CORE_JOINED_RESULT", result_path)
-            .output()
-            .expect("go executable/timeout fixture setup")
-    })
+            .kill_on_drop(true)
+            .output(),
+    )
     .await
-    .expect("fixture subprocess join");
+    .expect("Go fixture exceeded its 180-second deadline")
+    .expect("start Go fixture subprocess");
     server.abort();
     assert!(
         result.status.success(),

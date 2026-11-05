@@ -163,3 +163,22 @@ func TestAPIDomain_MarshalJSON(t *testing.T) {
 		assert.Contains(t, got, key)
 	}
 }
+
+func TestMapDomainStatus(t *testing.T) {
+	for _, tc := range []struct {
+		stored string
+		public string
+	}{
+		{cdbm.DomainStatusPending, "Pending"},
+		{cdbm.DomainStatusRegistering, "Pending"},
+		{cdbm.DomainStatusRejecting, "Pending"},
+		{cdbm.DomainStatusReady, "Ready"},
+		{cdbm.DomainStatusDeleting, "Deleting"},
+		{cdbm.DomainStatusError, "Error"},
+		{"unknown legacy status", "Error"},
+	} {
+		t.Run(tc.stored, func(t *testing.T) {
+			require.Equal(t, tc.public, mapDomainStatus(tc.stored))
+		})
+	}
+}

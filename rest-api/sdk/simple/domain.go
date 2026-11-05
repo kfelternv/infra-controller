@@ -70,8 +70,8 @@ func (dm DomainManager) Create(ctx context.Context, request DomainCreateRequest)
 	return &domain, nil
 }
 
-// GetDomains returns tenant-owned Domains, optionally filtered by Site.
-func (dm DomainManager) GetDomains(ctx context.Context, domainFilter *DomainFilter) ([]Domain, *ApiError) {
+// GetDomains returns one page of tenant-owned Domains and its pagination metadata.
+func (dm DomainManager) GetDomains(ctx context.Context, domainFilter *DomainFilter, paginationFilter *PaginationFilter) ([]Domain, *standard.PaginationResponse, *ApiError) {
 	ctx = WithLogger(ctx, dm.client.Logger)
 	ctx = context.WithValue(ctx, standard.ContextAccessToken, dm.client.Config.Token)
 
@@ -82,16 +82,32 @@ func (dm DomainManager) GetDomains(ctx context.Context, domainFilter *DomainFilt
 	if domainFilter != nil && domainFilter.TenantID != nil {
 		request = request.TenantId(*domainFilter.TenantID)
 	}
+	if paginationFilter != nil {
+		if paginationFilter.PageNumber != nil {
+			request = request.PageNumber(int32(*paginationFilter.PageNumber))
+		}
+		if paginationFilter.PageSize != nil {
+			request = request.PageSize(int32(*paginationFilter.PageSize))
+		}
+		if paginationFilter.OrderBy != nil {
+			request = request.OrderBy(*paginationFilter.OrderBy)
+		}
+	}
 	apiDomains, response, err := request.Execute()
-	if apiErr := modelResponseError("Domain list", response, err, apiDomains != nil); apiErr != nil {
-		return nil, apiErr
+	apiErr := modelResponseError("Domain list", response, err, apiDomains != nil)
+	if apiErr != nil {
+		return nil, nil, apiErr
 	}
 
 	domains := make([]Domain, 0, len(apiDomains))
 	for _, apiDomain := range apiDomains {
 		domains = append(domains, domainFromStandard(apiDomain))
 	}
-	return domains, nil
+	paginationResponse, err := standard.GetPaginationResponse(ctx, response)
+	if err != nil {
+		return nil, nil, &ApiError{Code: http.StatusInternalServerError, Message: "failed to extract pagination: " + err.Error()}
+	}
+	return domains, paginationResponse, nil
 }
 
 // Get returns a Domain by ID.

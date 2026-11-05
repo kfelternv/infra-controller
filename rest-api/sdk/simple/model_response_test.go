@@ -33,6 +33,7 @@ func serveStatusBody(t *testing.T, status int, body string) *httptest.Server {
 	t.Helper()
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
+		w.Header().Set("X-Pagination", `{"pageNumber":1,"pageSize":20,"total":1}`)
 		w.WriteHeader(status)
 		_, _ = io.WriteString(w, body)
 	}))
@@ -79,7 +80,7 @@ func TestClientDomainOperations_RejectInvalidSuccessResponses(t *testing.T) {
 	} {
 		t.Run("GetDomains "+name, func(t *testing.T) {
 			client := newSimpleTestClient(serveStatusBody(t, http.StatusOK, body).URL)
-			domains, apiErr := client.GetDomains(ctx, nil)
+			domains, _, apiErr := client.GetDomains(ctx, nil, nil)
 			assert.Nil(t, domains)
 			requireInvalidResponse(t, apiErr)
 		})
@@ -87,7 +88,7 @@ func TestClientDomainOperations_RejectInvalidSuccessResponses(t *testing.T) {
 
 	t.Run("GetDomains empty array is a valid empty result", func(t *testing.T) {
 		client := newSimpleTestClient(serveStatusBody(t, http.StatusOK, `[]`).URL)
-		domains, apiErr := client.GetDomains(ctx, nil)
+		domains, _, apiErr := client.GetDomains(ctx, nil, nil)
 		require.Nil(t, apiErr)
 		assert.NotNil(t, domains)
 		assert.Empty(t, domains)
@@ -106,8 +107,8 @@ func TestClientDomainOperations_RejectInvalidSuccessResponses(t *testing.T) {
 		require.NotNil(t, domain)
 		assert.Equal(t, "domain-1", domain.ID)
 
-		domains, apiErr := newSimpleTestClient(serveStatusBody(t, http.StatusOK, "["+validDomainResponseJSON+"]").URL).
-			GetDomains(ctx, nil)
+		domains, _, apiErr := newSimpleTestClient(serveStatusBody(t, http.StatusOK, "["+validDomainResponseJSON+"]").URL).
+			GetDomains(ctx, nil, nil)
 		require.Nil(t, apiErr)
 		require.Len(t, domains, 1)
 		assert.Equal(t, "domain-1", domains[0].ID)

@@ -75,7 +75,7 @@ type ClientInterface interface {
 
 	// Domain management interfaces
 	CreateDomain(ctx context.Context, request DomainCreateRequest) (*Domain, *ApiError)
-	GetDomains(ctx context.Context, domainFilter *DomainFilter) ([]Domain, *ApiError)
+	GetDomains(ctx context.Context, domainFilter *DomainFilter, paginationFilter *PaginationFilter) ([]Domain, *standard.PaginationResponse, *ApiError)
 	GetDomain(ctx context.Context, id string) (*Domain, *ApiError)
 	DeleteDomain(ctx context.Context, id string) *ApiError
 
@@ -617,14 +617,14 @@ func (c *Client) CreateDomain(ctx context.Context, request DomainCreateRequest) 
 
 	return NewDomainManager(c).Create(ctx, request)
 }
-func (c *Client) GetDomains(ctx context.Context, domainFilter *DomainFilter) ([]Domain, *ApiError) {
+func (c *Client) GetDomains(ctx context.Context, domainFilter *DomainFilter, paginationFilter *PaginationFilter) ([]Domain, *standard.PaginationResponse, *ApiError) {
 	ctx = WithLogger(ctx, c.Logger)
 	ctx = context.WithValue(ctx, standard.ContextAccessToken, c.Config.Token)
 
 	logger := LoggerFromContext(ctx)
 	logger.Info().Msgf("Getting all Domains for org: %s", c.Config.Org)
 
-	return NewDomainManager(c).GetDomains(ctx, domainFilter)
+	return NewDomainManager(c).GetDomains(ctx, domainFilter, paginationFilter)
 }
 func (c *Client) GetDomain(ctx context.Context, id string) (*Domain, *ApiError) {
 	ctx = WithLogger(ctx, c.Logger)

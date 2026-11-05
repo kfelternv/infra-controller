@@ -262,11 +262,24 @@ func testGetAllSuggestions_SubnetAttachOnlyOffersEligibleSources(t *testing.T) {
 		"subnet attach-vpc-to attach-vpc-to-subnet",
 	} {
 		t.Run(commandName, func(t *testing.T) {
-			assert.Equal(
-				t,
-				[]string{commandName + " eligible-subnet"},
-				getAllSuggestions(session, commandName+" elig", []string{commandName}),
-			)
+			for _, tc := range []struct{ name, args, suffix string }{
+				{name: "bare resource", args: "elig", suffix: "eligible-subnet"},
+				{name: "separate flag values", args: "--vpc-id target --allow-replace false elig", suffix: "--vpc-id target --allow-replace false eligible-subnet"},
+				{name: "inline flag values", args: "--vpc-id=target --allow-replace=true elig", suffix: "--vpc-id=target --allow-replace=true eligible-subnet"},
+				{name: "complete flag value", args: "--vpc-id target ", suffix: "--vpc-id target eligible-subnet"},
+				{name: "incomplete flag value", args: "--vpc-id tar"},
+				{name: "unknown flag", args: "--unknown value elig"},
+				{name: "already complete resource", args: "eligible-subnet "},
+				{name: "flags after resource", args: "eligible-subnet --vpc-id target "},
+			} {
+				t.Run(tc.name, func(t *testing.T) {
+					var want []string
+					if tc.suffix != "" {
+						want = []string{commandName + " " + tc.suffix}
+					}
+					assert.Equal(t, want, getAllSuggestions(session, commandName+" "+tc.args, []string{commandName}))
+				})
+			}
 		})
 	}
 }

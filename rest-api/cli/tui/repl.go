@@ -565,6 +565,14 @@ func getAllSuggestions(s *Session, input string, cmdNames []string) []string {
 		canonicalCommandName = target
 	}
 	if canonicalCommandName == "subnet attach-vpc" {
+		info, found := generatedAutocompleteInfo("subnet attach-vpc-to attach-vpc-to-subnet")
+		if !found {
+			return nil
+		}
+		prefixArgs, completedPaths, argFilter, valid := generatedAutocompleteArguments(info, argPart)
+		if !valid || len(completedPaths) >= len(info.PathParameters) || strings.HasPrefix(argFilter, "-") {
+			return nil
+		}
 		// Match the command's Site-wide source discovery without leaking its
 		// wider cache into ordinary commands after completion returns.
 		if s.Scope.VpcID != "" {
@@ -589,7 +597,7 @@ func getAllSuggestions(s *Session, input string, cmdNames []string) []string {
 		if err != nil {
 			return nil
 		}
-		return resourceItemSuggestions(commandName, nil, items, argPart)
+		return resourceItemSuggestions(commandName, prefixArgs, items, argFilter)
 	}
 	if info, ok := generatedAutocompleteInfo(commandName); ok && len(info.PathParameters) > 0 {
 		return getGeneratedResourceSuggestions(s, info, argPart)

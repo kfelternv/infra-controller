@@ -358,6 +358,9 @@ func TestGetAllSuggestions(t *testing.T) {
 		{name: "GeneratedAssociationUsesParentScopedMachineNames", run: testGetAllSuggestions_GeneratedAssociationUsesParentScopedMachineNames},
 		{name: "PreservesManualAliasCompletion", run: testGetAllSuggestions_PreservesManualAliasCompletion},
 		{name: "SubnetAttachOnlyOffersEligibleSources", run: testGetAllSuggestions_SubnetAttachOnlyOffersEligibleSources},
+		{name: "SubnetAttachUsesSiteWideDiscovery", run: testGetAllSuggestions_SubnetAttachUsesSiteWideDiscovery},
+		{name: "SubnetAttachCancelsHTTP", run: testGetAllSuggestions_SubnetAttachCancelsHTTP},
+		{name: "CompletionDoesNotRefreshAuth", run: testGetAllSuggestions_CompletionDoesNotRefreshAuth},
 		{name: "GeneratedResourceAfterValueFlag", run: testGetAllSuggestions_GeneratedResourceAfterValueFlag},
 		{name: "SubnetAttachBoundsBlockingFetcher", run: testGetAllSuggestions_SubnetAttachBoundsBlockingFetcher},
 	} {

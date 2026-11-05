@@ -12,6 +12,7 @@ import (
 	"strconv"
 	"sync/atomic"
 	"testing"
+	"time"
 
 	appcli "github.com/NVIDIA/infra-controller/rest-api/cli/pkg"
 	"github.com/stretchr/testify/assert"
@@ -99,7 +100,49 @@ func TestSession_fetchDomains(t *testing.T) {
 	}{
 		{name: "Site scope pagination and cache", run: testSessionFetchDomainsUsesSiteScopeAndCache},
 		{name: "reject rows outside current Tenant", run: testSessionFetchDomainsRejectsRowsOutsideCurrentTenant},
+		{name: "cancel a later page without caching partial data", run: testSessionFetchDomainsCancelsLaterPage},
 	} {
 		t.Run(test.name, test.run)
+	}
+}
+
+func testSessionFetchDomainsCancelsLaterPage(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	requestedSecond := make(chan struct{}, 1)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		assert.Equal(t, "tenant-1", r.URL.Query().Get("tenantId"))
+		assert.Equal(t, "site-1", r.URL.Query().Get("siteId"))
+		w.Header().Set("Content-Type", "application/json")
+		w.Header().Set("X-Pagination", `{"total":101}`)
+		if r.URL.Query().Get("pageNumber") == "1" {
+			page := make([]map[string]string, 100)
+			for i := range page {
+				page[i] = map[string]string{"id": "domain-" + strconv.Itoa(i), "name": "tenant.example.com", "tenantId": "tenant-1", "siteId": "site-1", "status": "Ready"}
+			}
+			require.NoError(t, json.NewEncoder(w).Encode(page))
+			return
+		}
+		assert.Equal(t, "2", r.URL.Query().Get("pageNumber"))
+		requestedSecond <- struct{}{}
+		cancel()
+		select {
+		case <-r.Context().Done():
+		case <-time.After(time.Second):
+			_, _ = io.WriteString(w, `[]`)
+		}
+	}))
+	defer server.Close()
+	s := NewSession(appcli.NewClient(server.URL, "acme", "token", nil, false), "acme", "")
+	s.Scope.SiteID = "site-1"
+	s.Cache.Set("_tenant", []NamedItem{{Name: "acme", ID: "tenant-1"}})
+	domains, err := s.Resolver.Fetch(ctx, "domain")
+	require.ErrorIs(t, err, context.Canceled)
+	assert.Nil(t, domains, "a canceled later page must not become a cached partial list")
+	assert.Nil(t, s.Cache.Get("domain"))
+	select {
+	case <-requestedSecond:
+	default:
+		t.Error("did not exercise the later page")
 	}
 }

@@ -5,6 +5,7 @@ package cli
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -120,8 +121,14 @@ func (c *Client) rewriteAPIName(path string) string {
 
 // Do executes an HTTP request against the API.
 func (c *Client) Do(method, pathTemplate string, pathParams, queryParams map[string]string, body []byte) ([]byte, http.Header, error) {
+	return c.DoWithContext(context.Background(), method, pathTemplate, pathParams, queryParams, body)
+}
+
+// DoWithContext executes a request and its retries using the caller's context.
+// A configured TokenRefresh callback is synchronous and must honor its own cancellation policy.
+func (c *Client) DoWithContext(ctx context.Context, method, pathTemplate string, pathParams, queryParams map[string]string, body []byte) ([]byte, http.Header, error) {
 	doClient := c
-	respBody, respHeader, err := doClient.do(method, pathTemplate, pathParams, queryParams, body)
+	respBody, respHeader, err := doClient.do(ctx, method, pathTemplate, pathParams, queryParams, body)
 	streamErr, isHTTP2StreamError := errors.AsType[http2StreamError](err)
 	if method == http.MethodGet && isHTTP2StreamError && streamErr.Code == http2InternalErrorCode {
 		var transport *http.Transport
@@ -145,7 +152,7 @@ func (c *Client) Do(method, pathTemplate string, pathParams, queryParams map[str
 			retryClient := *c
 			retryClient.HTTPClient = &httpClient
 			doClient = &retryClient
-			respBody, respHeader, err = doClient.do(method, pathTemplate, pathParams, queryParams, body)
+			respBody, respHeader, err = doClient.do(ctx, method, pathTemplate, pathParams, queryParams, body)
 		}
 	}
 	if isUnauthorizedError(err) && c.TokenRefresh != nil && !canReplayAfterAuthRefresh(method) {
@@ -163,6 +170,10 @@ func (c *Client) Do(method, pathTemplate string, pathParams, queryParams map[str
 
 	maxAttempts := c.authRetryMax()
 	for attempt := 1; attempt <= maxAttempts && isUnauthorizedError(err) && c.TokenRefresh != nil; attempt++ {
+		contextErr := ctx.Err()
+		if contextErr != nil {
+			return nil, nil, contextErr
+		}
 		apiErr := err.(*APIError)
 		c.notifyAuthRetry(AuthRetryEvent{
 			Action:      AuthRetryActionLogin,
@@ -179,6 +190,10 @@ func (c *Client) Do(method, pathTemplate string, pathParams, queryParams map[str
 		if token == "" {
 			return nil, nil, fmt.Errorf("refreshing auth token after unauthorized response: no token returned")
 		}
+		contextErr = ctx.Err()
+		if contextErr != nil {
+			return nil, nil, contextErr
+		}
 		c.Token = token
 		doClient.Token = token
 		c.notifyAuthRetry(AuthRetryEvent{
@@ -189,7 +204,7 @@ func (c *Client) Do(method, pathTemplate string, pathParams, queryParams map[str
 			Status:      apiErr.Status,
 			Method:      method,
 		})
-		respBody, respHeader, err = doClient.do(method, pathTemplate, pathParams, queryParams, body)
+		respBody, respHeader, err = doClient.do(ctx, method, pathTemplate, pathParams, queryParams, body)
 	}
 	return respBody, respHeader, err
 }
@@ -216,7 +231,7 @@ func canReplayAfterAuthRefresh(method string) bool {
 	}
 }
 
-func (c *Client) do(method, pathTemplate string, pathParams, queryParams map[string]string, body []byte) ([]byte, http.Header, error) {
+func (c *Client) do(ctx context.Context, method, pathTemplate string, pathParams, queryParams map[string]string, body []byte) ([]byte, http.Header, error) {
 	path := pathTemplate
 	path = strings.ReplaceAll(path, "{org}", url.PathEscape(c.Org))
 	for k, v := range pathParams {
@@ -238,7 +253,7 @@ func (c *Client) do(method, pathTemplate string, pathParams, queryParams map[str
 		bodyReader = bytes.NewReader(body)
 	}
 
-	req, err := http.NewRequest(method, reqURL, bodyReader)
+	req, err := http.NewRequestWithContext(ctx, method, reqURL, bodyReader)
 	if err != nil {
 		return nil, nil, fmt.Errorf("creating request: %w", err)
 	}

@@ -1712,8 +1712,8 @@ func TestNewApp_MachineValidationReadCommandsExecuteRESTRequests(t *testing.T) {
 	}
 }
 
-// TestNewApp keeps the generated power-state command separate
-// from the existing mutation alias, so inspecting power cannot change it.
+// TestNewApp exercises public argument parsing and the exact HTTP operation.
+// New tenant commands retain the existing fabric and mutation command paths.
 func TestNewApp(t *testing.T) {
 	clearAllNicoEnv(t)
 	previousConfigPath := configOverridePath
@@ -1727,6 +1727,8 @@ func TestNewApp(t *testing.T) {
 		command   []string
 		args      []string
 		method    string
+		path      string
+		response  string
 		wantQuery string
 		wantBody  string
 	}{
@@ -1737,6 +1739,7 @@ func TestNewApp(t *testing.T) {
 			command:   []string{"tray", "power-state", "get"},
 			args:      []string{"--site-id", siteID, trayID},
 			method:    http.MethodGet,
+			path:      "tray/" + trayID + "/power",
 			wantQuery: "siteId=" + siteID,
 		},
 		{
@@ -1746,8 +1749,15 @@ func TestNewApp(t *testing.T) {
 			command:  []string{"tray", "power"},
 			args:     []string{"--site-id", siteID, "--state", "On", trayID},
 			method:   http.MethodPatch,
+			path:     "tray/" + trayID + "/power",
 			wantBody: `{"siteId":"550e8400-e29b-41d4-a716-446655440000","state":"On"}`,
 		},
+		{name: "tenant DNS get", command: []string{"dns-domain", "get"}, args: []string{"domain-1"}, method: http.MethodGet, path: "domain/domain-1"},
+		{name: "existing fabric Domain get", command: []string{"domain", "get"}, args: []string{"--site-id", siteID, "fabric-1"}, method: http.MethodGet, path: "domain/nvlink/fabric-1", wantQuery: "siteId=" + siteID},
+		{name: "ordinary VPC list remains optional", command: []string{"vpc", "list"}, args: []string{"--site-id", siteID}, method: http.MethodGet, path: "vpc", wantQuery: "siteId=" + siteID, response: "[]"},
+		{name: "VPC list carries Tenant assertion", command: []string{"vpc", "list"}, args: []string{"--site-id", siteID, "--tenant-id", siteID}, method: http.MethodGet, path: "vpc", wantQuery: "siteId=" + siteID + "&tenantId=" + siteID, response: "[]"},
+		{name: "concise attachment command is executable", command: []string{"subnet", "attach-vpc"}, args: []string{"--vpc-id", "vpc-target", "--allow-replace", "true", "subnet-1"}, method: http.MethodPost, path: "subnet/subnet-1/attach-vpc", wantBody: `{"vpcId":"vpc-target","allowReplace":true}`},
+		{name: "original attachment command remains executable", command: []string{"subnet", "attach-vpc-to", "attach-vpc-to-subnet"}, args: []string{"--vpc-id", "vpc-target", "--allow-replace", "false", "subnet-1"}, method: http.MethodPost, path: "subnet/subnet-1/attach-vpc", wantBody: `{"vpcId":"vpc-target","allowReplace":false}`},
 	}
 
 	for _, test := range tests {
@@ -1755,7 +1765,8 @@ func TestNewApp(t *testing.T) {
 			var requestCount atomic.Int32
 			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, request *http.Request) {
 				assert.Equal(t, test.method, request.Method)
-				assert.Equal(t, "/v2/org/test-org/nico/tray/"+trayID+"/power", request.URL.Path)
+				assert.Equal(t, "Bearer test-token", request.Header.Get("Authorization"))
+				assert.Equal(t, "/v2/org/test-org/nico/"+test.path, request.URL.Path)
 				assert.Equal(t, test.wantQuery, request.URL.RawQuery)
 				body, err := io.ReadAll(request.Body)
 				assert.NoError(t, err)
@@ -1766,7 +1777,11 @@ func TestNewApp(t *testing.T) {
 				}
 				requestCount.Add(1)
 				w.Header().Set("Content-Type", "application/json")
-				_, err = w.Write([]byte(`{}`))
+				response := test.response
+				if response == "" {
+					response = `{}`
+				}
+				_, err = w.Write([]byte(response))
 				assert.NoError(t, err)
 			}))
 			t.Cleanup(server.Close)

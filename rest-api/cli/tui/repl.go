@@ -540,6 +540,17 @@ func readLineWithSuggestions(s *Session, cmdNames []string) (_ string, err error
 }
 
 func getAllSuggestions(s *Session, input string, cmdNames []string) []string {
+	// Completion runs synchronously in the input loop. It must not launch an
+	// interactive login while the user is typing; explicit commands retain retries.
+	if s.Client != nil {
+		originalClient := s.Client
+		completionClient := *originalClient
+		completionClient.TokenRefresh = nil
+		completionClient.AuthRetryNotify = nil
+		s.Client = &completionClient
+		defer func() { s.Client = originalClient }()
+	}
+
 	if input == "" {
 		return nil
 	}
@@ -554,6 +565,17 @@ func getAllSuggestions(s *Session, input string, cmdNames []string) []string {
 		canonicalCommandName = target
 	}
 	if canonicalCommandName == "subnet attach-vpc" {
+		// Match the command's Site-wide source discovery without leaking its
+		// wider cache into ordinary commands after completion returns.
+		if s.Scope.VpcID != "" {
+			vpcID, vpcName := s.Scope.VpcID, s.Scope.VpcName
+			s.Scope.VpcID, s.Scope.VpcName = "", ""
+			s.Cache.InvalidateFiltered()
+			defer func() {
+				s.Scope.VpcID, s.Scope.VpcName = vpcID, vpcName
+				s.Cache.InvalidateFiltered()
+			}()
+		}
 		if strings.TrimSpace(s.Scope.SiteID) == "" {
 			return nil
 		}

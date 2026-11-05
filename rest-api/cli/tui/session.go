@@ -123,6 +123,10 @@ func (s *Session) registerFetchers() {
 
 // fetchAll fetches all pages from a list endpoint and returns raw JSON objects.
 func (s *Session) fetchAll(path string, extraQuery map[string]string) ([]map[string]interface{}, error) {
+	return s.fetchAllWithContext(context.Background(), path, extraQuery)
+}
+
+func (s *Session) fetchAllWithContext(ctx context.Context, path string, extraQuery map[string]string) ([]map[string]interface{}, error) {
 	q := map[string]string{"pageSize": "100"}
 	for k, v := range extraQuery {
 		q[k] = v
@@ -130,7 +134,7 @@ func (s *Session) fetchAll(path string, extraQuery map[string]string) ([]map[str
 	var all []map[string]interface{}
 	for page := 1; page <= 1000; page++ {
 		q["pageNumber"] = strconv.Itoa(page)
-		body, hdrs, err := s.Client.Do("GET", path, nil, q, nil)
+		body, hdrs, err := s.Client.DoWithContext(ctx, "GET", path, nil, q, nil)
 		if err != nil {
 			return nil, err
 		}
@@ -223,11 +227,11 @@ func (s *Session) buildMachineVPCNames(ctx context.Context) map[string]string {
 }
 
 // getTenantID returns the current tenant ID, caching it for the session.
-func (s *Session) getTenantID(_ context.Context) (string, error) {
+func (s *Session) getTenantID(ctx context.Context) (string, error) {
 	if cached := s.Cache.LookupByName("_tenant", s.Org); cached != nil {
 		return cached.ID, nil
 	}
-	body, _, err := s.Client.Do("GET", apiPath(s, "tenant/current"), nil, nil, nil)
+	body, _, err := s.Client.DoWithContext(ctx, "GET", apiPath(s, "tenant/current"), nil, nil, nil)
 	if err != nil {
 		return "", fmt.Errorf("fetching tenant: %w", err)
 	}
@@ -419,7 +423,7 @@ func (s *Session) fetchDomains(ctx context.Context) ([]NamedItem, error) {
 	if s.Scope.SiteID != "" {
 		query["siteId"] = s.Scope.SiteID
 	}
-	domains, err := s.fetchAll(apiPath(s, "domain"), query)
+	domains, err := s.fetchAllWithContext(ctx, apiPath(s, "domain"), query)
 	if err != nil {
 		return nil, err
 	}
@@ -453,7 +457,7 @@ func (s *Session) fetchVPCs(ctx context.Context) ([]NamedItem, error) {
 	if s.Scope.SiteID != "" {
 		q["siteId"] = s.Scope.SiteID
 	}
-	items, err := s.fetchAll(apiPath(s, "vpc"), q)
+	items, err := s.fetchAllWithContext(ctx, apiPath(s, "vpc"), q)
 	if err != nil {
 		return nil, err
 	}
@@ -478,7 +482,7 @@ func (s *Session) fetchVPCs(ctx context.Context) ([]NamedItem, error) {
 	return result, nil
 }
 
-func (s *Session) fetchSubnets(_ context.Context) ([]NamedItem, error) {
+func (s *Session) fetchSubnets(ctx context.Context) ([]NamedItem, error) {
 	q := map[string]string{"includeUsageStats": "true"}
 	if s.Scope.SiteID != "" {
 		q["siteId"] = s.Scope.SiteID
@@ -486,7 +490,7 @@ func (s *Session) fetchSubnets(_ context.Context) ([]NamedItem, error) {
 	if s.Scope.VpcID != "" {
 		q["vpcId"] = s.Scope.VpcID
 	}
-	items, err := s.fetchAll(apiPath(s, "subnet"), q)
+	items, err := s.fetchAllWithContext(ctx, apiPath(s, "subnet"), q)
 	if err != nil {
 		return nil, err
 	}

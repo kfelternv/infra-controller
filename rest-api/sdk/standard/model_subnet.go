@@ -52,7 +52,7 @@ type Subnet struct {
 	// Address of the IPv6 gateway in the Subnet
 	Ipv6Gateway NullableString `json:"ipv6Gateway"`
 	// Maximum Transmission Unit size in bytes. This property is system-determined and read-only.
-	Mtu *int32 `json:"mtu,omitempty"`
+	Mtu NullableInt32 `json:"mtu"`
 	// Max value depends on prefix length of parent IP Block
 	PrefixLength int32 `json:"prefixLength"`
 	// Routing type of the Subnet
@@ -75,7 +75,7 @@ type _Subnet Subnet
 // This constructor will assign default values to properties that have it defined,
 // and makes sure properties required by API are set, but the set of arguments
 // will change when the set of required properties is changed
-func NewSubnet(id string, name string, description NullableString, siteId string, vpcId string, subdomainId NullableString, controllerNetworkSegmentId NullableString, ipv4Prefix NullableString, ipv4BlockId NullableString, ipv4Gateway NullableString, ipv6Prefix NullableString, ipv6BlockId NullableString, ipv6Gateway NullableString, prefixLength int32, routingType NullableString, status SubnetStatus, statusHistory []StatusDetail, created time.Time, updated time.Time) *Subnet {
+func NewSubnet(id string, name string, description NullableString, siteId string, vpcId string, subdomainId NullableString, controllerNetworkSegmentId NullableString, ipv4Prefix NullableString, ipv4BlockId NullableString, ipv4Gateway NullableString, ipv6Prefix NullableString, ipv6BlockId NullableString, ipv6Gateway NullableString, mtu NullableInt32, prefixLength int32, routingType NullableString, status SubnetStatus, statusHistory []StatusDetail, created time.Time, updated time.Time) *Subnet {
 	this := Subnet{}
 	this.Id = id
 	this.Name = name
@@ -90,6 +90,7 @@ func NewSubnet(id string, name string, description NullableString, siteId string
 	this.Ipv6Prefix = ipv6Prefix
 	this.Ipv6BlockId = ipv6BlockId
 	this.Ipv6Gateway = ipv6Gateway
+	this.Mtu = mtu
 	this.PrefixLength = prefixLength
 	this.RoutingType = routingType
 	this.Status = status
@@ -437,36 +438,30 @@ func (o *Subnet) SetIpv6Gateway(v string) {
 	o.Ipv6Gateway.Set(&v)
 }
 
-// GetMtu returns the Mtu field value if set, zero value otherwise.
+// GetMtu returns the Mtu field value
+// If the value is explicit nil, the zero value for int32 will be returned
 func (o *Subnet) GetMtu() int32 {
-	if o == nil || IsNil(o.Mtu) {
+	if o == nil || o.Mtu.Get() == nil {
 		var ret int32
 		return ret
 	}
-	return *o.Mtu
+
+	return *o.Mtu.Get()
 }
 
-// GetMtuOk returns a tuple with the Mtu field value if set, nil otherwise
+// GetMtuOk returns a tuple with the Mtu field value
 // and a boolean to check if the value has been set.
+// NOTE: If the value is an explicit nil, `nil, true` will be returned
 func (o *Subnet) GetMtuOk() (*int32, bool) {
-	if o == nil || IsNil(o.Mtu) {
+	if o == nil {
 		return nil, false
 	}
-	return o.Mtu, true
+	return o.Mtu.Get(), o.Mtu.IsSet()
 }
 
-// HasMtu returns a boolean if a field has been set.
-func (o *Subnet) HasMtu() bool {
-	if o != nil && !IsNil(o.Mtu) {
-		return true
-	}
-
-	return false
-}
-
-// SetMtu gets a reference to the given int32 and assigns it to the Mtu field.
+// SetMtu sets field value
 func (o *Subnet) SetMtu(v int32) {
-	o.Mtu = &v
+	o.Mtu.Set(&v)
 }
 
 // GetPrefixLength returns the PrefixLength field value
@@ -670,9 +665,7 @@ func (o Subnet) ToMap() (map[string]interface{}, error) {
 	toSerialize["ipv6Prefix"] = o.Ipv6Prefix.Get()
 	toSerialize["ipv6BlockId"] = o.Ipv6BlockId.Get()
 	toSerialize["ipv6Gateway"] = o.Ipv6Gateway.Get()
-	if !IsNil(o.Mtu) {
-		toSerialize["mtu"] = o.Mtu
-	}
+	toSerialize["mtu"] = o.Mtu.Get()
 	toSerialize["prefixLength"] = o.PrefixLength
 	toSerialize["routingType"] = o.RoutingType.Get()
 	toSerialize["status"] = o.Status
@@ -703,6 +696,7 @@ func (o *Subnet) UnmarshalJSON(data []byte) (err error) {
 		"ipv6Prefix",
 		"ipv6BlockId",
 		"ipv6Gateway",
+		"mtu",
 		"prefixLength",
 		"routingType",
 		"status",
@@ -730,6 +724,7 @@ func (o *Subnet) UnmarshalJSON(data []byte) (err error) {
 		"ipv6BlockId":                {},
 		"ipv6Gateway":                {},
 		"routingType":                {},
+		"mtu":                        {},
 	}
 	for _, requiredProperty := range requiredProperties {
 		_, nullable := nullableRequiredProperties[requiredProperty]

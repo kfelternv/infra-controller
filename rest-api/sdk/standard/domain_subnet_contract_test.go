@@ -42,7 +42,7 @@ const subnetResponse = `{
 	"prefixLength":24,
 	"routingType":null,
 	"status":"Ready",
-	"statusHistory":[],
+	"mtu":null,"statusHistory":[],
 	"created":"2026-09-02T12:00:00Z",
 	"updated":"2026-09-02T12:00:00Z"
 }`

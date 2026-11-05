@@ -8,6 +8,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -16,9 +17,9 @@ import (
 
 const (
 	validDomainResponseJSON = `{"id":"domain-1","name":"tenant.example.com","siteId":"site-1","tenantId":"tenant-1","status":"Ready","created":"2026-09-02T12:00:00Z","updated":"2026-09-02T12:00:00Z"}`
-	validSubnetResponseJSON = `{"id":"subnet-1","name":"tenant-net","description":null,"siteId":"site-1","vpcId":"vpc-1","subdomainId":"domain-1","controllerNetworkSegmentId":"controller-subnet-1","ipv4Prefix":"10.0.0.0","ipv4BlockId":"block-1","ipv4Gateway":"10.0.0.1","ipv6Prefix":null,"ipv6BlockId":null,"ipv6Gateway":null,"prefixLength":24,"routingType":"Public","status":"Ready","statusHistory":[],"created":"2026-09-02T00:00:00Z","updated":"2026-09-02T00:00:00Z"}`
+	validSubnetResponseJSON = `{"id":"subnet-1","name":"tenant-net","description":null,"siteId":"site-1","vpcId":"vpc-1","subdomainId":"domain-1","controllerNetworkSegmentId":"controller-subnet-1","ipv4Prefix":"10.0.0.0","ipv4BlockId":"block-1","ipv4Gateway":"10.0.0.1","ipv6Prefix":null,"ipv6BlockId":null,"ipv6Gateway":null,"prefixLength":24,"routingType":"Public","status":"Ready","mtu":null,"statusHistory":[],"created":"2026-09-02T00:00:00Z","updated":"2026-09-02T00:00:00Z"}`
 	// Every newly required Subnet response property except subdomainId.
-	subnetWithoutSubdomainJSON = `{"id":"subnet-1","name":"tenant-net","description":null,"siteId":"site-1","vpcId":"vpc-1","controllerNetworkSegmentId":"controller-subnet-1","ipv4Prefix":"10.0.0.0","ipv4BlockId":"block-1","ipv4Gateway":"10.0.0.1","ipv6Prefix":null,"ipv6BlockId":null,"ipv6Gateway":null,"prefixLength":24,"routingType":"Public","status":"Ready","statusHistory":[],"created":"2026-09-02T00:00:00Z","updated":"2026-09-02T00:00:00Z"}`
+	subnetWithoutSubdomainJSON = `{"id":"subnet-1","name":"tenant-net","description":null,"siteId":"site-1","vpcId":"vpc-1","controllerNetworkSegmentId":"controller-subnet-1","ipv4Prefix":"10.0.0.0","ipv4BlockId":"block-1","ipv4Gateway":"10.0.0.1","ipv6Prefix":null,"ipv6BlockId":null,"ipv6Gateway":null,"prefixLength":24,"routingType":"Public","status":"Ready","mtu":null,"statusHistory":[],"created":"2026-09-02T00:00:00Z","updated":"2026-09-02T00:00:00Z"}`
 )
 
 // invalidModelBodies are 2xx response bodies that do not satisfy the generated
@@ -124,7 +125,7 @@ func TestClientDomainOperations_RejectInvalidSuccessResponses(t *testing.T) {
 
 func TestClientSubnetOperations_RejectInvalidSuccessResponses(t *testing.T) {
 	ctx := context.Background()
-	bodies := map[string]string{"missing required subdomainId": subnetWithoutSubdomainJSON}
+	bodies := map[string]string{"missing required subdomainId": subnetWithoutSubdomainJSON, "missing required mtu": strings.Replace(validSubnetResponseJSON, `"mtu":null,`, "", 1)}
 	for name, body := range invalidModelBodies {
 		bodies[name] = body
 	}

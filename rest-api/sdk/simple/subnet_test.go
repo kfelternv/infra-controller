@@ -53,11 +53,12 @@ func TestToStandardSubnetCreateRequest(t *testing.T) {
 	}
 }
 
-func TestSubnetManagerCreate(t *testing.T) {
+func TestClient_CreateSubnet(t *testing.T) {
 	requests := make([]string, 0, 1)
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		requests = append(requests, r.Method+" "+r.URL.Path)
+		assert.Equal(t, "Bearer test-token", r.Header.Get("Authorization"))
 		var body map[string]any
 		require.NoError(t, json.NewDecoder(r.Body).Decode(&body))
 		switch {
@@ -68,7 +69,7 @@ func TestSubnetManagerCreate(t *testing.T) {
 			assert.Equal(t, "block-1", body["ipv4BlockId"])
 			assert.Equal(t, float64(24), body["prefixLength"])
 			w.WriteHeader(http.StatusCreated)
-			_, _ = io.WriteString(w, `{"id":"subnet-1","name":"tenant-net","description":null,"siteId":"site-1","vpcId":"vpc-1","subdomainId":"domain-1","controllerNetworkSegmentId":"controller-subnet-1","ipv4Prefix":"10.0.0.0","ipv4BlockId":"block-1","ipv4Gateway":"10.0.0.1","ipv6Prefix":null,"ipv6BlockId":null,"ipv6Gateway":null,"prefixLength":24,"routingType":"Public","status":"Ready","statusHistory":[],"created":"2026-09-02T00:00:00Z","updated":"2026-09-02T00:00:00Z"}`)
+			_, _ = io.WriteString(w, `{"id":"subnet-1","name":"tenant-net","description":null,"siteId":"site-1","vpcId":"vpc-1","subdomainId":"domain-1","controllerNetworkSegmentId":"controller-subnet-1","ipv4Prefix":"10.0.0.0","ipv4BlockId":"block-1","ipv4Gateway":"10.0.0.1","ipv6Prefix":null,"ipv6BlockId":null,"ipv6Gateway":null,"prefixLength":24,"routingType":"Public","status":"Ready","mtu":null,"statusHistory":[],"created":"2026-09-02T00:00:00Z","updated":"2026-09-02T00:00:00Z"}`)
 		default:
 			t.Errorf("unexpected request: %s %s", r.Method, r.URL.Path)
 			http.NotFound(w, r)
@@ -77,9 +78,8 @@ func TestSubnetManagerCreate(t *testing.T) {
 	defer server.Close()
 
 	client := newSimpleTestClient(server.URL)
-	manager := NewSubnetManager(client)
 	domainID := "domain-1"
-	created, apiErr := manager.Create(context.Background(), SubnetCreateRequest{
+	created, apiErr := client.CreateSubnet(context.Background(), SubnetCreateRequest{
 		Name:         "tenant-net",
 		VpcID:        "vpc-1",
 		SubdomainID:  &domainID,

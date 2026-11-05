@@ -156,6 +156,13 @@ func TestSubnetHandler_Create(t *testing.T) {
 	pendingDomain := buildDomain("pending.example.com", tenant1, site, cdbm.DomainStatusPending, cutil.GetPtr(uuid.New()))
 	domainWithoutControllerID := buildDomain("unregistered.example.com", tenant1, site, cdbm.DomainStatusReady, nil)
 
+	unownedDomain := buildDomain("unowned.example.com", tenant1, site, cdbm.DomainStatusReady, cutil.GetPtr(uuid.New()))
+	_, updateErr := dbSession.DB.NewUpdate().Model(unownedDomain).Set("tenant_id = NULL").WherePK().Exec(ctx)
+	require.NoError(t, updateErr)
+	unscopedDomain := buildDomain("unscoped.example.com", tenant1, site, cdbm.DomainStatusReady, cutil.GetPtr(uuid.New()))
+	_, updateErr = dbSession.DB.NewUpdate().Model(unscopedDomain).Set("site_id = NULL").WherePK().Exec(ctx)
+	require.NoError(t, updateErr)
+
 	cfg := common.GetTestConfig()
 	tempClient := &tmocks.Client{}
 	ipamStorage := ipam.NewIpamStorage(dbSession.DB, nil)
@@ -308,6 +315,11 @@ func TestSubnetHandler_Create(t *testing.T) {
 	// OTEL Spanner configuration
 	ctx = common.TestCommonTraceProviderSetup(t, ctx)
 
+	domainRequest := func(id uuid.UUID) string {
+		body, marshalErr := json.Marshal(model.APISubnetCreateRequest{Name: "legacy-domain", VpcID: vpc1.ID.String(), IPv4BlockID: cutil.GetPtr(ipb1.ID.String()), SubdomainID: cutil.GetPtr(id.String()), PrefixLength: prefixLen})
+		require.NoError(t, marshalErr)
+		return string(body)
+	}
 	tests := []struct {
 		name               string
 		reqOrgName         string
@@ -321,6 +333,7 @@ func TestSubnetHandler_Create(t *testing.T) {
 		expectedPrefix     string
 		expectedSubdomain  *uuid.UUID
 		expectedCoreDomain *uuid.UUID
+		domainRejected     bool
 		verifyChildSpanner bool
 	}{
 		{
@@ -499,6 +512,8 @@ func TestSubnetHandler_Create(t *testing.T) {
 			user:           tnu,
 			expectedErr:    true,
 			expectedStatus: http.StatusBadRequest,
+			expectedErrMsg: "Could not find Domain specified by subdomainId",
+			domainRejected: true,
 		},
 		{
 			name:           "rejects another Tenant's Domain",
@@ -507,6 +522,8 @@ func TestSubnetHandler_Create(t *testing.T) {
 			user:           tnu,
 			expectedErr:    true,
 			expectedStatus: http.StatusBadRequest,
+			expectedErrMsg: "Domain specified by subdomainId does not belong to the Tenant",
+			domainRejected: true,
 		},
 		{
 			name:           "rejects a Domain at another Site",
@@ -515,6 +532,8 @@ func TestSubnetHandler_Create(t *testing.T) {
 			user:           tnu,
 			expectedErr:    true,
 			expectedStatus: http.StatusBadRequest,
+			expectedErrMsg: "Domain specified by subdomainId does not belong to the VPC Site",
+			domainRejected: true,
 		},
 		{
 			name:           "rejects a Domain that is not Ready",
@@ -523,6 +542,8 @@ func TestSubnetHandler_Create(t *testing.T) {
 			user:           tnu,
 			expectedErr:    true,
 			expectedStatus: http.StatusBadRequest,
+			expectedErrMsg: "Domain specified by subdomainId must be in Ready state",
+			domainRejected: true,
 		},
 		{
 			name:           "rejects a Domain without a Core ID",
@@ -531,6 +552,8 @@ func TestSubnetHandler_Create(t *testing.T) {
 			user:           tnu,
 			expectedErr:    true,
 			expectedStatus: http.StatusBadRequest,
+			expectedErrMsg: "Domain specified by subdomainId must be in Ready state",
+			domainRejected: true,
 		},
 		{
 			name:            "Ready legacy VPC without networkVirtualizationType remains compatible",
@@ -613,6 +636,8 @@ func TestSubnetHandler_Create(t *testing.T) {
 			expectedErr:    true,
 			expectedStatus: http.StatusInternalServerError,
 		},
+		{name: "rejects an unowned legacy Domain", reqOrgName: tnOrg1, reqBody: domainRequest(unownedDomain.ID), user: tnu, expectedErr: true, expectedStatus: http.StatusBadRequest, expectedErrMsg: "Domain specified by subdomainId does not belong to the Tenant", domainRejected: true},
+		{name: "rejects a legacy Domain without Site", reqOrgName: tnOrg1, reqBody: domainRequest(unscopedDomain.ID), user: tnu, expectedErr: true, expectedStatus: http.StatusBadRequest, expectedErrMsg: "Domain specified by subdomainId does not belong to the VPC Site", domainRejected: true},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
@@ -638,6 +663,9 @@ func TestSubnetHandler_Create(t *testing.T) {
 				cfg:       cfg,
 				scp:       scp,
 			}
+			beforeCount, countErr := dbSession.DB.NewSelect().Model((*cdbm.Subnet)(nil)).Count(ctx)
+			require.NoError(t, countErr)
+			beforeCalls := len(tsc.Calls)
 			err := cipbh.Handle(ec)
 			assert.Nil(t, err)
 			assert.Equal(t, tc.expectedErr, rec.Code != http.StatusCreated)
@@ -645,6 +673,13 @@ func TestSubnetHandler_Create(t *testing.T) {
 
 			if tc.expectedStatus != rec.Code {
 				t.Errorf("Response: %v", rec.Body.String())
+			}
+
+			if tc.domainRejected {
+				afterCount, countErr := dbSession.DB.NewSelect().Model((*cdbm.Subnet)(nil)).Count(ctx)
+				require.NoError(t, countErr)
+				assert.Equal(t, beforeCount, afterCount)
+				assert.Len(t, tsc.Calls, beforeCalls, "invalid Domain must not dispatch a Site workflow")
 			}
 
 			if !tc.expectedErr {
@@ -661,6 +696,16 @@ func TestSubnetHandler_Create(t *testing.T) {
 				assert.Equal(t, tc.expectedGateway, *rsp.IPv4Gateway)
 
 				assert.Equal(t, cdbm.IPBlockRoutingTypeDatacenterOnly, *rsp.RoutingType)
+
+				persisted, getErr := cdbm.NewSubnetDAO(dbSession).GetByID(ctx, nil, uuid.MustParse(rsp.ID), nil)
+				require.NoError(t, getErr)
+				assert.Equal(t, tc.expectedSubdomain, persisted.DomainID)
+				if tc.expectedSubdomain == nil {
+					assert.Nil(t, rsp.SubdomainID)
+					require.Greater(t, len(tsc.Calls), beforeCalls)
+					workflowRequest := tsc.Calls[len(tsc.Calls)-1].Arguments.Get(3).(*corev1.NetworkSegmentCreationRequest)
+					assert.Nil(t, workflowRequest.SubdomainId)
+				}
 				if tc.expectedSubdomain != nil {
 					require.NotNil(t, rsp.SubdomainID)
 					assert.Equal(t, tc.expectedSubdomain.String(), *rsp.SubdomainID)

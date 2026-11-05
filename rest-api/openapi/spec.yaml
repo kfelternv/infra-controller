@@ -23478,6 +23478,7 @@ components:
         - ipv6BlockId
         - ipv6Gateway
         - routingType
+        - mtu
       examples:
         - id: 497f6eca-6276-4993-bfeb-53cbbbba6f08
           name: spark-gpu-net
@@ -23611,7 +23612,9 @@ components:
           description: 'Address of the IPv6 gateway in the Subnet'
           format: ipv6
         mtu:
-          type: integer
+          type:
+            - integer
+            - 'null'
           description: Maximum Transmission Unit size in bytes. This property is system-determined and read-only.
           readOnly: true
         prefixLength:
@@ -23626,6 +23629,7 @@ components:
           enum:
             - Public
             - DatacenterOnly
+            - null
         status:
           $ref: '#/components/schemas/SubnetStatus'
           description: 'Status of the Subnet'
@@ -23669,6 +23673,7 @@ components:
         - routingType
         - status
         - statusHistory
+        - mtu
         - created
         - updated
     SubnetStatus:

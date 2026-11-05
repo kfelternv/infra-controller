@@ -6,8 +6,14 @@ package model
 import (
 	"encoding/json"
 	"fmt"
+	"slices"
 	"testing"
 	"time"
+
+	"github.com/NVIDIA/infra-controller/rest-api/openapi"
+	"github.com/NVIDIA/infra-controller/rest-api/sdk/standard"
+	"github.com/santhosh-tekuri/jsonschema/v6"
+	"gopkg.in/yaml.v3"
 
 	"github.com/google/uuid"
 	"github.com/stretchr/testify/assert"
@@ -17,6 +23,55 @@ import (
 	cdb "github.com/NVIDIA/infra-controller/rest-api/db/pkg/db"
 	cdbm "github.com/NVIDIA/infra-controller/rest-api/db/pkg/db/model"
 )
+
+func TestAPISubnet_OpenAPISchema(t *testing.T) {
+	var document map[string]any
+	require.NoError(t, yaml.Unmarshal(openapi.Spec, &document))
+	compiler := jsonschema.NewCompiler()
+	compiler.DefaultDraft(jsonschema.Draft2020)
+	require.NoError(t, compiler.AddResource("subnet-response.json", document))
+	schema, err := compiler.Compile("subnet-response.json#/components/schemas/Subnet")
+	require.NoError(t, err)
+	definition := document["components"].(map[string]any)["schemas"].(map[string]any)["Subnet"].(map[string]any)
+	required := definition["required"].([]any)
+	created := time.Date(2026, 9, 2, 12, 0, 0, 0, time.UTC)
+	base := cdbm.Subnet{ID: uuid.New(), Name: "tenant-net", SiteID: uuid.New(), VpcID: uuid.New(), Status: cdbm.SubnetStatusPending, Created: created, Updated: created}
+	populated := base
+	populated.Description = cutil.GetPtr("")
+	populated.DomainID = cutil.GetPtr(uuid.New())
+	populated.ControllerNetworkSegmentID = cutil.GetPtr(uuid.New())
+	populated.IPv4BlockID = cutil.GetPtr(uuid.New())
+	populated.IPv4Prefix = cutil.GetPtr("192.0.2.0")
+	populated.IPv4Gateway = cutil.GetPtr("192.0.2.1")
+	populated.PrefixLength = 24
+	populated.RoutingType = cutil.GetPtr(cdbm.IPBlockRoutingTypeDatacenterOnly)
+	populated.MTU = cutil.GetPtr(9000)
+	for _, tc := range []struct {
+		name string
+		row  cdbm.Subnet
+	}{
+		{name: "unset nullable values remain explicit", row: base},
+		{name: "populated values and empty description survive", row: populated},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			encoded, err := json.Marshal(NewAPISubnet(&tc.row, nil, nil))
+			require.NoError(t, err)
+			var response map[string]any
+			require.NoError(t, json.Unmarshal(encoded, &response))
+			assert.NoError(t, schema.Validate(response))
+			for field := range response {
+				assert.True(t, slices.Contains(required, any(field)), "always-emitted field %s must be required", field)
+			}
+			var decoded standard.Subnet
+			require.NoError(t, json.Unmarshal(encoded, &decoded))
+			roundTrip, err := json.Marshal(decoded)
+			require.NoError(t, err)
+			assert.JSONEq(t, string(encoded), string(roundTrip))
+			delete(response, "mtu")
+			assert.Error(t, schema.Validate(response), "mtu must not disappear from a valid response")
+		})
+	}
+}
 
 func TestAPISubnetCreateRequest_Validate(t *testing.T) {
 	prefix7 := 7

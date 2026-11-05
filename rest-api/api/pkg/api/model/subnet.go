@@ -86,8 +86,9 @@ func (scr *APISubnetCreateRequest) Validate() error {
 // ToProto builds the workflow request that asks a Site to create a new
 // Subnet under the given parent VPC. `subnet` is the just-persisted DB
 // record; its `ToProto()` is the source of the canonical wire fields
-// (Id/Name/Mtu/SubdomainId/Prefixes). `vpc` provides the Site-facing
-// parent VPC ID. `reservedIPCount` is a deployment-policy value applied
+// (Id/Name/Mtu/Prefixes). `vpc` provides the Site-facing
+// parent VPC ID; the resolved ControllerDomainID supplies the Site-facing Domain.
+// `reservedIPCount` is a deployment-policy value applied
 // to each prefix that does not live on the entity, so it is threaded
 // through here.
 //

@@ -228,3 +228,59 @@ func TestCmdSubnetAttachVPC(t *testing.T) {
 		})
 	}
 }
+
+func TestCmdSubnetAttachVPC_ExplicitArguments(t *testing.T) {
+	const sourceID = "550e8400-e29b-41d4-a716-446655440001"
+	const targetID = "550e8400-e29b-41d4-a716-446655440002"
+	for _, commandName := range []string{"subnet attach-vpc", "subnet attach-vpc-to attach-vpc-to-subnet"} {
+		t.Run(commandName, func(t *testing.T) {
+			for _, tc := range []struct {
+				name, input  string
+				args         []string
+				allowReplace bool
+				wantPosts    int32
+				wantErr      bool
+			}{
+				{name: "explicit false is retained", input: "y\n", args: []string{"--vpc-id", targetID, "--allow-replace", "false", sourceID}, wantPosts: 1},
+				{name: "explicit true is retained", input: "y\n", args: []string{"--vpc-id", targetID, "--allow-replace", "true", sourceID}, allowReplace: true, wantPosts: 1},
+				{name: "declined confirmation sends nothing", input: "n\n", args: []string{"--vpc-id", targetID, "--allow-replace", "true", sourceID}},
+				{name: "unknown flags are rejected", args: []string{"--unknown", "value", sourceID}, wantErr: true},
+				{name: "missing flag value is rejected", args: []string{"--vpc-id"}, wantErr: true},
+			} {
+				t.Run(tc.name, func(t *testing.T) {
+					var posts atomic.Int32
+					server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+						assert.Equal(t, http.MethodPost, r.Method)
+						assert.Equal(t, "/v2/org/acme/nico/subnet/"+sourceID+"/attach-vpc", r.URL.Path)
+						assert.Equal(t, "Bearer token", r.Header.Get("Authorization"))
+						var body map[string]interface{}
+						assert.NoError(t, json.NewDecoder(r.Body).Decode(&body))
+						assert.Equal(t, map[string]interface{}{"vpcId": targetID, "allowReplace": tc.allowReplace}, body)
+						posts.Add(1)
+						w.Header().Set("Content-Type", "application/json")
+						_, _ = io.WriteString(w, `{"id":"`+sourceID+`","name":"explicit-subnet","vpcId":"`+targetID+`"}`)
+					}))
+					defer server.Close()
+					s := NewSession(appcli.NewClient(server.URL, "acme", "token", nil, false), "acme", "")
+					s.Scope = Scope{SiteID: "site-1", VpcID: "narrow-vpc", VpcName: "Narrow"}
+					original := s.Scope
+					s.Cache.Set("_tenant", []NamedItem{{Name: "acme", ID: "tenant-1"}})
+					s.Cache.Set("subnet", []NamedItem{{ID: sourceID, Name: "explicit-subnet"}})
+					_, err := withStdin(t, tc.input, func() (string, error) {
+						return "", requireTUICommand(t, commandName).Run(s, tc.args)
+					})
+					if tc.wantErr {
+						require.Error(t, err)
+					} else {
+						require.NoError(t, err)
+					}
+					assert.Equal(t, tc.wantPosts, posts.Load())
+					assert.Equal(t, original, s.Scope)
+					if tc.wantPosts > 0 {
+						assert.Nil(t, s.Cache.Get("subnet"))
+					}
+				})
+			}
+		})
+	}
+}

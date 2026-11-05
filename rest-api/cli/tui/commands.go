@@ -15,6 +15,7 @@ import (
 	"net/netip"
 	"net/url"
 	"os"
+	"slices"
 	"sort"
 	"strconv"
 	"strings"
@@ -1067,6 +1068,17 @@ func cmdSubnetCreate(s *Session, _ []string) error {
 }
 
 func cmdSubnetAttachVPC(s *Session, args []string) error {
+	// Explicit flags keep the existing generated parser and confirmation path.
+	// Bare resource selection uses the guarded interactive attachment chooser.
+	if slices.ContainsFunc(args, isGeneratedFlagToken) {
+		const commandName = "subnet attach-vpc-to attach-vpc-to-subnet"
+		info, ok := generatedAutocompleteInfo(commandName)
+		if !ok {
+			return fmt.Errorf("generated command %q is unavailable", commandName)
+		}
+		return runGeneratedTUICommand(s, info, args)
+	}
+
 	ctx := context.Background()
 	siteID, err := requireSiteScope(s, "Subnet attachment requires a Site. Select a Site.")
 	if err != nil {

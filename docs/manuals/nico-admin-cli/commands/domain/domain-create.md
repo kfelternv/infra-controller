@@ -10,8 +10,7 @@ VPC
 ## SYNOPSIS
 
 ```text
-nico-admin-cli domain create [--vpc-id] [--default-ttl]
-[--extended] [--sort-by] [-h|--help] <NAME>
+nico-admin-cli domain create [OPTIONS] <NAME>
 ```
 
 ## DESCRIPTION

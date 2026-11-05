@@ -20,6 +20,9 @@ mod delete;
 mod show;
 mod update;
 
+#[cfg(test)]
+mod tests;
+
 // Cross-module re-exports for jump module
 use clap::Parser;
 pub(crate) use show::args::Args as ShowDomain;

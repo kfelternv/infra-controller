@@ -580,6 +580,14 @@ async fn concurrent_overlapping_reserved_writers_are_serialized(pool: sqlx::PgPo
         create("child.race.example.test", pool.clone())
     );
     assert_eq!(usize::from(parent.is_ok()) + usize::from(child.is_ok()), 1);
+    for result in [&parent, &child] {
+        if let Err(error) = result {
+            assert!(
+                matches!(error, DatabaseError::InvalidArgument(_)),
+                "{error}"
+            );
+        }
+    }
 }
 
 #[crate::sqlx_test]
@@ -643,6 +651,14 @@ async fn concurrent_reserved_and_legacy_overlapping_writers_are_serialized(pool:
         1,
         "either commit order must protect new reserved-zone authority"
     );
+    for result in [&reserved, &legacy] {
+        if let Err(error) = result {
+            assert!(
+                matches!(error, DatabaseError::InvalidArgument(_)),
+                "{error}"
+            );
+        }
+    }
 }
 
 #[crate::sqlx_test]
@@ -657,4 +673,192 @@ async fn reserved_name_collision_preserves_invalid_argument(pool: sqlx::PgPool) 
             .await
             .unwrap_err();
     assert!(matches!(error, DatabaseError::InvalidArgument(_)));
+}
+
+#[crate::sqlx_test]
+async fn all_forward_writers_wait_for_the_same_namespace_lock(pool: sqlx::PgPool) {
+    use std::time::Duration;
+
+    #[derive(Clone, Copy)]
+    enum Writer {
+        Legacy,
+        Reserved,
+        Bootstrap,
+    }
+
+    let mut blocker = pool.begin().await.unwrap();
+    let blocker_pid: i32 = sqlx::query_scalar("SELECT pg_backend_pid()")
+        .fetch_one(blocker.as_mut())
+        .await
+        .unwrap();
+    // Use the actual production lock without copying its SQL key. Keeping it
+    // separate from persist also detects a missing lock in that writer.
+    assert!(
+        super::lock_forward_namespace(blocker.as_mut(), "locked.test")
+            .await
+            .unwrap()
+    );
+    db::dns::domain::persist(NewDomain::new("locked.test"), blocker.as_mut())
+        .await
+        .unwrap();
+    let reserved_id = DomainId::new();
+    let write = |kind| {
+        let pool = pool.clone();
+        async move {
+            let mut txn = pool.begin().await.unwrap();
+            let result = match kind {
+                Writer::Legacy => {
+                    db::dns::domain::persist(NewDomain::new("child.locked.test"), txn.as_mut())
+                        .await
+                        .map(Some)
+                }
+                Writer::Reserved => {
+                    db::dns::domain::lock_id_exclusive(txn.as_mut(), reserved_id)
+                        .await
+                        .unwrap();
+                    db::dns::domain::persist_reserved(
+                        NewDomain::new("child.locked.test"),
+                        reserved_id,
+                        txn.as_mut(),
+                    )
+                    .await
+                    .map(Some)
+                }
+                Writer::Bootstrap => {
+                    db::dns::domain::persist_first(&NewDomain::new("bootstrap.test"), txn.as_mut())
+                        .await
+                }
+            };
+            if result.is_ok() {
+                txn.commit().await.unwrap();
+            }
+            result
+        }
+    };
+    let release_after_all_wait = async {
+        tokio::time::timeout(Duration::from_secs(10), async {
+            loop {
+                let waiters: i64 = sqlx::query_scalar(
+                    "SELECT count(*) FROM pg_stat_activity
+                     WHERE datname = current_database()
+                       AND $1 = ANY(pg_blocking_pids(pid))
+                       AND wait_event_type = 'Lock'",
+                )
+                .bind(blocker_pid)
+                .fetch_one(&pool)
+                .await
+                .unwrap();
+                if waiters == 3 {
+                    break;
+                }
+                tokio::time::sleep(Duration::from_millis(20)).await;
+            }
+        })
+        .await
+        .expect("all three forward writers must wait on the namespace owner");
+        blocker.commit().await.unwrap();
+    };
+    let (legacy, reserved, bootstrap, ()) = tokio::time::timeout(Duration::from_secs(15), async {
+        tokio::join!(
+            write(Writer::Legacy),
+            write(Writer::Reserved),
+            write(Writer::Bootstrap),
+            release_after_all_wait
+        )
+    })
+    .await
+    .expect("namespace waiters must finish after the owner commits");
+    let legacy = legacy.expect("legacy nesting remains permitted").unwrap();
+    assert_eq!(legacy.name, "child.locked.test");
+    assert!(
+        matches!(reserved, Err(DatabaseError::InvalidArgument(_))),
+        "reserved writer must reject the ancestor committed while it waited"
+    );
+    assert!(
+        bootstrap.unwrap().is_none(),
+        "bootstrap must see the committed row and preserve nonempty-table behavior"
+    );
+    let names: Vec<String> = sqlx::query_scalar("SELECT name FROM domains ORDER BY name")
+        .fetch_all(&pool)
+        .await
+        .unwrap();
+    assert_eq!(names, vec!["child.locked.test", "locked.test"]);
+    assert!(
+        db::dns::domain::find_by_uuid(&pool, reserved_id)
+            .await
+            .unwrap()
+            .is_none()
+    );
+}
+
+#[crate::sqlx_test]
+async fn reverse_writers_do_not_wait_for_the_forward_namespace(pool: sqlx::PgPool) {
+    use std::time::Duration;
+
+    let mut blocker = pool.begin().await.unwrap();
+    assert!(
+        super::lock_forward_namespace(blocker.as_mut(), "held.test")
+            .await
+            .unwrap()
+    );
+    for name in ["0.10.in-addr.arpa", "8.b.d.0.1.0.0.2.ip6.arpa"] {
+        let mut txn = pool.begin().await.unwrap();
+        let reverse = tokio::time::timeout(
+            Duration::from_secs(5),
+            db::dns::domain::persist(NewDomain::new(name), txn.as_mut()),
+        )
+        .await
+        .expect("reverse writers must remain independent of a held forward namespace")
+        .expect("existing infrastructure reverse-zone creation remains supported");
+        txn.commit().await.unwrap();
+        let stored = db::dns::domain::find_by_uuid(&pool, reverse.id)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(stored.name, name);
+        assert!(stored.deleted.is_none());
+    }
+    blocker.rollback().await.unwrap();
+}
+
+#[crate::sqlx_test]
+async fn bootstrap_preserves_live_and_deleted_nonempty_tables(pool: sqlx::PgPool) {
+    let mut txn = pool.begin().await.unwrap();
+    let first = db::dns::domain::persist_first(&NewDomain::new("initial.test"), txn.as_mut())
+        .await
+        .unwrap()
+        .expect("an empty table receives the initial domain");
+    for deleted in [false, true] {
+        if deleted {
+            db::dns::domain::delete(first.clone(), txn.as_mut())
+                .await
+                .unwrap();
+        }
+        let before = db::dns::domain::find_by_uuid(txn.as_mut(), first.id)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(before.deleted.is_some(), deleted);
+        let retry = db::dns::domain::persist_first(&NewDomain::new("unused.test"), txn.as_mut())
+            .await
+            .unwrap();
+        assert!(
+            retry.is_none(),
+            "a nonempty table remains unchanged, deleted={deleted}"
+        );
+        let after = db::dns::domain::find_by_uuid(txn.as_mut(), first.id)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            serde_json::to_value(&after).unwrap(),
+            serde_json::to_value(&before).unwrap()
+        );
+        let count: i64 = sqlx::query_scalar("SELECT count(*) FROM domains")
+            .fetch_one(txn.as_mut())
+            .await
+            .unwrap();
+        assert_eq!(count, 1);
+    }
+    txn.commit().await.unwrap();
 }

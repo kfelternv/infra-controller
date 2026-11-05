@@ -165,7 +165,8 @@ func TestSubnetSQLDAO_ClaimAttachmentRecovery(t *testing.T) {
 	require.NoError(t, err)
 	tx, err := db.BeginTx(ctx, s, nil)
 	require.NoError(t, err)
-	defer tx.Rollback() // Release the test-owned lock even if an assertion fails.
+	// Release the test-owned lock on failure; rollback after Commit is harmless.
+	defer func() { _ = tx.Rollback() }()
 	var locked uuid.UUID
 	err = db.GetIDB(tx, s).NewRaw("SELECT id FROM subnet WHERE id = ? FOR UPDATE", intent.SubnetID).Scan(ctx, &locked)
 	require.NoError(t, err)

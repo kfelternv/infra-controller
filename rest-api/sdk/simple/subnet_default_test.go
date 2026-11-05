@@ -32,6 +32,8 @@ func TestApiMetadata_SetDefaultSubnet(t *testing.T) {
 		{name: "matching preset", preset: true, presetSite: "site-1", presetVpc: "vpc-1", wantID: "preset", wantName: "preset-name"},
 		{name: "wrong Site falls back to scoped list", preset: true, presetSite: "site-2", presetVpc: "vpc-1", wantID: "first", wantName: "first-name", wantListCalls: 1},
 		{name: "wrong VPC falls back to scoped list", preset: true, presetSite: "site-1", presetVpc: "vpc-2", wantID: "first", wantName: "first-name", wantListCalls: 1},
+		{name: "empty Site falls back to scoped list", preset: true, presetVpc: "vpc-1", wantID: "first", wantName: "first-name", wantListCalls: 1},
+		{name: "empty VPC falls back to scoped list", preset: true, presetSite: "site-1", wantID: "first", wantName: "first-name", wantListCalls: 1},
 		{name: "first of multiple available Subnets", wantID: "first", wantName: "first-name", wantListCalls: 1},
 		{name: "empty list clears stale name", emptyList: true, wantListCalls: 1},
 		{name: "preset not found propagates error", preset: true, getStatus: http.StatusNotFound, wantID: "preset", wantCode: http.StatusNotFound},

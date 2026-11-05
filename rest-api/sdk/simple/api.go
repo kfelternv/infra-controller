@@ -280,10 +280,10 @@ func (am *ApiMetadata) SetDefaultSubnet(ctx context.Context, apiClient *standard
 		if apiErr != nil {
 			return apiErr
 		}
-		if subnet.SiteId != "" && subnet.SiteId != am.SiteID {
+		if subnet.SiteId != am.SiteID {
 			logger.Warn().Msgf("Preset Subnet ID %s does not belong to Site ID %s.", am.SubnetID, am.SiteID)
 			am.SubnetID = ""
-		} else if subnet.VpcId != "" && subnet.VpcId != am.VpcID {
+		} else if subnet.VpcId != am.VpcID {
 			logger.Warn().Msgf("Preset Subnet ID %s does not belong to VPC ID %s.", am.SubnetID, am.VpcID)
 			am.SubnetID = ""
 		} else {

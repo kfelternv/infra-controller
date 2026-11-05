@@ -502,13 +502,6 @@ func run(ctx context.Context) error {
 		serve("Prometheus metrics", mconfig.GetListenAddr())
 	}
 
-	// The existing monitor starts below w.Run cannot execute until shutdown;
-	// schedule this new durable recovery cron *before* the blocking worker run.
-	if tcfg.Namespace == cwfn.CloudNamespace {
-		if err := domainWorkflow.ExecuteReconcileReservedDomains(ctx, tc); err != nil {
-			log.Error().Err(err).Msg("failed to schedule reserved Domain recovery; outstanding intents will remain pending")
-		}
-	}
 	interrupt := make(chan interface{}, 1)
 	go func() {
 		select {
@@ -570,7 +563,12 @@ func registerHealthRoutes(mux *http.ServeMux) {
 // successfulInventoryRetention leaves out the Site worker's successful inventory cleanup.
 func runWorker(ctx context.Context, tc tsdkClient.Client, w tsdkWorker.Worker, namespace string, successfulInventoryRetention time.Duration, interruptCh <-chan interface{}) error {
 	if namespace == cwfn.CloudNamespace {
-		_, err := siteWorkflow.ExecuteMonitorHealthForAllSitesWorkflow(ctx, tc)
+		err := domainWorkflow.ExecuteReconcileReservedDomains(ctx, tc)
+		if err != nil {
+			return fmt.Errorf("failed to trigger reserved Domain recovery workflow: %w", err)
+		}
+
+		_, err = siteWorkflow.ExecuteMonitorHealthForAllSitesWorkflow(ctx, tc)
 		if err != nil {
 			return fmt.Errorf("failed to trigger Site Health Monitor workflow: %w", err)
 		}

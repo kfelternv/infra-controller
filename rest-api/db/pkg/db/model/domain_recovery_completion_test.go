@@ -85,3 +85,74 @@ func TestDomainSQLDAO_CompleteRecovery(t *testing.T) {
 		})
 	}
 }
+
+func TestDomainSQLDAO_TransitionOwned(t *testing.T) {
+	for _, tc := range []struct {
+		from string
+		to   string
+	}{
+		{DomainStatusPending, DomainStatusReady},
+		{DomainStatusRejecting, DomainStatusError},
+	} {
+		t.Run(tc.to, func(t *testing.T) {
+			ctx := t.Context()
+			session := testDomainInitDB(t)
+			t.Cleanup(session.Close)
+			testDomainSetupSchema(t, session)
+			user := testDomainBuildUser(t, session, "handler-completion-user")
+			dao := NewDomainDAO(session)
+			tenant, site, coreID := uuid.New(), uuid.New(), uuid.New()
+			row, err := db.WithTxResult(ctx, session, func(tx *db.Tx) (*Domain, error) {
+				row, fresh, err := dao.ReserveOwned(ctx, tx, DomainCreateInput{
+					Hostname: "handler-completion.example.com", Org: "completion-org", TenantID: &tenant, SiteID: &site,
+					ControllerDomainID: &coreID, Status: DomainStatusPending, CreatedBy: user.ID,
+				})
+				require.True(t, fresh)
+				return row, err
+			})
+			require.NoError(t, err)
+			if tc.from == DomainStatusRejecting {
+				changed, err := db.WithTxResult(ctx, session, func(tx *db.Tx) (bool, error) {
+					return dao.StageRejectedOwned(ctx, tx, row.ID, coreID, nil)
+				})
+				require.NoError(t, err)
+				require.True(t, changed)
+			}
+			// The handler's Core RPC is still in flight when recovery claims its
+			// durable intent. Model the elapsed retry deadline, then use the real DAO.
+			_, err = session.DB.ExecContext(ctx, `UPDATE domain SET recovery_next_at = current_timestamp - interval '1 second' WHERE id = ?`, row.ID)
+			require.NoError(t, err)
+			claims, err := dao.ClaimRecovery(ctx, 1, time.Minute)
+			require.NoError(t, err)
+			require.Len(t, claims, 1)
+			require.NotNil(t, claims[0].RecoveryToken)
+			changed, err := db.WithTxResult(ctx, session, func(tx *db.Tx) (bool, error) {
+				return dao.TransitionOwned(ctx, tx, row.ID, coreID, tc.from, tc.to)
+			})
+			require.NoError(t, err)
+			require.True(t, changed)
+			stored, err := dao.GetByID(ctx, nil, row.ID, nil)
+			require.NoError(t, err)
+			require.Equal(t, tc.to, stored.Status)
+			require.Equal(t, row.ControllerDomainID, stored.ControllerDomainID)
+			require.Equal(t, row.TenantID, stored.TenantID)
+			require.Equal(t, row.SiteID, stored.SiteID)
+			require.Nil(t, stored.RecoveryToken)
+			require.Nil(t, stored.RecoveryLeaseUntil)
+			require.Nil(t, stored.RecoveryNextAt)
+			// Neither the obsolete worker's completion nor its deferred retry may
+			// reacquire the intent after the handler confirms the authoritative reply.
+			changed, err = dao.CompleteRecovery(ctx, row.ID, coreID, *claims[0].RecoveryToken, tc.from, tc.to, false)
+			require.NoError(t, err)
+			require.False(t, changed)
+			changed, err = dao.DeferRecovery(ctx, row.ID, *claims[0].RecoveryToken, time.Second)
+			require.NoError(t, err)
+			require.False(t, changed)
+			reservedAt, err := db.WithTxResult(ctx, session, func(tx *db.Tx) (*time.Time, error) {
+				return dao.ReserveDeletionOwned(ctx, tx, row.ID, coreID, tc.to, 90*time.Second)
+			})
+			require.NoError(t, err)
+			require.NotNil(t, reservedAt, "completed reservations must remain deletable")
+		})
+	}
+}

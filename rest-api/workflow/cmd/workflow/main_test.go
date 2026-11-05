@@ -22,6 +22,7 @@ import (
 
 	"github.com/NVIDIA/infra-controller/rest-api/workflow/internal/config"
 	cwfn "github.com/NVIDIA/infra-controller/rest-api/workflow/pkg/namespace"
+	"github.com/NVIDIA/infra-controller/rest-api/workflow/pkg/queue"
 )
 
 var (
@@ -54,8 +55,14 @@ func TestRunWorker(t *testing.T) {
 			name:                         "Cloud worker triggers every cron before it runs",
 			namespace:                    cwfn.CloudNamespace,
 			successfulInventoryRetention: config.DefaultSiteNamespaceSuccessfulInventoryRetention,
-			wantCrons:                    []string{"site-monitor-health-all", "rotate-certs-and-otps", "monitor-site-temporal-namespaces"},
+			wantCrons:                    []string{"domain-reserved-intent-recovery", "site-monitor-health-all", "rotate-certs-and-otps", "monitor-site-temporal-namespaces"},
 			wantErr:                      errWorkerStopped,
+		},
+		{
+			name:      "Cloud worker does not run without Domain recovery",
+			namespace: cwfn.CloudNamespace,
+			failCron:  "domain-reserved-intent-recovery",
+			wantErr:   errTriggerFailed,
 		},
 		{
 			name:      "Cloud worker does not run when a cron fails to trigger",
@@ -95,6 +102,11 @@ func TestRunWorker(t *testing.T) {
 			tc.On("ExecuteWorkflow", mock.Anything, mock.Anything, mock.Anything).Return(
 				func(_ context.Context, options tsdkClient.StartWorkflowOptions, _ interface{}, _ ...interface{}) (tsdkClient.WorkflowRun, error) {
 					triggered = append(triggered, options.ID)
+					if options.ID == "domain-reserved-intent-recovery" {
+						assert.Equal(t, "@every 2m", options.CronSchedule)
+						assert.Equal(t, queue.CloudTaskQueue, options.TaskQueue)
+						assert.False(t, options.WorkflowExecutionErrorWhenAlreadyStarted, "a previously scheduled cron must not prevent worker restart")
+					}
 					if options.ID == tt.failCron {
 						return nil, errTriggerFailed
 					}
@@ -106,6 +118,9 @@ func TestRunWorker(t *testing.T) {
 			err := runWorker(context.Background(), tc, w, tt.namespace, tt.successfulInventoryRetention, nil)
 			require.ErrorIs(t, err, tt.wantErr)
 			assert.ElementsMatch(t, tt.wantCrons, triggeredBeforeRun)
+			if tt.failCron == "domain-reserved-intent-recovery" {
+				assert.Equal(t, []string{"domain-reserved-intent-recovery"}, triggered)
+			}
 		})
 	}
 }

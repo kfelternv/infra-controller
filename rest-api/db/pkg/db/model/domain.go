@@ -250,6 +250,7 @@ func (dsd DomainSQLDAO) ReserveOwned(ctx context.Context, tx *db.Tx, input Domai
 
 // TransitionOwned performs a compare-and-swap on a previously committed
 // immutable reservation. A stale worker cannot mark an unrelated state Ready.
+// Completion releases any recovery claim acquired while the handler awaited Core.
 func (dsd DomainSQLDAO) TransitionOwned(ctx context.Context, tx *db.Tx, id, coreID uuid.UUID, from, to string) (bool, error) {
 	validTransition := (from == DomainStatusPending && to == DomainStatusReady) ||
 		(from == DomainStatusRejecting && to == DomainStatusError)
@@ -258,6 +259,7 @@ func (dsd DomainSQLDAO) TransitionOwned(ctx context.Context, tx *db.Tx, id, core
 	}
 	result, err := db.GetIDB(tx, dsd.dbSession).NewUpdate().Model(&Domain{}).
 		Set("status = ?", to).Set("updated = current_timestamp").
+		Set("recovery_token = NULL").Set("recovery_lease_until = NULL").Set("recovery_next_at = NULL").
 		Where("id = ? AND controller_domain_id = ? AND status = ? AND deleted IS NULL", id, coreID, from).
 		Exec(ctx)
 	if err != nil {

@@ -703,8 +703,8 @@ Deploy the supporting components in this order before enabling reassignment:
 3. Apply the REST database migrations, then upgrade all Cloud workflow workers
    that process Subnet inventory and recovery. Confirm that the Cloud Temporal
    namespace has `subnet-attachment-intent-recovery` scheduled every two minutes
-   before enabling requests; a scheduling failure leaves outstanding operations
-   pending.
+   before enabling requests. A worker refuses to start if scheduling fails;
+   outstanding operations remain pending until a healthy worker reconciles them.
 4. Upgrade all REST API replicas, then enable reassignment. Keep these compatible
    components running while requests are enabled or an operation remains pending.
 

@@ -54,13 +54,19 @@ func TestRunWorker(t *testing.T) {
 			name:                         "Cloud worker triggers every cron before it runs",
 			namespace:                    cwfn.CloudNamespace,
 			successfulInventoryRetention: config.DefaultSiteNamespaceSuccessfulInventoryRetention,
-			wantCrons:                    []string{"site-monitor-health-all", "rotate-certs-and-otps", "monitor-site-temporal-namespaces"},
+			wantCrons:                    []string{"site-monitor-health-all", "rotate-certs-and-otps", "monitor-site-temporal-namespaces", "subnet-attachment-intent-recovery"},
 			wantErr:                      errWorkerStopped,
 		},
 		{
 			name:      "Cloud worker does not run when a cron fails to trigger",
 			namespace: cwfn.CloudNamespace,
 			failCron:  "rotate-certs-and-otps",
+			wantErr:   errTriggerFailed,
+		},
+		{
+			name:      "Cloud worker requires Subnet attachment recovery before startup",
+			namespace: cwfn.CloudNamespace,
+			failCron:  "subnet-attachment-intent-recovery",
 			wantErr:   errTriggerFailed,
 		},
 		{

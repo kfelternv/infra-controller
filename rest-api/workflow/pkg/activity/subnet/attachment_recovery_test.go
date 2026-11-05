@@ -26,6 +26,7 @@ import (
 	tmocks "go.temporal.io/sdk/mocks"
 	tp "go.temporal.io/sdk/temporal"
 	"google.golang.org/protobuf/encoding/protojson"
+	"google.golang.org/protobuf/proto"
 )
 
 type attachmentRecoveryFixture struct {
@@ -91,26 +92,60 @@ func newAttachmentRecoveryFixture(t *testing.T) attachmentRecoveryFixture {
 	}
 }
 
+func (f *attachmentRecoveryFixture) segment(vpcID uuid.UUID, version string) *corev1.NetworkSegment {
+	return &corev1.NetworkSegment{
+		Id:     &corev1.NetworkSegmentId{Value: f.intent.ControllerSegmentID.String()},
+		Config: &corev1.NetworkSegmentConfig{SegmentType: corev1.NetworkSegmentType_TENANT, VpcId: &corev1.VpcId{Value: vpcID.String()}},
+		Status: &corev1.NetworkSegmentStatus{Lifecycle: &corev1.LifecycleStatus{Version: version}},
+	}
+}
+
 func (f *attachmentRecoveryFixture) expectSegmentRead(t *testing.T, vpcID uuid.UUID, version string) {
+	t.Helper()
+	f.expectProxyResult(t, corev1.Forge_FindNetworkSegmentsByIds_FullMethodName, &corev1.NetworkSegmentList{NetworkSegments: []*corev1.NetworkSegment{f.segment(vpcID, version)}})
+}
+
+func (f *attachmentRecoveryFixture) expectProxyResult(t *testing.T, method string, response proto.Message) {
 	t.Helper()
 	run := &tmocks.WorkflowRun{}
 	run.On("Get", mock.Anything, mock.Anything).Run(func(args mock.Arguments) {
-		segment := &corev1.NetworkSegment{
-			Id: &corev1.NetworkSegmentId{Value: f.intent.ControllerSegmentID.String()},
-			Config: &corev1.NetworkSegmentConfig{
-				SegmentType: corev1.NetworkSegmentType_TENANT,
-				VpcId:       &corev1.VpcId{Value: vpcID.String()},
-			},
-			Status: &corev1.NetworkSegmentStatus{Lifecycle: &corev1.LifecycleStatus{Version: version}},
-		}
-		payload, err := protojson.Marshal(&corev1.NetworkSegmentList{NetworkSegments: []*corev1.NetworkSegment{segment}})
+		payload, err := protojson.Marshal(response)
 		require.NoError(t, err)
 		args.Get(1).(*grpcproxy.Response).ResponseJSON = payload
 	}).Return(nil).Once()
 	f.siteClient.On("ExecuteWorkflow", mock.Anything, mock.Anything, grpcproxy.Core.WorkflowName,
-		mock.MatchedBy(func(request grpcproxy.Request) bool {
-			return request.FullMethod == corev1.Forge_FindNetworkSegmentsByIds_FullMethodName
-		})).Return(run, nil).Once()
+		mock.MatchedBy(func(request grpcproxy.Request) bool { return request.FullMethod == method })).Run(func(args mock.Arguments) {
+		request := args.Get(3).(grpcproxy.Request)
+		if method == corev1.Forge_FindNetworkSegmentsByIds_FullMethodName {
+			var read corev1.NetworkSegmentsByIdsRequest
+			require.NoError(t, protojson.Unmarshal(request.RequestJSON, &read))
+			require.Len(t, read.NetworkSegmentsIds, 1)
+			assert.Equal(t, f.intent.ControllerSegmentID.String(), read.NetworkSegmentsIds[0].GetValue())
+		} else {
+			var attach corev1.AttachNetworkSegmentToVpcRequest
+			require.NoError(t, protojson.Unmarshal(request.RequestJSON, &attach))
+			assert.Equal(t, f.intent.ControllerSegmentID.String(), attach.GetNetworkSegmentId().GetValue())
+			assert.Equal(t, f.intent.TargetControllerVpcID.String(), attach.GetVpcId().GetValue())
+			assert.True(t, attach.GetAllowReplace())
+			assert.Equal(t, f.intent.SourceControllerVpcID.String(), attach.GetExpectedSourceVpcId().GetValue())
+			assert.Equal(t, f.intent.SegmentVersion, attach.GetExpectedSegmentVersion())
+		}
+	}).Return(run, nil).Once()
+}
+
+func (f *attachmentRecoveryFixture) assertPending(t *testing.T) {
+	t.Helper()
+	stored, err := cdbm.NewSubnetDAO(f.session).GetByID(context.Background(), nil, f.subnet.ID, nil)
+	require.NoError(t, err)
+	assert.Equal(t, &f.intent.ID, stored.AttachIntentID)
+	assert.Equal(t, f.intent.SourceVpcID, stored.VpcID)
+	assert.Equal(t, &f.intent.SourceControllerVpcID, stored.AttachSourceControllerVpcID)
+	assert.Equal(t, &f.intent.TargetControllerVpcID, stored.AttachTargetControllerVpcID)
+	assert.Equal(t, &f.intent.SegmentVersion, stored.AttachSegmentVersion)
+	assert.Nil(t, stored.AttachRecoveryToken)
+	assert.Nil(t, stored.AttachLeaseUntil)
+	require.NotNil(t, stored.AttachNextAt)
+	assert.True(t, stored.AttachNextAt.After(time.Now()))
 }
 
 func (f *attachmentRecoveryFixture) expectAttachError(err error) {
@@ -122,71 +157,183 @@ func (f *attachmentRecoveryFixture) expectAttachError(err error) {
 		})).Return(run, nil).Once()
 }
 
-func TestAttachmentRecoveryCancelsOnlyProvenTerminalIntents(t *testing.T) {
-	t.Run("version mismatch clears fenced intent", func(t *testing.T) {
-		fixture := newAttachmentRecoveryFixture(t)
-		fixture.expectSegmentRead(t, fixture.sourceControllerVpc, "V2")
+func TestManageSubnet_ReconcileAttachment(t *testing.T) {
+	cases := []struct {
+		name  string
+		check func(*testing.T)
+	}{
+		{name: "version mismatch clears fenced intent", check: func(t *testing.T) {
+			fixture := newAttachmentRecoveryFixture(t)
+			fixture.expectSegmentRead(t, fixture.sourceControllerVpc, "V2")
 
-		err := (ManageSubnet{dbSession: fixture.session, siteClientPool: fixture.pool}).reconcileAttachment(
-			context.Background(), cdbm.NewSubnetDAO(fixture.session), &fixture.claimed,
-		)
-		require.NoError(t, err)
-		stored, err := cdbm.NewSubnetDAO(fixture.session).GetByID(context.Background(), nil, fixture.subnet.ID, nil)
-		require.NoError(t, err)
-		assert.Nil(t, stored.AttachIntentID)
-		assert.Equal(t, fixture.intent.SourceVpcID, stored.VpcID)
-		fixture.siteClient.AssertExpectations(t)
-	})
+			err := (ManageSubnet{dbSession: fixture.session, siteClientPool: fixture.pool}).reconcileAttachment(
+				context.Background(), cdbm.NewSubnetDAO(fixture.session), &fixture.claimed,
+			)
+			require.NoError(t, err)
+			stored, err := cdbm.NewSubnetDAO(fixture.session).GetByID(context.Background(), nil, fixture.subnet.ID, nil)
+			require.NoError(t, err)
+			assert.Nil(t, stored.AttachIntentID)
+			assert.Equal(t, fixture.intent.SourceVpcID, stored.VpcID)
+			fixture.siteClient.AssertExpectations(t)
+		}},
 
-	t.Run("same-version third VPC stays pending", func(t *testing.T) {
-		fixture := newAttachmentRecoveryFixture(t)
-		fixture.expectSegmentRead(t, uuid.New(), fixture.intent.SegmentVersion)
+		{name: "same-version third VPC stays pending", check: func(t *testing.T) {
+			fixture := newAttachmentRecoveryFixture(t)
+			fixture.expectSegmentRead(t, uuid.New(), fixture.intent.SegmentVersion)
 
-		err := (ManageSubnet{dbSession: fixture.session, siteClientPool: fixture.pool}).reconcileAttachment(
-			context.Background(), cdbm.NewSubnetDAO(fixture.session), &fixture.claimed,
-		)
-		require.ErrorContains(t, err, "third VPC")
-		stored, err := cdbm.NewSubnetDAO(fixture.session).GetByID(context.Background(), nil, fixture.subnet.ID, nil)
-		require.NoError(t, err)
-		require.NotNil(t, stored.AttachIntentID)
-		assert.Equal(t, fixture.intent.ID, *stored.AttachIntentID)
-		assert.Nil(t, stored.AttachRecoveryToken)
-		fixture.siteClient.AssertExpectations(t)
-	})
+			err := (ManageSubnet{dbSession: fixture.session, siteClientPool: fixture.pool}).reconcileAttachment(
+				context.Background(), cdbm.NewSubnetDAO(fixture.session), &fixture.claimed,
+			)
+			require.ErrorContains(t, err, "third VPC")
+			stored, err := cdbm.NewSubnetDAO(fixture.session).GetByID(context.Background(), nil, fixture.subnet.ID, nil)
+			require.NoError(t, err)
+			require.NotNil(t, stored.AttachIntentID)
+			assert.Equal(t, fixture.intent.ID, *stored.AttachIntentID)
+			assert.Nil(t, stored.AttachRecoveryToken)
+			fixture.siteClient.AssertExpectations(t)
+		}},
 
-	t.Run("typed Core refusal clears worker intent", func(t *testing.T) {
-		fixture := newAttachmentRecoveryFixture(t)
-		fixture.expectSegmentRead(t, fixture.sourceControllerVpc, fixture.intent.SegmentVersion)
-		fixture.expectAttachError(tp.NewNonRetryableApplicationError(
-			"overlapping prefix", swe.ErrTypeNICoFailedPrecondition, errors.New("overlapping prefix"),
-		))
+		{name: "typed Core refusal clears worker intent", check: func(t *testing.T) {
+			fixture := newAttachmentRecoveryFixture(t)
+			fixture.expectSegmentRead(t, fixture.sourceControllerVpc, fixture.intent.SegmentVersion)
+			fixture.expectAttachError(tp.NewNonRetryableApplicationError(
+				"overlapping prefix", swe.ErrTypeNICoFailedPrecondition, errors.New("overlapping prefix"),
+			))
 
-		err := (ManageSubnet{dbSession: fixture.session, siteClientPool: fixture.pool}).reconcileAttachment(
-			context.Background(), cdbm.NewSubnetDAO(fixture.session), &fixture.claimed,
-		)
-		require.NoError(t, err)
-		stored, err := cdbm.NewSubnetDAO(fixture.session).GetByID(context.Background(), nil, fixture.subnet.ID, nil)
-		require.NoError(t, err)
-		assert.Nil(t, stored.AttachIntentID)
-		fixture.siteClient.AssertExpectations(t)
-	})
+			err := (ManageSubnet{dbSession: fixture.session, siteClientPool: fixture.pool}).reconcileAttachment(
+				context.Background(), cdbm.NewSubnetDAO(fixture.session), &fixture.claimed,
+			)
+			require.NoError(t, err)
+			stored, err := cdbm.NewSubnetDAO(fixture.session).GetByID(context.Background(), nil, fixture.subnet.ID, nil)
+			require.NoError(t, err)
+			assert.Nil(t, stored.AttachIntentID)
+			fixture.siteClient.AssertExpectations(t)
+		}},
 
-	t.Run("ambiguous Core timeout retains worker intent", func(t *testing.T) {
-		fixture := newAttachmentRecoveryFixture(t)
-		fixture.expectSegmentRead(t, fixture.sourceControllerVpc, fixture.intent.SegmentVersion)
-		fixture.expectAttachError(tp.NewTimeoutError(temporalEnums.TIMEOUT_TYPE_START_TO_CLOSE, nil, nil))
+		{name: "ambiguous Core timeout retains worker intent", check: func(t *testing.T) {
+			fixture := newAttachmentRecoveryFixture(t)
+			fixture.expectSegmentRead(t, fixture.sourceControllerVpc, fixture.intent.SegmentVersion)
+			fixture.expectAttachError(tp.NewTimeoutError(temporalEnums.TIMEOUT_TYPE_START_TO_CLOSE, nil, nil))
 
-		err := (ManageSubnet{dbSession: fixture.session, siteClientPool: fixture.pool}).reconcileAttachment(
-			context.Background(), cdbm.NewSubnetDAO(fixture.session), &fixture.claimed,
-		)
-		require.ErrorContains(t, err, "unconfirmed")
-		stored, err := cdbm.NewSubnetDAO(fixture.session).GetByID(context.Background(), nil, fixture.subnet.ID, nil)
-		require.NoError(t, err)
-		require.NotNil(t, stored.AttachIntentID)
-		assert.Equal(t, fixture.intent.ID, *stored.AttachIntentID)
-		assert.Nil(t, stored.AttachRecoveryToken)
-		fixture.siteClient.AssertExpectations(t)
-	})
+			err := (ManageSubnet{dbSession: fixture.session, siteClientPool: fixture.pool}).reconcileAttachment(
+				context.Background(), cdbm.NewSubnetDAO(fixture.session), &fixture.claimed,
+			)
+			require.ErrorContains(t, err, "unconfirmed")
+			stored, err := cdbm.NewSubnetDAO(fixture.session).GetByID(context.Background(), nil, fixture.subnet.ID, nil)
+			require.NoError(t, err)
+			require.NotNil(t, stored.AttachIntentID)
+			assert.Equal(t, fixture.intent.ID, *stored.AttachIntentID)
+			assert.Nil(t, stored.AttachRecoveryToken)
+			fixture.siteClient.AssertExpectations(t)
+		}},
+
+		{name: "already applied target completes without another mutation", check: func(t *testing.T) {
+			f := newAttachmentRecoveryFixture(t)
+			f.expectSegmentRead(t, f.targetControllerVpc, "V2")
+			err := (ManageSubnet{dbSession: f.session, siteClientPool: f.pool}).reconcileAttachment(context.Background(), cdbm.NewSubnetDAO(f.session), &f.claimed)
+			require.NoError(t, err)
+			stored, err := cdbm.NewSubnetDAO(f.session).GetByID(context.Background(), nil, f.subnet.ID, nil)
+			require.NoError(t, err)
+			assert.Equal(t, f.intent.TargetVpcID, stored.VpcID)
+			assert.Nil(t, stored.AttachIntentID)
+			assert.Nil(t, stored.AttachRecoveryToken)
+			assert.Nil(t, stored.AttachLeaseUntil)
+			assert.Nil(t, stored.AttachNextAt)
+			f.siteClient.AssertExpectations(t)
+			f.siteClient.AssertNumberOfCalls(t, "ExecuteWorkflow", 1)
+		}},
+		{name: "successful retry is fenced and independently read back", check: func(t *testing.T) {
+			f := newAttachmentRecoveryFixture(t)
+			f.expectSegmentRead(t, f.sourceControllerVpc, "V1")
+			f.expectProxyResult(t, corev1.Forge_AttachNetworkSegmentToVpc_FullMethodName, f.segment(f.targetControllerVpc, "V2"))
+			f.expectSegmentRead(t, f.targetControllerVpc, "V2")
+			err := (ManageSubnet{dbSession: f.session, siteClientPool: f.pool}).reconcileAttachment(context.Background(), cdbm.NewSubnetDAO(f.session), &f.claimed)
+			require.NoError(t, err)
+			stored, err := cdbm.NewSubnetDAO(f.session).GetByID(context.Background(), nil, f.subnet.ID, nil)
+			require.NoError(t, err)
+			assert.Equal(t, f.intent.TargetVpcID, stored.VpcID)
+			assert.Nil(t, stored.AttachIntentID)
+			f.siteClient.AssertExpectations(t)
+			f.siteClient.AssertNumberOfCalls(t, "ExecuteWorkflow", 3)
+		}},
+		{name: "successful response alone cannot override contrary readback", check: func(t *testing.T) {
+			f := newAttachmentRecoveryFixture(t)
+			f.expectSegmentRead(t, f.sourceControllerVpc, "V1")
+			f.expectProxyResult(t, corev1.Forge_AttachNetworkSegmentToVpc_FullMethodName, f.segment(f.targetControllerVpc, "V2"))
+			f.expectSegmentRead(t, f.sourceControllerVpc, "V1")
+			err := (ManageSubnet{dbSession: f.session, siteClientPool: f.pool}).reconcileAttachment(context.Background(), cdbm.NewSubnetDAO(f.session), &f.claimed)
+			require.ErrorContains(t, err, "target not confirmed")
+			f.assertPending(t)
+			f.siteClient.AssertExpectations(t)
+		}},
+		{name: "revoked tenant association prevents all Site calls", check: func(t *testing.T) {
+			f := newAttachmentRecoveryFixture(t)
+			_, err := f.session.DB.ExecContext(context.Background(), "DELETE FROM tenant_site WHERE tenant_id = ? AND site_id = ?", f.intent.TenantID, f.intent.SiteID)
+			require.NoError(t, err)
+			err = (ManageSubnet{dbSession: f.session, siteClientPool: f.pool}).reconcileAttachment(context.Background(), cdbm.NewSubnetDAO(f.session), &f.claimed)
+			require.ErrorContains(t, err, "association not current")
+			f.assertPending(t)
+			f.siteClient.AssertNumberOfCalls(t, "ExecuteWorkflow", 0)
+		}},
+		{name: "unavailable Site prevents all Site calls", check: func(t *testing.T) {
+			f := newAttachmentRecoveryFixture(t)
+			_, err := cdbm.NewSiteDAO(f.session).Update(context.Background(), nil, cdbm.SiteUpdateInput{SiteID: f.intent.SiteID, Status: cutil.GetPtr(cdbm.SiteStatusError)})
+			require.NoError(t, err)
+			err = (ManageSubnet{dbSession: f.session, siteClientPool: f.pool}).reconcileAttachment(context.Background(), cdbm.NewSubnetDAO(f.session), &f.claimed)
+			require.ErrorContains(t, err, "site is unavailable")
+			f.assertPending(t)
+			f.siteClient.AssertNumberOfCalls(t, "ExecuteWorkflow", 0)
+		}},
+		{name: "timeout is deferred then a later activity really retries", check: func(t *testing.T) {
+			f := newAttachmentRecoveryFixture(t)
+			f.expectSegmentRead(t, f.sourceControllerVpc, "V1")
+			f.expectAttachError(tp.NewTimeoutError(temporalEnums.TIMEOUT_TYPE_START_TO_CLOSE, nil, nil))
+			manager := ManageSubnet{dbSession: f.session, siteClientPool: f.pool}
+			err := manager.reconcileAttachment(context.Background(), cdbm.NewSubnetDAO(f.session), &f.claimed)
+			require.ErrorContains(t, err, "unconfirmed")
+			f.assertPending(t)
+			_, err = f.session.DB.ExecContext(context.Background(), "UPDATE subnet SET attach_next_at = current_timestamp WHERE id = ?", f.subnet.ID)
+			require.NoError(t, err)
+			f.expectSegmentRead(t, f.sourceControllerVpc, "V1")
+			f.expectProxyResult(t, corev1.Forge_AttachNetworkSegmentToVpc_FullMethodName, f.segment(f.targetControllerVpc, "V2"))
+			f.expectSegmentRead(t, f.targetControllerVpc, "V2")
+			require.NoError(t, manager.ReconcileAttachmentIntents(context.Background()))
+			stored, err := cdbm.NewSubnetDAO(f.session).GetByID(context.Background(), nil, f.subnet.ID, nil)
+			require.NoError(t, err)
+			assert.Equal(t, f.intent.TargetVpcID, stored.VpcID)
+			assert.Nil(t, stored.AttachIntentID)
+			assert.Equal(t, 2, stored.AttachAttempts)
+			f.siteClient.AssertExpectations(t)
+			f.siteClient.AssertNumberOfCalls(t, "ExecuteWorkflow", 5)
+		}},
+	}
+	for _, tc := range []struct {
+		name, message string
+		change        func(*corev1.NetworkSegment)
+	}{
+		{"wrong Core segment", "identity not confirmed", func(s *corev1.NetworkSegment) { s.Id.Value = uuid.NewString() }},
+		{"non tenant Core segment", "tenant segment version not confirmed", func(s *corev1.NetworkSegment) { s.Config.SegmentType = corev1.NetworkSegmentType_HOST_INBAND }},
+		{"missing Core version", "tenant segment version not confirmed", func(s *corev1.NetworkSegment) { s.Status.Lifecycle.Version = "" }},
+	} {
+		cases = append(cases, struct {
+			name  string
+			check func(*testing.T)
+		}{tc.name, func(t *testing.T) {
+			f := newAttachmentRecoveryFixture(t)
+			segment := f.segment(f.sourceControllerVpc, "V1")
+			tc.change(segment)
+			f.expectProxyResult(t, corev1.Forge_FindNetworkSegmentsByIds_FullMethodName, &corev1.NetworkSegmentList{NetworkSegments: []*corev1.NetworkSegment{segment}})
+			err := (ManageSubnet{dbSession: f.session, siteClientPool: f.pool}).reconcileAttachment(context.Background(), cdbm.NewSubnetDAO(f.session), &f.claimed)
+			require.ErrorContains(t, err, tc.message)
+			f.assertPending(t)
+			f.siteClient.AssertExpectations(t)
+			f.siteClient.AssertNumberOfCalls(t, "ExecuteWorkflow", 1)
+		}})
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, tc.check)
+	}
 }
 
 func TestCancelAttachmentRejectsStaleWorkerToken(t *testing.T) {

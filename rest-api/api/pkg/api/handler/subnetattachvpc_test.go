@@ -50,6 +50,7 @@ type subnetAttachVpcFixture struct {
 	proxiedRequest  *grpcproxy.Request
 	readRequest     *grpcproxy.Request
 	setCoreResponse func(*corev1.NetworkSegment)
+	mutateCoreRead  func(func(*corev1.NetworkSegment))
 }
 
 type subnetDeleteReservationHook struct {
@@ -183,6 +184,7 @@ func newSubnetAttachVpcFixture(t *testing.T, workflowErr error) subnetAttachVpcF
 		sourceVpc: sourceVpc, targetVpc: targetVpc, subnet: subnet, scp: scp,
 		proxiedRequest: proxiedRequest,
 		readRequest:    readRequest,
+		mutateCoreRead: func(change func(*corev1.NetworkSegment)) { change(readResponse) },
 		setCoreResponse: func(response *corev1.NetworkSegment) {
 			coreResponse = response
 		},
@@ -257,6 +259,54 @@ func TestAttachSubnetVpcHandler_Handle(t *testing.T) {
 		expectReadRequest  bool
 		expectIntent       bool
 	}{
+
+		{
+			name: "requires explicit consent before replacing a VPC",
+			prepare: func(t *testing.T, fixture *subnetAttachVpcFixture) (string, string, *cdbm.User) {
+
+				body, err := json.Marshal(model.APISubnetAttachVpcRequest{VpcID: fixture.targetVpc.ID.String(), AllowReplace: false})
+				require.NoError(t, err)
+				return fixture.subnet.ID.String(), string(body), fixture.user
+			}, expectedStatus: http.StatusConflict, expectedVpc: "source", expectReadRequest: true,
+		},
+		{
+			name: "rejects an unexpected Core segment identity",
+			prepare: func(t *testing.T, fixture *subnetAttachVpcFixture) (string, string, *cdbm.User) {
+				fixture.mutateCoreRead(func(segment *corev1.NetworkSegment) { segment.Id.Value = uuid.NewString() })
+				body, err := json.Marshal(model.APISubnetAttachVpcRequest{VpcID: fixture.targetVpc.ID.String(), AllowReplace: true})
+				require.NoError(t, err)
+				return fixture.subnet.ID.String(), string(body), fixture.user
+			}, expectedStatus: http.StatusConflict, expectedVpc: "source", expectReadRequest: true,
+		},
+		{
+			name: "rejects a Core segment without a lifecycle version",
+			prepare: func(t *testing.T, fixture *subnetAttachVpcFixture) (string, string, *cdbm.User) {
+				fixture.mutateCoreRead(func(segment *corev1.NetworkSegment) { segment.Status.Lifecycle.Version = "" })
+				body, err := json.Marshal(model.APISubnetAttachVpcRequest{VpcID: fixture.targetVpc.ID.String(), AllowReplace: true})
+				require.NoError(t, err)
+				return fixture.subnet.ID.String(), string(body), fixture.user
+			}, expectedStatus: http.StatusConflict, expectedVpc: "source", expectReadRequest: true,
+		},
+		{
+			name: "rejects a non tenant Core read",
+			prepare: func(t *testing.T, fixture *subnetAttachVpcFixture) (string, string, *cdbm.User) {
+				fixture.mutateCoreRead(func(segment *corev1.NetworkSegment) {
+					segment.Config.SegmentType = corev1.NetworkSegmentType_HOST_INBAND
+				})
+				body, err := json.Marshal(model.APISubnetAttachVpcRequest{VpcID: fixture.targetVpc.ID.String(), AllowReplace: true})
+				require.NoError(t, err)
+				return fixture.subnet.ID.String(), string(body), fixture.user
+			}, expectedStatus: http.StatusConflict, expectedVpc: "source", expectReadRequest: true,
+		},
+		{
+			name: "rejects a stale REST source projection",
+			prepare: func(t *testing.T, fixture *subnetAttachVpcFixture) (string, string, *cdbm.User) {
+				fixture.mutateCoreRead(func(segment *corev1.NetworkSegment) { segment.Config.VpcId.Value = uuid.NewString() })
+				body, err := json.Marshal(model.APISubnetAttachVpcRequest{VpcID: fixture.targetVpc.ID.String(), AllowReplace: true})
+				require.NoError(t, err)
+				return fixture.subnet.ID.String(), string(body), fixture.user
+			}, expectedStatus: http.StatusConflict, expectedVpc: "source", expectReadRequest: true,
+		},
 		{
 			name: "reassigns an unallocated ETV Subnet after explicit acknowledgement",
 			prepare: func(t *testing.T, fixture *subnetAttachVpcFixture) (string, string, *cdbm.User) {

@@ -72,11 +72,12 @@ func TestToStandardSubnetAttachVpcRequest(t *testing.T) {
 	}
 }
 
-func TestSubnetManagerCreateAndAttachVpc(t *testing.T) {
+func TestClient_CreateAndAttachSubnet(t *testing.T) {
 	requests := make([]string, 0, 2)
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		requests = append(requests, r.Method+" "+r.URL.Path)
+		assert.Equal(t, "Bearer test-attachment-token", r.Header.Get("Authorization"))
 		var body map[string]any
 		require.NoError(t, json.NewDecoder(r.Body).Decode(&body))
 		switch {
@@ -100,9 +101,9 @@ func TestSubnetManagerCreateAndAttachVpc(t *testing.T) {
 	defer server.Close()
 
 	client := newSimpleTestClient(server.URL)
-	manager := NewSubnetManager(client)
+	client.Config.Token = "test-attachment-token"
 	domainID := "domain-1"
-	created, apiErr := manager.Create(context.Background(), SubnetCreateRequest{
+	created, apiErr := client.CreateSubnet(context.Background(), SubnetCreateRequest{
 		Name:         "tenant-net",
 		VpcID:        "vpc-1",
 		SubdomainID:  &domainID,
@@ -113,7 +114,7 @@ func TestSubnetManagerCreateAndAttachVpc(t *testing.T) {
 	require.NotNil(t, created)
 	assert.Equal(t, "subnet-1", created.GetId())
 
-	attached, apiErr := manager.AttachVpc(context.Background(), "subnet-1", SubnetAttachVpcRequest{
+	attached, apiErr := client.AttachSubnetToVpc(context.Background(), "subnet-1", SubnetAttachVpcRequest{
 		VpcID:        "vpc-2",
 		AllowReplace: true,
 	})
@@ -124,4 +125,38 @@ func TestSubnetManagerCreateAndAttachVpc(t *testing.T) {
 		"POST /v2/org/test-org/nico/subnet",
 		"POST /v2/org/test-org/nico/subnet/subnet-1/attach-vpc",
 	}, requests)
+}
+
+func TestClient_AttachSubnetToVpc(t *testing.T) {
+	for _, tc := range []struct {
+		name, id    string
+		status      int
+		wantRequest bool
+	}{
+		{name: "authorization refusal is propagated", id: "subnet-1", status: http.StatusForbidden, wantRequest: true},
+		{name: "pending operation conflict is propagated", id: "subnet-1", status: http.StatusConflict, wantRequest: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			requests := 0
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				requests++
+				assert.Equal(t, "POST /v2/org/test-org/nico/subnet/subnet-1/attach-vpc", r.Method+" "+r.URL.Path)
+				w.Header().Set("Content-Type", "application/json")
+				w.WriteHeader(tc.status)
+				_, _ = io.WriteString(w, `{"message":"attachment pending"}`)
+			}))
+			defer server.Close()
+			client := newSimpleTestClient(server.URL)
+			result, apiErr := client.AttachSubnetToVpc(context.Background(), tc.id, SubnetAttachVpcRequest{VpcID: "vpc-2"})
+			assert.Nil(t, result)
+			require.NotNil(t, apiErr)
+			assert.Equal(t, tc.status, apiErr.Code)
+			if tc.wantRequest {
+				assert.Equal(t, 1, requests)
+				assert.Contains(t, apiErr.Message, "attachment pending")
+			} else {
+				assert.Zero(t, requests)
+			}
+		})
+	}
 }

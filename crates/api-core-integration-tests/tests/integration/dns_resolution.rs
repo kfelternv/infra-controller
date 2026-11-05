@@ -18,6 +18,7 @@
 use std::net::IpAddr;
 
 use carbide_api_core::test_support::network_segment::create_static_assignments_segment;
+use carbide_authn::middleware::Principal;
 use carbide_test_harness::TestNetworkSegment;
 use carbide_test_harness::prelude::*;
 use carbide_uuid::machine::MachineId;
@@ -28,6 +29,28 @@ use tonic::Request;
 const DOMAIN_NAME: &str = "dwrt1.com";
 const DNS_ADM_SUBDOMAIN: &str = concatcp!("adm.", DOMAIN_NAME);
 const DNS_BMC_SUBDOMAIN: &str = concatcp!("bmc.", DOMAIN_NAME);
+
+// In-process fixtures inject authentication evidence. They do not exercise
+// certificate authentication or RPC middleware permissions.
+fn request_with_principals<T>(payload: T, principals: Vec<Principal>) -> Request<T> {
+    let mut request = Request::new(payload);
+    request
+        .extensions_mut()
+        .insert(carbide_api_core::AuthContext {
+            principals,
+            authorization: None,
+        });
+    request
+}
+
+fn site_agent() -> Principal {
+    Principal::SpiffeServiceIdentifier("elektra-site-agent".to_string())
+}
+
+fn site_request<T>(payload: T) -> Request<T> {
+    // Real mTLS contributes both the concrete identity and this credential marker.
+    request_with_principals(payload, vec![site_agent(), Principal::TrustedCertificate])
+}
 
 struct DnsTestEnv {
     env: TestHarness,
@@ -266,24 +289,8 @@ async fn test_domain_default_ttl_omission_and_range_rules(pool: PgPool) {
 /// bypasses the TLS/auth middleware; RBAC itself has separate principal tests.
 #[sqlx_test]
 async fn test_domain_reserved_id_replay_and_reference_guard(pool: PgPool) {
-    use carbide_authn::middleware::Principal;
     use carbide_uuid::domain::DomainId;
     use rpc::protos::dns::{CreateDomainRequest, DomainDeletionRequest, UpdateDomainRequest};
-
-    fn request_with_principals<T>(payload: T, principals: Vec<Principal>) -> Request<T> {
-        let mut request = Request::new(payload);
-        request
-            .extensions_mut()
-            .insert(carbide_api_core::AuthContext {
-                principals,
-                authorization: None,
-            });
-        request
-    }
-
-    fn site_agent() -> Principal {
-        Principal::SpiffeServiceIdentifier("elektra-site-agent".to_string())
-    }
 
     fn external_user() -> Principal {
         Principal::ExternalUser(carbide_authn::middleware::ExternalUserInfo::new(
@@ -291,12 +298,6 @@ async fn test_domain_reserved_id_replay_and_reference_guard(pool: PgPool) {
             "nico-cli-client".into(),
             None,
         ))
-    }
-
-    fn site_request<T>(payload: T) -> Request<T> {
-        // crates/authn/src/middleware.rs records the SPIFFE identity and then
-        // pushes this trusted-certificate marker for real mTLS requests.
-        request_with_principals(payload, vec![site_agent(), Principal::TrustedCertificate])
     }
 
     let env = TestHarness::builder(pool).build().await;
@@ -614,23 +615,8 @@ async fn test_domain_reserved_id_replay_and_reference_guard(pool: PgPool) {
 
 #[sqlx_test]
 async fn test_reserved_create_delete_concurrent_and_name_collision(pool: PgPool) {
-    use carbide_authn::middleware::Principal;
     use carbide_uuid::domain::DomainId;
     use rpc::protos::dns::{CreateDomainRequest, DomainDeletionRequest};
-
-    fn site_request<T>(payload: T) -> Request<T> {
-        let mut request = Request::new(payload);
-        request
-            .extensions_mut()
-            .insert(carbide_api_core::AuthContext {
-                principals: vec![
-                    Principal::SpiffeServiceIdentifier("elektra-site-agent".into()),
-                    Principal::TrustedCertificate,
-                ],
-                authorization: None,
-            });
-        request
-    }
 
     let env = TestHarness::builder(pool).build().await;
     let api = env.api();
@@ -707,6 +693,317 @@ async fn test_reserved_create_delete_concurrent_and_name_collision(pool: PgPool)
         1,
         "distinct reserved IDs cannot commit one normalized forward name twice"
     );
+}
+
+#[sqlx_test]
+async fn test_reserved_replay_keeps_vpc_and_omitted_create_ttl(pool: PgPool) {
+    use carbide_uuid::domain::DomainId;
+    use rpc::protos::dns::{CreateDomainRequest, DomainSearchQuery, UpdateDomainRequest};
+
+    let env = TestHarness::builder(pool).build().await;
+    let owner = env.network_controller().create_vpc("reserved-owner").await;
+    let other = env.network_controller().create_vpc("reserved-other").await;
+    let api = env.api();
+    let id: DomainId = uuid::Uuid::new_v4().into();
+    let payload = CreateDomainRequest {
+        name: "reserved-vpc.example".into(),
+        default_ttl: None,
+        vpc_id: Some(owner),
+        reserved_id: Some(id),
+    };
+    let created = api
+        .create_domain(site_request(payload.clone()))
+        .await
+        .unwrap()
+        .into_inner();
+    assert_eq!(created.id, Some(id));
+    assert_eq!(created.vpc_id, Some(owner));
+    assert_eq!(created.default_ttl, None);
+
+    let updated = api
+        .update_domain(Request::new(UpdateDomainRequest {
+            domain: Some(rpc::protos::dns::Domain {
+                id: Some(id),
+                default_ttl: Some(900),
+                ..Default::default()
+            }),
+        }))
+        .await
+        .unwrap()
+        .into_inner();
+    assert_eq!(updated.vpc_id, Some(owner));
+    assert_eq!(updated.default_ttl, Some(900));
+    let replay = api
+        .create_domain(site_request(payload.clone()))
+        .await
+        .expect("omitted original TTL remains an exact replay after a live TTL update")
+        .into_inner();
+    assert_eq!(replay, updated);
+
+    for (scenario, vpc_id, default_ttl) in [
+        ("different VPC", Some(other), None),
+        ("omitted VPC", None, None),
+        (
+            "live TTL is not the original create TTL",
+            Some(owner),
+            Some(900),
+        ),
+    ] {
+        let error = api
+            .create_domain(site_request(CreateDomainRequest {
+                vpc_id,
+                default_ttl,
+                ..payload.clone()
+            }))
+            .await
+            .expect_err("a different create intent cannot reuse the reserved ID");
+        assert_eq!(error.code(), tonic::Code::FailedPrecondition, "{scenario}");
+        let current = api
+            .find_domain(Request::new(DomainSearchQuery {
+                id: Some(id),
+                name: None,
+            }))
+            .await
+            .unwrap()
+            .into_inner();
+        assert_eq!(current.domains, vec![updated.clone()], "{scenario}");
+    }
+}
+
+#[sqlx_test]
+async fn test_reserved_operations_cannot_adopt_unreferenced_legacy_ids(pool: PgPool) {
+    use carbide_uuid::domain::DomainId;
+    use rpc::protos::dns::{CreateDomainRequest, DomainDeletionRequest};
+
+    async fn stored_domain(pool: &PgPool, id: DomainId) -> serde_json::Value {
+        sqlx::query_scalar("SELECT to_jsonb(domains) FROM domains WHERE id = $1")
+            .bind(id)
+            .fetch_one(pool)
+            .await
+            .unwrap()
+    }
+
+    let env = TestHarness::builder(pool.clone()).build().await;
+    let api = env.api();
+    for deleted in [false, true] {
+        let payload = CreateDomainRequest {
+            name: format!("legacy-{deleted}.example"),
+            default_ttl: None,
+            vpc_id: None,
+            reserved_id: None,
+        };
+        let created = api
+            .create_domain(Request::new(payload.clone()))
+            .await
+            .unwrap()
+            .into_inner();
+        let id = created.id.unwrap();
+        if deleted {
+            api.delete_domain(Request::new(DomainDeletionRequest {
+                id: Some(id),
+                cancel_reserved_id: false,
+            }))
+            .await
+            .unwrap();
+        }
+        let before = stored_domain(&pool, id).await;
+        assert_eq!(before["reserved_create"], false);
+        assert_eq!(before["deleted"].is_null(), !deleted);
+
+        let error = api
+            .create_domain(site_request(CreateDomainRequest {
+                reserved_id: Some(id),
+                ..payload
+            }))
+            .await
+            .expect_err("matching fields cannot adopt a legacy ID as a reserved intent");
+        assert_eq!(
+            error.code(),
+            tonic::Code::FailedPrecondition,
+            "deleted={deleted}"
+        );
+        assert_eq!(stored_domain(&pool, id).await, before);
+
+        // No segment or interface references this row: only the ownership
+        // check can reject cancellation of the live legacy domain.
+        let error = api
+            .delete_domain(site_request(DomainDeletionRequest {
+                id: Some(id),
+                cancel_reserved_id: true,
+            }))
+            .await
+            .expect_err("reserved cancellation cannot delete or accept a legacy ID");
+        assert_eq!(
+            error.code(),
+            tonic::Code::FailedPrecondition,
+            "deleted={deleted}"
+        );
+        assert_eq!(stored_domain(&pool, id).await, before);
+    }
+}
+
+#[sqlx_test]
+async fn test_reserved_cancellation_preserves_references_and_is_terminal(pool: PgPool) {
+    use carbide_uuid::domain::DomainId;
+    use rpc::protos::dns::{CreateDomainRequest, DomainDeletionRequest};
+
+    let env = TestHarness::builder(pool.clone()).build().await;
+    let api = env.api();
+    let id: DomainId = uuid::Uuid::new_v4().into();
+    let payload = CreateDomainRequest {
+        name: "reserved-reference.example".into(),
+        default_ttl: Some(600),
+        vpc_id: None,
+        reserved_id: Some(id),
+    };
+    api.create_domain(site_request(payload.clone()))
+        .await
+        .unwrap();
+    let segment = env
+        .network_controller()
+        .create_admin_segment(&carbide_test_harness::dns::TestDomain {
+            id,
+            name: payload.name.clone(),
+        })
+        .await;
+    let cancellation = DomainDeletionRequest {
+        id: Some(id),
+        cancel_reserved_id: true,
+    };
+    let before = db::dns::domain::find_by_uuid(&pool, id)
+        .await
+        .unwrap()
+        .unwrap();
+    let error = api
+        .delete_domain(site_request(cancellation.clone()))
+        .await
+        .expect_err("reserved ownership cannot bypass a live reference");
+    assert_eq!(error.code(), tonic::Code::FailedPrecondition);
+    let after = db::dns::domain::find_by_uuid(&pool, id)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        serde_json::to_value(&after).unwrap(),
+        serde_json::to_value(&before).unwrap()
+    );
+    assert_eq!(
+        api.create_domain(site_request(payload.clone()))
+            .await
+            .unwrap()
+            .into_inner()
+            .id,
+        Some(id),
+        "failed cancellation must not tombstone the owned ID"
+    );
+
+    api.delete_network_segment(Request::new(rpc::forge::NetworkSegmentDeletionRequest {
+        id: Some(segment.id),
+    }))
+    .await
+    .unwrap();
+    api.delete_domain(site_request(cancellation.clone()))
+        .await
+        .expect("reserved cancellation succeeds after its live reference is removed");
+    let deleted = db::dns::domain::find_by_uuid(&pool, id)
+        .await
+        .unwrap()
+        .unwrap();
+    assert!(deleted.deleted.is_some());
+    api.delete_domain(site_request(cancellation))
+        .await
+        .expect("cancelling an already deleted reserved ID is idempotent");
+    let repeated = db::dns::domain::find_by_uuid(&pool, id)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        serde_json::to_value(&repeated).unwrap(),
+        serde_json::to_value(&deleted).unwrap()
+    );
+    let late = api
+        .create_domain(site_request(payload))
+        .await
+        .expect_err("late reserved create cannot resurrect the deleted row");
+    assert_eq!(late.code(), tonic::Code::FailedPrecondition);
+}
+
+#[sqlx_test]
+async fn test_reserved_create_and_cancel_wait_for_the_same_id_lock(pool: PgPool) {
+    use std::time::Duration;
+
+    use carbide_uuid::domain::DomainId;
+    use rpc::protos::dns::{CreateDomainRequest, DomainDeletionRequest};
+
+    let env = TestHarness::builder(pool.clone()).build().await;
+    let api = env.api();
+    let id: DomainId = uuid::Uuid::new_v4().into();
+    let mut blocker = pool.begin().await.unwrap();
+    let blocker_pid: i32 = sqlx::query_scalar("SELECT pg_backend_pid()")
+        .fetch_one(blocker.as_mut())
+        .await
+        .unwrap();
+    db::dns::domain::lock_id_exclusive(blocker.as_mut(), id)
+        .await
+        .unwrap();
+    let payload = || CreateDomainRequest {
+        name: "locked-reservation.example".into(),
+        default_ttl: None,
+        vpc_id: None,
+        reserved_id: Some(id),
+    };
+    let release_after_both_wait = async {
+        tokio::time::timeout(Duration::from_secs(10), async {
+            loop {
+                let waiters: i64 = sqlx::query_scalar(
+                    "SELECT count(*) FROM pg_stat_activity
+                     WHERE datname = current_database()
+                       AND $1 = ANY(pg_blocking_pids(pid))
+                       AND wait_event_type = 'Lock'",
+                )
+                .bind(blocker_pid)
+                .fetch_one(&pool)
+                .await
+                .unwrap();
+                if waiters == 2 {
+                    break;
+                }
+                tokio::time::sleep(Duration::from_millis(20)).await;
+            }
+        })
+        .await
+        .expect("create and cancel must both wait on the held Domain identity lock");
+        blocker.commit().await.unwrap();
+    };
+    let (created, cancelled, ()) = tokio::join!(
+        api.create_domain(site_request(payload())),
+        api.delete_domain(site_request(DomainDeletionRequest {
+            id: Some(id),
+            cancel_reserved_id: true,
+        })),
+        release_after_both_wait,
+    );
+    match created {
+        Ok(response) => assert_eq!(response.into_inner().id, Some(id)),
+        Err(error) => assert_eq!(error.code(), tonic::Code::FailedPrecondition),
+    }
+    cancelled.expect("cancellation succeeds regardless of which waiter acquires the lock first");
+    let live: bool = sqlx::query_scalar(
+        "SELECT EXISTS (SELECT 1 FROM domains WHERE id = $1 AND deleted IS NULL)",
+    )
+    .bind(id)
+    .fetch_one(&pool)
+    .await
+    .unwrap();
+    assert!(
+        !live,
+        "successful cancellation must not leave a live Domain behind"
+    );
+    let late = api
+        .create_domain(site_request(payload()))
+        .await
+        .expect_err("cancellation remains terminal after both queued operations finish");
+    assert_eq!(late.code(), tonic::Code::FailedPrecondition);
 }
 
 #[sqlx_test]

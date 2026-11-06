@@ -1262,6 +1262,8 @@ func TestNewManageSubnet(t *testing.T) {
 }
 
 func TestManageSubnet_CreateOrUpdateSubnetFromSite(t *testing.T) {
+	t.Run("domain_identity", testSubnetInventoryDomainIdentity)
+
 	ctx := context.Background()
 	dbSession := testSubnetInitDB(t)
 	defer dbSession.Close()

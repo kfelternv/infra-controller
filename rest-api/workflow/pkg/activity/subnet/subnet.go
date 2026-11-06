@@ -469,6 +469,29 @@ func (ms ManageSubnet) createOrUpdateSubnetFromSite(
 			}
 		}
 
+		// Core and REST allocate separate Domain IDs. Resolve the Site-reported
+		// identity before reserving IPAM space for a newly recovered Subnet.
+		// Existing rows retain their stored relation when restored.
+		var domainID *uuid.UUID
+		if existingSubnet == nil && reportedSubnet.DomainID != nil {
+			domains, total, domainErr := cdbm.NewDomainDAO(ms.dbSession).GetAll(ctx, tx, cdbm.DomainFilterInput{
+				TenantIDs:          []uuid.UUID{vpc.TenantID},
+				SiteIDs:            []uuid.UUID{site.ID},
+				ControllerDomainID: reportedSubnet.DomainID,
+				Status:             cwutil.GetPtr(cdbm.DomainStatusReady),
+			}, cdbp.PageInput{Limit: cwutil.GetPtr(2)}, nil)
+			if domainErr != nil {
+				return nil, fmt.Errorf("unable to create Subnet found on Site: failed to retrieve Domain by Controller ID, DB error: %w", domainErr)
+			}
+			if total != 1 || len(domains) != 1 {
+				// Retry on later inventory once there is a unique Ready mapping
+				// owned by this Tenant at this Site. Unmanaged Domains are excluded.
+				logger.Warn().Msgf("unable to create Subnet found on Site: no unique Ready owned Domain for Controller Domain ID: %s", reportedSubnet.DomainID)
+				return nil, nil
+			}
+			domainID = &domains[0].ID
+		}
+
 		// If the Subnet is being undeleted, use its stored IPv4 Block. Otherwise
 		// find the most specific Ready tenant IPv4 Block created through Allocation
 		// that contains its Prefix.
@@ -617,7 +640,7 @@ func (ms ManageSubnet) createOrUpdateSubnetFromSite(
 			Org:                        vpc.Org,
 			SiteID:                     site.ID,
 			VpcID:                      vpc.ID,
-			DomainID:                   reportedSubnet.DomainID,
+			DomainID:                   domainID,
 			TenantID:                   vpc.TenantID,
 			ControllerNetworkSegmentID: &controllerSegmentID,
 			RoutingType:                &ipBlock.RoutingType,
